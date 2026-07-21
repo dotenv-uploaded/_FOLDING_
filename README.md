@@ -25,7 +25,7 @@ markitdown은 슬라이드 이미지를 `![alt](img)`로만 참조하고 **이�
 
 - **OCR 모델**: RapidOCR(ONNX) + `korean_PP-OCRv5_rec_mobile` (~13MB). PP-OCR 기본 인식 모델은
   중국어라 한글을 한자로 오인식하므로 **한국어 v5 mobile 모델을 명시 지정**.
-  v5=최신·최고정확도, mobile=최경량. 실측 한글 인식 신뢰도 0.97~0.99.
+  v5=최신·최고정확도, mobile=최경량. 실측 한글 인식 신뢰도 0.97-0.99.
 - onnxruntime CPU만으로 동작(GPU 불필요). 엔진은 첫 pptx 요청 때 lazy 로드되고 이후 재사용되며,
   비-pptx 요청은 OCR 비용을 전혀 지불하지 않는다. 최초 1회 모델 다운로드(~23MB) 후 캐시.
 - 신뢰도 `< 0.6` 라인은 로고·텍스처 노이즈로 보고 버린다. OCR/onnxruntime 미설치 시에도 죽지 않고
