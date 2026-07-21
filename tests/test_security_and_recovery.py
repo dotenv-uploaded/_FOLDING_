@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -13,6 +14,75 @@ from codegate_api.config import Settings
 from codegate_api.files.atomic import FileHashConflict, SafeFileError, SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.main import create_app
+from codegate_api.state.store import StateStore
+
+
+def test_state_store_migrates_retryable_sync_error_column(tmp_path: Path) -> None:
+    database = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE executions (
+                id TEXT PRIMARY KEY,
+                change_plan_id TEXT,
+                undo_of_execution_id TEXT,
+                tenant_id TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                source_uri TEXT NOT NULL,
+                status TEXT NOT NULL,
+                file_status TEXT NOT NULL,
+                sync_status TEXT NOT NULL,
+                before_sha256 TEXT NOT NULL,
+                after_sha256 TEXT NOT NULL,
+                backup_path TEXT NOT NULL,
+                file_version_id TEXT,
+                graph_version_before TEXT NOT NULL,
+                graph_version_after TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO executions(
+                id, tenant_id, subject_id, document_id, source_uri, status,
+                file_status, sync_status, before_sha256, after_sha256, backup_path,
+                graph_version_before, error_code, error_message, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "exec-legacy",
+                "tenant",
+                "subject",
+                "REG-000001",
+                "source://REG-000001.md",
+                "file_applied",
+                "applied",
+                "failed",
+                "0" * 64,
+                "1" * 64,
+                "backup",
+                "version-1",
+                "KNOWLEDGE_SYNC_FAILED",
+                "failed",
+                "2026-07-21T00:00:00+00:00",
+                "2026-07-21T00:00:00+00:00",
+            ),
+        )
+
+    StateStore(database).initialize()
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(executions)")}
+        retryable = connection.execute(
+            "SELECT error_retryable FROM executions WHERE id = 'exec-legacy'"
+        ).fetchone()
+    assert "error_retryable" in columns
+    assert retryable == (1,)
 
 
 def _preview(client: TestClient, headers: dict[str, str]) -> dict[str, str]:

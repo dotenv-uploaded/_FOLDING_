@@ -11,6 +11,7 @@ import yaml
 
 from codegate_api.files.atomic import SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
+from codegate_api.integrations.doc2md import ConversionResult
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.llmwiki import (
     LLMWikiCompatibilityAdapter,
@@ -367,6 +368,53 @@ def test_native_pipeline_updates_normalized_body_source_hash_and_revision(
     assert metadata["revision"] == "2"
     assert metadata["source"]["sha256"] == after_sha256
     assert "개인정보는 3년간 보관한다." in lines[2]
+
+
+def test_native_pipeline_renders_v2_body_with_llmwiki_v1_frontmatter(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    pipeline = _build_pipeline(fixture, tmp_path)
+    changed_source = fixture.source_path.read_text(encoding="utf-8").replace("1년", "3년")
+    fixture.source_path.write_text(changed_source, encoding="utf-8")
+    after_sha256 = _sha256(changed_source.encode())
+    event = _event(
+        fixture,
+        event_id="evt_v2_frontmatter",
+        before_sha256=fixture.before_sha256,
+        after_sha256=after_sha256,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+    converted_body = "# 개인정보 처리 규정\n\n## 보관 기간\n\n개인정보는 3년간 보관한다.\n"
+
+    class FakeDoc2Md:
+        def convert(self, *_args: object, **_kwargs: object) -> ConversionResult:
+            return ConversionResult(
+                canonical_markdown=(
+                    "---\nschema_version: 1.1.0\ncanonical_sha256: ignored\n"
+                    "converter_version: 0.2.0\n---\n" + converted_body
+                ),
+                body=converted_body,
+                format="md",
+                converter="doc2md:0.2.0:markitdown",
+                warnings=(),
+                cached=False,
+                source_sha256=after_sha256,
+                canonical_sha256=_sha256(converted_body.encode()),
+                converter_version="0.2.0",
+            )
+
+    pipeline._doc2md = FakeDoc2Md()  # type: ignore[assignment]  # noqa: SLF001
+
+    assert pipeline._apply_inputs([event]) == {"REG-100001"}  # noqa: SLF001
+
+    text = fixture.input_path.read_text(encoding="utf-8")
+    metadata = yaml.safe_load(text.split("---", maxsplit=2)[1])
+    assert metadata["schema_version"] == "1.0.0"
+    assert metadata["revision"] == "2"
+    assert metadata["source"]["sha256"] == after_sha256
+    assert "canonical_sha256" not in metadata
+    assert "converter_version" not in metadata
+    assert "개인정보는 3년간 보관한다." in text
 
 
 def test_native_pipeline_rejects_unapproved_normalized_input_content(tmp_path: Path) -> None:

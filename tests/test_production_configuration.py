@@ -15,6 +15,7 @@ def _production_settings(volume: Path, **overrides: object) -> Settings:
         "auth_mode": "supabase",
         "agent_mode": "claude",
         "doc2md_base_url": "http://doc2md.internal",
+        "doc2md_api_token": "production-doc2md-token",
         "bootstrap_demo": False,
         "supabase_url": "https://project.supabase.co",
         "RAILWAY_VOLUME_MOUNT_PATH": volume,
@@ -98,6 +99,7 @@ def test_railway_volume_maps_every_mutable_runtime_path(tmp_path: Path) -> None:
         ({"supabase_url": None}, "Supabase issuer and JWKS"),
         ({"agent_mode": "deterministic"}, "AGENT_MODE=claude"),
         ({"doc2md_base_url": None}, "DOC2MD_BASE_URL"),
+        ({"doc2md_api_token": None}, "DOC2MD_API_TOKEN"),
         ({"bootstrap_demo": True}, "BOOTSTRAP_DEMO=false"),
         ({"cors_origins": ["*"]}, "explicit CORS origin"),
     ],
@@ -109,6 +111,19 @@ def test_production_rejects_unsafe_modes(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         _production_settings(tmp_path / "volume", **overrides)
+
+
+def test_production_bytes_transport_accepts_bounded_authenticated_source(
+    tmp_path: Path,
+) -> None:
+    settings = _production_settings(
+        tmp_path / "volume",
+        doc2md_source_kind="bytes",
+        doc2md_api_token="production-doc2md-token",
+    )
+    assert settings.doc2md_source_kind == "bytes"
+    assert settings.doc2md_max_source_bytes == 33_554_432
+    assert "production-doc2md-token" not in repr(settings)
 
 
 def test_production_rejects_mutable_path_outside_volume(tmp_path: Path) -> None:

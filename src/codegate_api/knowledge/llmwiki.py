@@ -23,7 +23,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from codegate_api.files.atomic import SafeFileError, SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
-from codegate_api.integrations.doc2md import Doc2MdClient
+from codegate_api.integrations.doc2md import Doc2MdClient, Doc2MdError
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.pipeline import (
     ContentChangedPayload,
@@ -546,6 +546,13 @@ class NativeLLMWikiPipeline:
                 self._state.complete_event_batch(event_ids, new_version)
                 return new_version
             except Exception as error:
+                error_code = "KNOWLEDGE_SYNC_FAILED"
+                error_message = "LLMWIKI 동기화가 완료되지 않았습니다. 재시도할 수 있습니다."
+                error_retryable = True
+                if isinstance(error, Doc2MdError):
+                    error_code = error.code
+                    error_message = str(error)
+                    error_retryable = error.retryable
                 with suppress(Exception):
                     await asyncio.to_thread(
                         self._catalog.refresh,
@@ -553,8 +560,9 @@ class NativeLLMWikiPipeline:
                     )
                 self._state.fail_event_batch(
                     event_ids,
-                    code="KNOWLEDGE_SYNC_FAILED",
-                    message="LLMWIKI 동기화가 완료되지 않았습니다. 재시도할 수 있습니다.",
+                    code=error_code,
+                    message=error_message,
+                    retryable=error_retryable,
                 )
                 raise LLMWikiCompatibilityError(str(error)) from error
 
@@ -658,7 +666,12 @@ class NativeLLMWikiPipeline:
                     converted_manifest,
                     expected_source_sha256=final_sha256,
                 )
-                updated = converted.canonical_markdown
+                updated = _render_normalized_markdown(
+                    metadata,
+                    converted.body,
+                    source_sha256=final_sha256,
+                    revision=target_revision,
+                )
             else:
                 updated_body = body
                 for payload in payloads:

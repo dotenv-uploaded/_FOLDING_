@@ -115,6 +115,13 @@ def build_container(settings: Settings) -> AppContainer:
             base_url=settings.doc2md_base_url,
             resolver=resolver,
             timeout_seconds=settings.doc2md_timeout_seconds,
+            source_kind=settings.doc2md_source_kind,
+            api_token=(
+                settings.doc2md_api_token.get_secret_value()
+                if settings.doc2md_api_token is not None
+                else None
+            ),
+            max_source_bytes=settings.doc2md_max_source_bytes,
         )
     if settings.knowledge_mode == "llmwiki":
         project_root = settings.resolved_llmwiki_project_root()
