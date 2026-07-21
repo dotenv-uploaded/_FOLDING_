@@ -248,7 +248,7 @@ class LLMWikiCompatibilityAdapter:
             meta.get("build_id") != build_id
             or meta.get("tenant_id") != self._tenant_id
             or meta.get("wiki_id") != self._wiki_id
-            or meta.get("build_format_version") != "server-v1"
+            or meta.get("build_format_version") not in {"server-v1", "server-v2"}
         ):
             raise LLMWikiCompatibilityError("LLMWIKI build metadata does not match current.json")
         manifests = self._read_validated_jsonl(build_dir, "manifest")

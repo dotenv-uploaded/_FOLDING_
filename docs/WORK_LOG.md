@@ -1,5 +1,28 @@
 # 작업 로그
 
+## 2026-07-22 — Electron sidecar 실제 기동과 LLMWIKI server-v2 호환 준비
+
+- 목적: Electron이 전달할 로컬 runtime 인자로 실제 `codegate-local` process를 시작하고, 다음 세션의
+  민규 converter·용휘 builder 연결 전에 현재 LLMWIKI bundle 호환성을 확인
+- 변경:
+  - native compatibility adapter가 schema 검증을 통과한 `server-v1|server-v2` build format을 허용
+  - `server-v2` metadata 회귀 테스트 추가
+  - 최신 LLMWIKI format 불일치의 재현·원인·검증을 troubleshooting 기록에 추가
+- 검증:
+  - 한 문서 합성 source/input으로 `codegate-local --deterministic-agent` startup 성공
+  - `/api/v1/health` 200, `status=ok`, local auth와 agent/index/persistence readiness 확인
+  - 위치 검색이 canonical quote와 revision·section citation을 반환
+  - SIGINT 뒤 worker와 Uvicorn 정상 종료
+- 전달 상태: 로컬 branch `fix/llmwiki-server-v2-compat`에 checkpoint commit 완료. push, PR,
+  Railway 배포는 수행하지 않음
+- 결정:
+  - Supabase는 현재 local MVP 범위에서 제외
+  - format 검사를 제거하지 않고 명시적으로 검증한 version만 allowlist
+- 남은 일:
+  - 민규 doc2md·convert·kordoc 최종 산출물 연결
+  - 용휘 builder package와 최종 LLMWIKI pin 연결
+  - 실제 corpus로 승인 write·재build·새 근거 검색·Undo 설치본 E2E
+
 ## 2026-07-21 — Backend 저장소 기반과 read-only 수직 기능
 
 - 목적: 성주 담당 FastAPI 저장소를 독립 실행 가능하게 만들고, 팀 산출물이 오기 전에도 `llm-wiki` 계약과 위치 검색을 검증

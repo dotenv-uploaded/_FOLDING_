@@ -420,6 +420,20 @@ def test_native_llmwiki_build_is_mapped_to_valid_read_cache(tmp_path: Path) -> N
     assert canonical.count('<a id="sec-0123456789"></a>') == 1
 
 
+def test_native_adapter_accepts_current_server_v2_build_format(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    current = fixture.adapter.current_native_build()
+    assert current is not None
+    metadata_path = current.build_dir / "build-meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["build_format_version"] = "server-v2"
+    _write_json(metadata_path, metadata)
+
+    build = fixture.adapter.native_build("build-0123456789abcdefabcd")
+
+    assert build.build_id == "build-0123456789abcdefabcd"
+
+
 def test_native_catalog_prepares_before_cas_activation(tmp_path: Path) -> None:
     fixture = _create_native_fixture(tmp_path)
     candidate_id = "build-11111111111111111111"
