@@ -14,14 +14,16 @@ dependencies = [
     "pyyaml>=6.0",
     # OCR + document-structure parsing: PaddleOCR PP-StructureV3. Needs the
     # paddlex[ocr] extras (layout/table models) — without them the pipeline
-    # raises DependencyError at construction. paddlepaddle must be the CPU
-    # build; the GPU build hard-fails without a matching CUDA install.
+    # raises DependencyError at construction.
     # Pillow/numpy decode image bytes in memory so no image is written to disk.
     "paddleocr>=3.3",
     "paddlex[ocr]>=3.3",
-    "paddlepaddle>=3.2",
+    "paddlepaddle>=3.2",  # CPU build; install the `gpu` extra to override
     "pillow>=10.0",
     "numpy>=1.26",
+    # Page/slide rendering: one image per page beats reading embedded pictures
+    "pymupdf>=1.24",
+    "pywin32>=306; sys_platform == 'win32'",  # PowerPoint slide export
 ]
 
 [project.optional-dependencies]
@@ -29,6 +31,30 @@ agent = [
     "claude-agent-sdk>=0.2.124",
     "httpx>=0.27",
 ]
+# OCR runs ~10x faster on a GPU. Paddle reaches NVIDIA GPUs through CUDA only,
+# and the CUDA-enabled wheel lives on PaddlePaddle's own index rather than PyPI
+# — the PyPI `paddlepaddle-gpu` expects a separately installed CUDA Toolkit and
+# fails with a missing cublas64_12.dll without one.
+#
+#   uv sync --extra gpu
+#   # or with pip:
+#   pip install -e ".[gpu]" --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+#
+# Installing it is all that is required: the service probes CUDA at startup and
+# uses the GPU automatically, falling back to CPU if anything is missing.
+gpu = [
+    "paddlepaddle-gpu>=3.2",
+]
+
+# uv resolves paddlepaddle-gpu from PaddlePaddle's index automatically; the
+# index is `explicit` so nothing else is pulled from it.
+[[tool.uv.index]]
+name = "paddle-cu126"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+explicit = true
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-cu126" }
 
 [build-system]
 requires = ["hatchling"]

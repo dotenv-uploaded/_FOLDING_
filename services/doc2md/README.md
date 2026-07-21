@@ -259,9 +259,37 @@ Windows 콘솔은 기본 코드페이지가 cp949라, 아무 조치 없이 print
 
 ```bash
 cd services/doc2md
-uv sync   # 또는: pip install -e .
+
+uv sync                  # CPU (기본)
+uv sync --extra gpu      # GPU (NVIDIA + CUDA). OCR이 약 10배 빨라진다
+
 uv run uvicorn app.main:app --reload --port 8000
 ```
+
+pip를 쓴다면:
+
+```bash
+pip install -e .                                    # CPU
+pip install -e ".[gpu]" --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+```
+
+**GPU는 설치만 하면 끝이다.** 서비스가 기동 시 CUDA가 실제로 동작하는지 확인해서 자동으로
+쓰고, 없거나 실패하면 CPU로 폴백한다. 코드나 설정을 바꿀 필요가 없다. 로그로 확인할 수 있다:
+
+```
+doc2md.ocr INFO OCR using GPU: NVIDIA GeForce MX450
+doc2md.ocr INFO OCR pipeline (lang=ko, mode=fast, device=gpu) ready
+```
+
+`DOC2MD_OCR_DEVICE=cpu`로 강제할 수도 있다.
+
+> GPU 휠은 PyPI가 아니라 PaddlePaddle 공식 인덱스에 있다(CUDA 런타임이 번들돼 있음).
+> PyPI의 `paddlepaddle-gpu`는 CUDA Toolkit이 따로 설치돼 있어야 하고, `bin` 없이 헤더만 있는
+> CUDA 설치본이면 `cublas64_12.dll`을 못 찾아 실패한다. uv는 `[tool.uv.sources]` 설정 덕에
+> 이 인덱스를 알아서 쓴다.
+
+PPTX 슬라이드 렌더링에는 Windows + PowerPoint가 필요하다. 없으면 임베드 이미지를 읽는
+방식으로 자동 폴백한다(느리고 표 구조가 깨질 수 있음). PDF 페이지 렌더링은 PyMuPDF라 무관하다.
 
 ## API
 
