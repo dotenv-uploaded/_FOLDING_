@@ -221,19 +221,27 @@ input, native storage root는 서로 겹칠 수 없다.
 
 ## 문서 변환 계약
 
-현재 연동 대상은 `codegate-2026-api/services/doc2md` v0.1.0의 내부 `POST /convert`다. Backend가 allowlisted absolute path를 서비스 내부 요청에만 전달하고 metadata로 stable ID, source URI, doc type, access를 강제한다. 응답 source SHA가 요청한 현재 SHA와 다르면 cache 결과를 거부한다.
+현재 연동 대상은 `codegate-2026-convert/services/doc2md@fa88f15`의 내부 `POST /convert`다. 이 저장소는 `codegate-2026-api`에서 이름이 바뀌었다 — ADR-0004와 WORK_LOG의 `codegate-2026-api@360ff41` 표기는 그 시점의 기록이므로 그대로 두고, 현재 핀은 여기를 따른다. Backend가 allowlisted absolute path를 서비스 내부 요청에만 전달하고 metadata로 stable ID, source URI, doc type, access를 강제한다. 응답 source SHA가 요청한 현재 SHA와 다르면 cache 결과를 거부한다.
 
-`doc2md`가 추가로 보장해야 하는 항목:
+`POST /convert`의 응답은 v0.1.0 7키로 **동결**됐다. Backend adapter가 `extra="forbid"`로 검증하므로 최상위 key가 하나라도 늘면 `DOC2MD_RESPONSE_INVALID`로 전체 변환이 거부된다. doc2md 쪽 `tests/test_v1_contract.py`가 이 모양을 회귀 테스트로 고정한다.
 
-- 변경 뒤에도 stable section anchor와 heading hierarchy 보존
-- canonical Markdown, source/canonical SHA, converter/version
-- section 또는 source page/span mapping
-- warning과 retryable 여부가 있는 구조화 오류
-- 형식별 parse와 original write-back capability 분리
+`doc2md`가 추가로 보장해야 하는 항목은 `POST /v2/convert`(v0.2.0)에서 제공된다. adapter는 아직 v1을 사용하므로 아래를 쓰려면 migration이 필요하다.
 
-원격 doc2md의 무인증 absolute path API를 public network에 노출하지 않는다. 현재 v0.1.0은 Backend와 같은 trusted filesystem boundary에서만 사용한다.
+| 항목 | v0.2 제공 형태 |
+|---|---|
+| 변경 뒤에도 stable section anchor와 heading hierarchy 보존 | 정확히 하나의 H1, 비어있지 않은 H2 1개 이상, 레벨 점프 없음을 결정론적으로 보장. `sections[].stable_key`(heading path 해시)는 문서의 다른 곳이 바뀌어도 불변 |
+| canonical Markdown, source/canonical SHA, converter/version | `source_sha256`, `canonical_sha256`, `converter{name,version,library,ocr_device}`. frontmatter(`schema_version` 1.1.0)에도 `canonical_sha256`·`converter_version` 포함 |
+| section 또는 source page/span mapping | `sections[].char_start`/`char_end`는 전 형식. `source_page`는 PDF(본문 `<!--- page N --->` 마커)와 pptx(슬라이드 번호). hwp/hwpx는 형식상 페이지 개념이 없어 null |
+| warning과 retryable 여부가 있는 구조화 오류 | `diagnostics[]{code,message,severity,retryable,detail}` + 오류 body `{code,message,retryable,detail}` |
+| 형식별 parse와 original write-back capability 분리 | `GET /capabilities`. **write_back은 전 형식 false** — 검증된 writer가 없으므로 read-only로 유지한다 |
 
-v0.1.0의 path 입력은 단순 private network만으로 충분하지 않으며 같은 filesystem namespace가 필수다. 별도 Railway service를 쓰려면 authenticated bytes/object-storage URI 기반 v0.2가 먼저 필요하다.
+`sections[].ordinal`과 `anchor_hint`는 문서 중간에 절이 추가되면 이동한다. revision 간 같은 section을 매칭할 때는 반드시 `stable_key`를 쓴다.
+
+`expected_source_sha256`을 요청에 넣으면 doc2md가 변환을 시작하기 전에 원본 hash를 대조해 불일치 시 `409 SOURCE_HASH_MISMATCH`로 거부한다. Backend의 응답측 stale cache 검증과 별개의 방어선이다.
+
+원격 doc2md의 무인증 absolute path API를 public network에 노출하지 않는다. v0.2는 `DOC2MD_API_TOKEN`(Bearer)과 `DOC2MD_ALLOWED_ROOTS`(심링크·`..` 해석 후 경로 제한)를 opt-in으로 제공한다. 둘 다 미설정이면 기존 co-located 배포와 동일하게 동작한다.
+
+path 입력은 같은 filesystem namespace가 필수라는 제약이 그대로다. 별도 Railway service를 쓰려면 v0.2의 `source.kind`를 `bytes`(inline base64) 또는 `uri`(s3/gs/azure/file)로 쓴다. `http(s)`는 SSRF 통로가 되므로 의도적으로 제외됐다.
 
 ## 지식 그래프 update 계약
 

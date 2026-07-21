@@ -25,14 +25,14 @@ Backend service에 persistent volume 하나를 `/data` 같은 절대경로로 �
 
 현재 상태 저장과 file lock은 single-host SQLite·filesystem 기반이다. Railway volume은 replica와 함께 사용할 수 없으므로 한 Uvicorn process와 하나의 volume만 사용한다. 여러 replica가 필요해지면 operational state, lock, publish CAS를 Postgres/object storage adapter로 바꾸기 전에는 확장하지 않는다. [Railway volume 제약](https://docs.railway.com/volumes/reference)
 
-### doc2md v0.1.0 배치 제약
+### doc2md 배치 제약
 
-현재 팀 `doc2md` API는 request의 absolute local path를 직접 연다. private network URL만 연결해서는 다른 Railway service가 Backend volume을 볼 수 없으므로 동작하지 않는다. production 전 아래 둘 중 하나가 확정돼야 한다.
+`POST /convert`(v0.1.0)는 request의 absolute local path를 직접 연다. private network URL만 연결해서는 다른 Railway service가 Backend volume을 볼 수 없으므로 동작하지 않는다. 아래 둘 중 하나를 택한다.
 
-1. 현재 v0.1.0을 Backend와 같은 container·filesystem namespace에 배치하고 loopback URL로 호출한다.
-2. 민규가 authenticated bytes 또는 object-storage URI를 받는 v0.2 계약을 제공하고 Backend adapter를 그 계약으로 교체한다.
+1. **현재 adapter 기준.** doc2md를 Backend와 같은 container·filesystem namespace에 배치하고 loopback URL로 호출한다. adapter 변경이 필요 없다.
+2. **별도 service로 분리할 때.** doc2md v0.2.0이 `POST /v2/convert`에서 `source.kind`를 `bytes`(inline base64) 또는 `uri`(s3/gs/azure)로 받으므로 filesystem 공유가 필요 없다. `DOC2MD_API_TOKEN`으로 Bearer 인증을 건다. Backend adapter를 v2로 교체하는 작업이 남아 있다.
 
-별도 service URL과 독립 volume 조합은 지원하지 않는다. `/health` 성공만으로 path 접근 가능성을 증명하지 않으므로 실제 synthetic source 변환 smoke test 전에는 배포 완료로 판정하지 않는다.
+1번은 지금 그대로 배포 가능하고, 2번은 adapter migration이 선행돼야 한다. 별도 service URL과 독립 volume 조합은 여전히 지원하지 않는다. `/health` 성공만으로 path 접근 가능성을 증명하지 않으므로 실제 synthetic source 변환 smoke test 전에는 배포 완료로 판정하지 않는다. doc2md는 이 용도로 `GET /health?deep=1`을 제공한다 — synthetic 문서를 실제로 변환하고 OCR device, 인증·allowlist 설정 상태, temp 쓰기 가능 여부를 함께 반환하며 실패 시 503이다.
 
 ## 3. 필수 환경변수
 
