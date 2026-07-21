@@ -5,9 +5,11 @@
  * 모든 예외는 여기서 한국어 문장으로 바뀌어 렌더러에 전달된다 — raw stack 을 넘기지 않는다
  * (스펙 v1.4 §5 silent fail 금지).
  */
-import { dialog, ipcMain, shell, type BrowserWindow } from 'electron';
+import path from 'node:path';
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { IPC, type LlmKeyInput, type LlmProvider, type LoginRequest } from '@contracts';
 import type { AppServices } from '@main/services';
+import { GENERATED_EXTENSION, titleFromMarkdown, writeHwpx } from '@main/kordoc/generate';
 import { logError, toUserMessage } from '@main/util/errors';
 
 /** 핸들러를 감싸 오류를 한국어 문장으로 정규화한다. */
@@ -166,6 +168,26 @@ export function registerIpcHandlers(
       throw new Error('등록된 폴더 안에서 원본을 찾지 못했습니다.');
     }
     shell.showItemInFolder(absPath);
+  });
+
+  /* ------------------------------------------- L2 답변을 한글 문서로 저장 */
+
+  /*
+   * 저장 위치는 **사용자가 고른다.** 등록 폴더에 조용히 떨어뜨리지 않는다 —
+   * 새 파일을 만드는 일은 되돌릴 원본이 없어서, 어디에 무엇이 생기는지 보이는 편이 낫다.
+   * 저장하면 watcher 가 잡아 다음 빌드에 자연스럽게 들어온다.
+   */
+  handle(IPC.documentSaveHwpx, '한글 문서를 저장하지 못했습니다.', async (markdown: string) => {
+    const window = getWindow();
+    const suggested = `${titleFromMarkdown(markdown)}${GENERATED_EXTENSION}`;
+    const result = await dialog.showSaveDialog(window ?? undefined!, {
+      title: '한글 문서로 저장',
+      defaultPath: path.join(services.primaryRootPath() ?? app.getPath('documents'), suggested),
+      filters: [{ name: '한글 문서', extensions: ['hwpx'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await writeHwpx({ targetPath: result.filePath, markdown });
+    return result.filePath;
   });
 }
 

@@ -308,6 +308,9 @@ export const IPC = {
   rootsAdd: 'roots:add',
   rootsRemove: 'roots:remove',
 
+  // L2 — 답변을 한글 문서(HWPX)로 저장
+  documentSaveHwpx: 'document:saveHwpx',
+
   // L2 — 로컬 빌드
   buildTrigger: 'build:trigger',
   buildState: 'build:state',

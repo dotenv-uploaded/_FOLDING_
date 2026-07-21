@@ -67,6 +67,10 @@ export interface CodegateApi {
     /** 활성 빌드의 지식 그래프 (그래프 탭) */
     graph(): Promise<WikiGraph>;
   };
+  document: {
+    /** 답변을 한글 문서(HWPX)로 저장. 취소하면 null, 저장하면 그 경로. */
+    saveHwpx(markdown: string): Promise<string | null>;
+  };
   shell: {
     openOriginal(relativePath: string): Promise<void>;
     /** 파일 탐색기에서 선택된 채로 보여주기 — 옆의 `.bak` 백업을 찾을 때 쓴다 */

@@ -301,6 +301,19 @@ export function createWebBridge(): CodegateApi {
       },
     },
 
+    document: {
+      /**
+       * 웹 데모는 사용자의 디스크에 파일을 만들지 않는다.
+       * 되는 척하지 않고, 어디서 되는지 말한다.
+       */
+      async saveHwpx(): Promise<string | null> {
+        (globalThis as typeof globalThis & BrowserRuntime).alert?.(
+          '한글 문서로 저장은 데스크톱 앱에서만 됩니다.',
+        );
+        return null;
+      },
+    },
+
     shell: {
       async openOriginal(relativePath: string): Promise<void> {
         for (const entry of previews.values()) {

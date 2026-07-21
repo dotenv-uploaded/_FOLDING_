@@ -607,6 +607,11 @@ export class AppServices {
    * 폴더가 없으면 조용히 아무 일도 안 하지 않고 이유를 말한다 — 버튼을 눌렀는데
    * 아무 반응이 없으면 고장으로 보인다.
    */
+  /** 저장 대화상자의 기본 위치로 쓸 첫 등록 폴더. 없으면 null. */
+  primaryRootPath(): string | null {
+    return this.store.listRoots()[0]?.path ?? null;
+  }
+
   requestManualBuild(): void {
     if (this.store.listRoots().length === 0) {
       throw new UserFacingError('등록된 폴더가 없습니다. 폴더를 먼저 추가해 주세요.');

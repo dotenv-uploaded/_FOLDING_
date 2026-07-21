@@ -103,6 +103,12 @@ const api: CodegateApi = {
     graph: (): Promise<WikiGraph> => ipcRenderer.invoke(IPC.wikiGraph),
   },
 
+  document: {
+    /** 답변을 한글 문서(HWPX)로 저장. 취소하면 null, 저장하면 그 경로. */
+    saveHwpx: (markdown: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.documentSaveHwpx, markdown),
+  },
+
   shell: {
     /** 인용 클릭 → OS 기본 앱으로 원본 문서 열기 */
     openOriginal: (relPath: string): Promise<void> =>
