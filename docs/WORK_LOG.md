@@ -65,7 +65,7 @@
   - OpenAPI 10개 path, mutation idempotency header, response enum과 stale health schema 검증
   - Claude Agent SDK가 포함된 Docker image build, container health와 canonical citation 검색 HTTP smoke test 통과
   - approval·Undo no-effect write failure 재개, transient worker self-wake, stale health, unknown-`kid` refresh throttle 회귀 검증
-- 전달 상태: 로컬 구현과 문서 완료. branch commit·push와 draft PR CI 결과는 이 작업의 delivery 단계에서 갱신
+- 전달 상태: `80ba647`을 `agent/backend-foundation`에 push하고 기존 draft PR #1을 전체 범위로 갱신. GitHub Actions run `29817682242` 성공. merge·Supabase/Railway 적용·production 배포는 수행하지 않음
 - 결정:
   - 인용 문장은 model 생성이 아니라 검증된 canonical quote로 조립해 사실 근거를 fail-closed로 유지
   - browser shortcut/symlink 대신 portable source reference JSON 사용
