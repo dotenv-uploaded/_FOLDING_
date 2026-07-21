@@ -7,8 +7,11 @@ Only transforms that cannot corrupt correct content live here:
   3. strip_empty_tables   — drop layout tables that came through fully blank
   4. promote_title        — give the doc an H1 when it lacks one, and report the title
 
+Heading *levels* are not this module's concern: clean() hands its result to
+structure.normalize_headings, which enforces the invariants the downstream wiki
+builder needs (one H1, a non-empty H2, no level jumps).
+
 Intentionally NOT done (too risky to guess, would make output worse):
-  - re-leveling mis-assigned heading depths
   - splitting a table cell whose rows were flattened during extraction
 """
 
@@ -16,6 +19,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+from app import structure
 
 # PDF layered-glyph garble repeats *every* character ~10-15x in a row
 # (실실실…실시시시…시  →  실시). We undo it in three tiers, each tuned so it
@@ -139,11 +144,20 @@ def promote_title(text: str) -> TitleResult:
 class CleanResult:
     body: str
     title: str | None
+    headings: structure.HeadingReport
 
 
 def clean(body: str) -> CleanResult:
     body = strip_image_refs(body)
     body = collapse_glyph_runs(body)
     body = strip_empty_tables(body)
-    result = promote_title(body)
-    return CleanResult(body=result.text, title=result.title)
+    titled = promote_title(body)
+    # Title discovery only guarantees the *first* line is a heading. Enforcing
+    # the invariants the wiki builder needs (one H1, a non-empty H2, no level
+    # jumps) is structure.py's job.
+    normalized = structure.normalize_headings(titled.text, titled.title)
+    return CleanResult(
+        body=normalized.body,
+        title=titled.title,
+        headings=normalized.report,
+    )

@@ -2,6 +2,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.errors import Diagnostic
+from app.sourcing import SourceSpec
+
 
 class SourceInfo(BaseModel):
     filename: str
@@ -102,13 +105,39 @@ class ConvertRequest(BaseModel):
     )
 
 
+class ConvertV2Request(BaseModel):
+    """``POST /v2/convert``. Same options as v1 plus a polymorphic source."""
+
+    source: SourceSpec
+    metadata: MetadataOverrides = MetadataOverrides()
+    chunking: ChunkOptions = ChunkOptions()
+    job_id: str | None = None
+    expected_source_sha256: str | None = Field(
+        None,
+        description="Refuse the conversion (409 SOURCE_HASH_MISMATCH) if the file "
+        "does not hash to this. Guards against converting a source that changed "
+        "between the caller reading it and this request arriving.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    budget_tokens: int | None = Field(
+        None,
+        description="Override the token budget for this request; defaults to "
+        "DOC2MD_TOKEN_BUDGET",
+    )
+
+
 class RawConversion(BaseModel):
     """The expensive part: just the extracted body text, cacheable by file content."""
 
     body: str
     format: str
     library_used: str
-    warnings: list[str] = []
+    diagnostics: list[Diagnostic] = []
+
+    @property
+    def warnings(self) -> list[str]:
+        """v0.1.0 representation, for the frozen ``/convert`` response."""
+        return [d.as_legacy_string() for d in self.diagnostics if d.severity != "info"]
 
 
 class BatchConvertRequest(BaseModel):
@@ -134,7 +163,54 @@ class DocumentChunk(BaseModel):
     chars: int
 
 
-class ConvertResult(BaseModel):
+class ConverterInfo(BaseModel):
+    """Which code produced this output, so a canonical body can be attributed."""
+
+    name: str = "doc2md"
+    version: str
+    library: str = Field(..., description="Extraction backend, e.g. markitdown+ocr")
+    ocr_device: str | None = Field(None, description="cpu | gpu | unavailable")
+
+
+class SectionInfo(BaseModel):
+    """One anchorable H1/H2 region of the canonical body."""
+
+    ordinal: int = Field(..., description="1-based index over H1/H2, document order")
+    anchor_hint: str = Field(
+        ..., description="Anchor the consumer is expected to generate, e.g. sec-004"
+    )
+    stable_key: str = Field(
+        ...,
+        description="Content-derived identity that survives edits elsewhere in the "
+        "document; use this to match sections across revisions, not `ordinal`",
+    )
+    level: int
+    heading: str
+    heading_path: list[str]
+    char_start: int = Field(..., description="Offset into `body`, inclusive")
+    char_end: int = Field(..., description="Offset into `body`, exclusive")
+    source_page: int | None = Field(
+        None, description="Source page/slide number; null when the format has none"
+    )
+
+
+class BudgetInfo(BaseModel):
+    """Whether this document is cheap enough to feed to a model whole."""
+
+    est_tokens: int
+    budget_tokens: int
+    routing: Literal["processed", "excepted"]
+    reason: str | None = None
+
+
+class ConvertResultV2(BaseModel):
+    """``POST /v2/convert`` — and the pipeline's internal result type.
+
+    A superset of v1. New fields belong here; ``ConvertResultV1`` is frozen by an
+    external consumer and projects down from this.
+    """
+
+    # --- identical to v0.1.0 ---
     markdown: str = Field(..., description="Full document: YAML frontmatter + body")
     frontmatter: Frontmatter
     body: str = Field(..., description="Markdown body only, without frontmatter")
@@ -142,6 +218,47 @@ class ConvertResult(BaseModel):
     library_used: str
     warnings: list[str] = []
     cached: bool = False
+    # --- v0.2 additions ---
+    source_sha256: str = Field(..., description="Hash of the original file")
+    canonical_sha256: str = Field(
+        ..., description="Hash of `body` (LF-normalised, frontmatter excluded)"
+    )
+    converter: ConverterInfo
+    sections: list[SectionInfo] = []
+    diagnostics: list[Diagnostic] = []
+    budget: BudgetInfo
     chunks: list[DocumentChunk] | None = Field(
         None, description="Present only when chunking was requested"
     )
+
+
+class ConvertResultV1(BaseModel):
+    """The v0.1.0 wire format for ``POST /convert``. Do not add fields.
+
+    The consuming backend validates this with ``extra="forbid"``, so *any*
+    additional key — even one serialized as null — fails its schema check and
+    the whole conversion is rejected as ``DOC2MD_RESPONSE_INVALID``. Adding
+    ``chunks`` here once broke that integration silently;
+    ``tests/test_v1_contract.py`` mirrors the consumer's model to keep it from
+    happening again. New fields belong on ``POST /v2/convert``.
+    """
+
+    markdown: str
+    frontmatter: Frontmatter
+    body: str
+    format: str
+    library_used: str
+    warnings: list[str] = []
+    cached: bool = False
+
+    @classmethod
+    def of(cls, result: ConvertResultV2) -> "ConvertResultV1":
+        return cls(
+            markdown=result.markdown,
+            frontmatter=result.frontmatter,
+            body=result.body,
+            format=result.format,
+            library_used=result.library_used,
+            warnings=result.warnings,
+            cached=result.cached,
+        )

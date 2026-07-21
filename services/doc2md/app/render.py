@@ -50,6 +50,15 @@ def render_pdf_pages(path: Path) -> list[bytes]:
     return pages
 
 
+# Deliberately NOT here: page-wise text extraction via PyMuPDF's get_text().
+# It is ~47x faster than markitdown's pdfminer backend (1.4s vs 66.3s across the
+# PDF corpus) and recovers exactly the same Hangul, but it returns plain text —
+# on one 28K-char file it produced 0 table rows where pdfminer produced 210.
+# Tables are the thing this pipeline works hardest to preserve, so the speed is
+# not worth it. PDFs therefore report `source_page` only when a page was OCR'd;
+# section spans (char_start/char_end) carry provenance for the rest.
+
+
 def render_pptx_slides(path: Path) -> list[bytes]:
     """One PNG per slide, via PowerPoint automation.
 

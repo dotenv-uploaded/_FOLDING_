@@ -3,6 +3,9 @@
 문서(pdf/docx/xlsx/pptx/csv/html/hwp/hwpx)를 프론트매터가 포함된 마크다운으로 변환하는
 순수 네이티브 Python FastAPI 서비스. 외부 바이너리/subprocess 없이 pip 패키지만으로 동작한다.
 
+**v0.2.0** — `POST /convert`는 v0.1.0 응답 모양으로 동결됐고, 새 기능은 전부
+`POST /v2/convert`에 있다. 이유는 [API 버전](#api-버전) 참조.
+
 ## 파이프라인
 
 ```
@@ -11,21 +14,26 @@
 
 ## 실측 성능
 
-31개 문서(hwp 3 / hwpx 2 / pdf 25 / pptx 1, 총 136MB) 전체 변환 — **127.8초, 31/31 성공** (GPU).
+33개 문서(hwp 3 / hwpx 4 / pdf 25 / pptx 1) 전체 변환 — **114.4초, 33/33 성공** (GPU, 콜드 캐시).
+결과는 379청크 · 842섹션 · 약 826,000 토큰.
 
 | 파일 | 크기 | 시간 | 결과 |
 |---|---:|---:|---|
-| pdf (대용량) | 3.3MB | 55.3초 | 330,908자 → 95청크 |
-| pptx | 118.2MB | 19.7초 | 9슬라이드 → 5청크 |
-| hwpx (대용량) | 3.7MB | 14.9초 | 710,140자 → 217청크 |
+| pdf (대용량) | 3.3MB | 45.2초 | 245,224토큰 → 95청크 |
+| pptx | 118.2MB | 19.4초 | 9슬라이드 → 5청크 |
+| hwpx (대용량) | 3.7MB | 14.2초 | 485,231토큰 → 216청크, 778섹션 |
 | 스캔 pdf 6개 | — | 1.3~2.9초 | OCR 폴백 |
-| 나머지 21개 | — | 0.0~3.2초 | 대부분 1초 미만 |
+| 나머지 24개 | — | 0.0~5.5초 | 대부분 1초 미만 |
+
+캐시가 살아 있으면 같은 코퍼스가 **1.9초**에 끝난다.
 
 같은 pptx가 처음엔 1,241초였다. 줄어든 순서대로: 슬라이드 단위 렌더링(109회→9회 추론),
 빠른 OCR 기본값, GPU.
 
-남은 병목은 대용량 PDF의 55초인데 이건 OCR이 아니라 pdfminer의 텍스트 추출 자체다.
-PyMuPDF로 교체하면 더 줄일 여지가 있다.
+남은 병목은 대용량 PDF의 45초인데 이건 OCR이 아니라 pdfminer의 텍스트 추출 자체다.
+**PyMuPDF로 바꾸면 66.3초 → 1.4초(47배)가 되고 한글 문자수도 완전히 동일하지만, 표가
+전부 사라진다** — 28K자 문서 하나에서 pdfminer가 만든 표 210행이 0행이 된다. 표 보존이
+더 중요하다고 판단해 교체하지 않았다. 근거는 [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ## 라우팅 규칙 (변환 단계)
 
@@ -291,48 +299,167 @@ doc2md.ocr INFO OCR pipeline (lang=ko, mode=fast, device=gpu) ready
 PPTX 슬라이드 렌더링에는 Windows + PowerPoint가 필요하다. 없으면 임베드 이미지를 읽는
 방식으로 자동 폴백한다(느리고 표 구조가 깨질 수 있음). PDF 페이지 렌더링은 PyMuPDF라 무관하다.
 
+## API 버전
+
+`POST /convert`의 응답은 **소비자가 `extra="forbid"`로 검증한다.** 최상위에 키가 하나라도
+늘면 — `null`로 직렬화되더라도 — 스키마 검증이 실패하고 변환 전체가 거부된다.
+실제로 `chunks`를 추가했다가 연동이 조용히 끊긴 적이 있다.
+
+그래서 v1은 **7키로 동결**했고, `tests/test_v1_contract.py`가 소비자의 pydantic 모델을
+그대로 복제해 이를 지킨다. 새 필드는 전부 `/v2/convert`로 간다.
+
+| | `/convert` (v0.1.0) | `/v2/convert` (v0.2.0) |
+|---|---|---|
+| 응답 키 | 7개 고정 | v1 + 7개 추가 |
+| 입력 | 절대경로만 | 경로 / bytes / object-storage URI |
+| 인증 | 없음 | `DOC2MD_API_TOKEN` 설정 시 Bearer |
+| 청크 | ❌ (`/jobs/{id}/result` 이용) | ✅ |
+
 ## API
 
 ```
-GET  /health  -> {"status": "ok"}
+GET  /health          -> {"status": "ok", "version": "0.2.0"}
+GET  /health?deep=1   -> 실제 변환 스모크 테스트 + OCR 디바이스 + 보안 설정 상태
+                         (실패 시 503) — /health 200만으로는 경로 접근성이 증명되지 않는다
+GET  /capabilities    -> 형식별 parse / ocr / page_mapping / write_back 표
 
-POST /convert
-  body: {
-    "path": "<절대경로>",
-    "metadata": { ... },       # 전부 optional override
-    "chunking": { "enabled": false, "strategy": "fixed",
-                  "max_chars": 4000, "min_chars": 2400, "split_level": 2,
-                  "parts": 5, "ratio_floor_chars": 2000,
-                  "ratio_cap_chars": 120000 },          # optional
-    "job_id": null                                       # optional, 진행률 폴링용
-  }
-  ->
-  {
-    "markdown": "<프론트매터 + 본문 전체>",
-    "frontmatter": { schema_version, id, title, doc_type, language, revision, status, chunk_no,
-                      official_number, authority_level, issuing_org,
-                      issued_on, effective_from, effective_to,
-                      source: { filename, uri, sha256 }, access, tags, aliases },
-    "body": "<본문만, 프론트매터 제외>",
-    "format": "pdf" | "hwpx" | ...,
-    "library_used": "markitdown" | "markitdown+ocr" | "pyhwp2md",
-    "warnings": [],
-    "cached": false,
-    "chunks": [                       # chunking.enabled 일 때만 존재
-      { "chunk_no": "파일명_001", "index": 1,
-        "markdown": "<이 청크의 프론트매터 + 본문>",
-        "body": "<청크 본문>",
-        "frontmatter": { ... },       # 문서와 같은 id, 자기 chunk_no
-        "heading_path": ["제1장 총칙", "1-1 공사비"],
-        "chars": 2050 }
-    ]
-  }
+POST /convert         -> v0.1.0 응답 (7키 고정, 아래 표 참조)
+POST /v2/convert      -> v0.2.0 응답
+POST /convert/async   -> 202, job_id 반환
+POST /convert/batch   -> 202, 파일별 job + 배치 ETA
+GET  /jobs/{id}       -> 진행률 · ETA
+GET  /jobs/{id}/result-> 완료된 변환 결과 (v2 모양)
+GET  /batches/{id}    -> 배치 전체 진행률
 ```
 
-파일 경로 기반(로컬 파일시스템 공유 전제)이다. 원문 변환 결과는 파일 내용(mtime+size) 기준으로
-`.cache/raw/`에 캐시되어 재변환하지 않지만, `frontmatter`는 요청마다 `metadata` override를 반영해
-매번 새로 조립된다. 단, `frontmatter.id`는 파일 내용(sha256) 기준으로 한 번 발급되면
-`.cache/id_by_sha256.json`에 고정되어 override 유무와 무관하게 같은 문서는 항상 같은 id를 갖는다.
+### `POST /v2/convert`
+
+```jsonc
+// 요청
+{
+  "source": { "kind": "path",  "path": "/vol/source/입찰안내서.pdf" },
+  // 또는 { "kind": "bytes", "filename": "x.pdf", "content_base64": "..." }
+  // 또는 { "kind": "uri",   "filename": "x.pdf", "uri": "s3://bucket/key" }
+  "metadata": { },        // optional override (v1과 동일)
+  "chunking": { "enabled": true },
+  "budget_tokens": null,  // optional, 기본 $DOC2MD_TOKEN_BUDGET
+  "job_id": null
+}
+```
+
+```jsonc
+// 응답 — v1 7키 + 아래 7개
+{
+  "markdown": "...", "frontmatter": {...}, "body": "...",
+  "format": "pdf", "library_used": "markitdown+ocr",
+  "warnings": [], "cached": false,
+
+  "source_sha256":    "0e53241e...",   // 원본 파일의 해시
+  "canonical_sha256": "2e1ab8b2...",   // body의 해시 (프론트매터 제외, LF 정규화)
+  "converter": { "name": "doc2md", "version": "0.2.0",
+                 "library": "markitdown+ocr", "ocr_device": "gpu" },
+  "sections": [
+    { "ordinal": 2, "anchor_hint": "sec-002", "stable_key": "h-e005c718",
+      "level": 2, "heading": "제1장 총칙", "heading_path": ["입찰안내서", "제1장 총칙"],
+      "char_start": 15, "char_end": 34, "source_page": null }
+  ],
+  "diagnostics": [
+    { "code": "slide_render_unavailable", "message": "...",
+      "severity": "warning", "retryable": true, "detail": null }
+  ],
+  "budget": { "est_tokens": 33, "budget_tokens": 27000000,
+              "routing": "processed", "reason": null },
+  "chunks": [ ... ]
+}
+```
+
+**`source_sha256` vs `canonical_sha256`** — 서로 다른 버전 관리 대상이다. 원본이 그대로여도
+변환기가 좋아지면 canonical은 바뀌고, canonical을 편집해도 원본은 그대로다. 둘을 분리해야
+"원본이 바뀐 것"과 "우리 변환이 바뀐 것"을 구분할 수 있다.
+
+**`ordinal` vs `stable_key`** — 중간에 절이 하나 추가되면 그 뒤의 `ordinal`은 전부 밀린다
+(`sec-004`가 다음 빌드에서 `sec-005`). `stable_key`는 heading path의 해시라 **문서의 다른
+곳이 바뀌어도 그대로**다. 리비전 간 같은 섹션을 매칭할 때는 `stable_key`를 쓴다.
+
+**`retryable`** — 같은 입력이 나중에 성공할 수 있는지. OCR 엔진 부재, PowerPoint 부재,
+렌더 실패는 `true`(정상 호스트에서 재시도할 값어치가 있음). 문서에 애초에 텍스트가 없는
+경우는 `false`.
+
+### 구조 보증
+
+`/convert`, `/v2/convert` 모두 **정확히 하나의 H1 · 비어있지 않은 H2 하나 이상 · 레벨 점프
+없음**을 보장한다. 변환기 원본은 이걸 지키지 않는다 — 710K자 hwpx 하나는 H1을 **771개**
+뱉었다(원본에서 모든 조문이 제목 스타일이었다). `structure.py`가 잉여 H1을 H2로 강등하면서
+그 하위 계층도 한 단계씩 밀어 상대 구조를 보존한다.
+
+이건 결정론적이다. 같은 body는 언제나 같은 heading을 낸다 — 소비자의 `sec-*` 앵커가
+안정적으로 유지되는 근거가 이것뿐이다.
+
+제목만 있고 본문이 없어 H2를 만들 수 없는 문서는 조용히 넘기지 않고
+`structure_incomplete` diagnostic으로 보고한다.
+
+### 배치 CLI — processed / excepted 분류
+
+```bash
+python -m app.batch_cli "<입력 폴더>" output --budget-tokens 100000
+```
+
+```
+output/
+  processed/   test_2_hwpx_001.md ...
+  excepted/    예산 초과 문서의 청크
+  manifest.jsonl
+```
+
+예산을 넘겨도 **변환과 청킹은 전부 정상 수행**된다. 분류만 달라진다.
+
+파일명 접두사(`p_`/`n_`) 대신 폴더를 쓴 이유: `chunk_no`가
+`frontmatter.slugify(path.name)` 기반이라 접두사를 붙이면 `test_1_pdf_001` →
+`p_test_1_pdf_001`이 되어 백엔드가 검증하는 stable ID와 어긋나고, 재실행하면 `p_p_`가 된다.
+폴더 이동은 파일명을 건드리지 않는다.
+
+`manifest.jsonl`은 폴더가 못 알려주는 "왜"를 담는다:
+
+```json
+{"file":"test (2).hwpx","sha256":"...","canonical_sha256":"...",
+ "routing":"excepted","reason":"token_budget_exceeded",
+ "est_tokens":485231,"budget_tokens":100000,"chunks":216,"sections":778}
+```
+
+### 보안 · 배포
+
+`/convert`는 서버 자신의 파일시스템에서 절대경로를 연다. 두 통제 없이 공개망에 노출하면
+임의 파일 읽기가 된다.
+
+| 환경변수 | 효과 |
+|---|---|
+| `DOC2MD_API_TOKEN` | 설정 시 `Authorization: Bearer` 필수 |
+| `DOC2MD_ALLOWED_ROOTS` | `kind:"path"`를 이 루트 하위로 제한 (심링크·`..` 해석 후 검사) |
+| `DOC2MD_TOKEN_BUDGET` | 예산 기본값 (기본 27,000,000) |
+
+둘 다 opt-in이다 — 현재 지원 배포는 백엔드와 같은 컨테이너에 loopback으로 두는 것이고,
+거기서는 아무 역할이 없다. 별도 서비스 배포를 **가능하게** 만들려고 존재한다.
+
+절대경로 입력만으로는 다른 호스트에서 동작하지 않는다(같은 filesystem namespace가 필수).
+별도 서비스로 띄우려면 `kind:"bytes"` 또는 `kind:"uri"`를 쓰면 된다.
+URI는 `pip install -e ".[uri]"`가 필요하고, `http(s)`는 **의도적으로 제외**했다 —
+사설망에서 임의 URL을 가져오는 서비스는 SSRF 통로가 된다.
+
+파일 경로 기반 캐시: 원문 변환 결과는 파일 내용(mtime+size) 기준으로 `.cache/raw/`에
+캐시된다. `frontmatter`는 요청마다 `metadata` override를 반영해 매번 새로 조립되지만,
+`frontmatter.id`는 파일 내용(sha256) 기준으로 한 번 발급되면 `.cache/id_by_sha256.json`에
+고정되어 override 유무와 무관하게 같은 문서는 항상 같은 id를 갖는다.
+
+## 테스트
+
+```bash
+pip install -e ".[test]"
+pytest tests/ -q          # 53개
+```
+
+`tests/test_v1_contract.py`가 가장 중요하다 — 소비자의 pydantic 모델을 복제해 v1 응답이
+7키를 유지하는지 검사한다. 여기가 깨지면 필드를 되돌리거나 `/v2/convert`로 옮겨야 한다.
+모델을 느슨하게 고치는 건 답이 아니다.
 
 ## Agent 툴로 노출할 때
 

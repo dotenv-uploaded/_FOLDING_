@@ -1,6 +1,6 @@
 [project]
 name = "doc2md"
-version = "0.1.0"
+version = "0.2.0"
 description = "Native-Python document-to-markdown conversion API (markitdown + pyhwp2md)"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,6 +30,16 @@ dependencies = [
 agent = [
     "claude-agent-sdk>=0.2.124",
     "httpx>=0.27",
+]
+# Object-storage sources (`{"kind": "uri", "uri": "s3://..."}`) for a deployment
+# where doc2md does not share a filesystem with its caller. Not needed for the
+# co-located default, which only ever sees local paths.
+uri = [
+    "fsspec>=2024.6",
+    "s3fs>=2024.6",
+]
+test = [
+    "pytest>=8.0",
 ]
 # OCR runs ~10x faster on a GPU. Paddle reaches NVIDIA GPUs through CUDA only,
 # and the CUDA-enabled wheel lives on PaddlePaddle's own index rather than PyPI

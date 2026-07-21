@@ -9,6 +9,7 @@ from markitdown import MarkItDown
 from markitdown import MarkItDownException
 
 from app import ocr, progress, render
+from app.errors import Diagnostic, diagnostic
 from app.schemas import RawConversion
 
 HWP_EXTS = {".hwp", ".hwpx"}
@@ -63,7 +64,7 @@ def _convert_markitdown(path: Path, ext: str, job=None) -> RawConversion:
         raise ConversionFailedError(f"markitdown conversion failed: {e}") from e
 
     body = result.markdown
-    warnings: list[str] = []
+    warnings: list[Diagnostic] = []
 
     # Scanned PDFs have no text layer at all — markitdown returns empty and the
     # document would silently convert to nothing. Render each page and OCR it.
@@ -79,7 +80,7 @@ def _convert_markitdown(path: Path, ext: str, job=None) -> RawConversion:
                     f"<!-- page {n} -->\n\n{md}" for n, md in sorted(by_page.items())
                 )
                 return _finish(body, ext, "markitdown+ocr", warnings)
-        warnings.append("scanned_pdf_ocr_failed: no text could be recovered")
+        warnings.append(diagnostic("scanned_pdf_ocr_failed"))
 
     return _finish(body, ext, "markitdown", warnings)
 
@@ -98,7 +99,7 @@ def _convert_pptx(path: Path, ext: str, job=None) -> RawConversion:
         raise ConversionFailedError(f"markitdown conversion failed: {e}") from e
 
     body = result.markdown
-    warnings: list[str] = []
+    warnings: list[Diagnostic] = []
     # The deck's own text tells us which recognition model to use, so picking a
     # language costs nothing extra.
     lang = ocr.detect_lang(body)
@@ -110,10 +111,10 @@ def _convert_pptx(path: Path, ext: str, job=None) -> RawConversion:
 
 
 def _ocr_pptx_images(
-    path: Path, warnings: list[str], job=None, lang: str = "ko"
+    path: Path, warnings: list[Diagnostic], job=None, lang: str = "ko"
 ) -> tuple[dict[int, str], str]:
     if not ocr.available():
-        warnings.append("pptx_ocr_skipped: OCR engine unavailable")
+        warnings.append(diagnostic("ocr_engine_unavailable"))
         return {}, "markitdown"
 
     # One image per slide is the right unit of work: a deck's embedded pictures
@@ -125,7 +126,7 @@ def _ocr_pptx_images(
     if slides:
         return _ocr_rendered(slides, "슬라이드", job, lang)
 
-    warnings.append("slide_render_unavailable: fell back to embedded images")
+    warnings.append(diagnostic("slide_render_unavailable"))
     return _ocr_embedded_pictures(path, warnings, job, lang)
 
 
@@ -147,7 +148,7 @@ def _ocr_rendered(
 
 
 def _ocr_embedded_pictures(
-    path: Path, warnings: list[str], job=None, lang: str = "ko"
+    path: Path, warnings: list[Diagnostic], job=None, lang: str = "ko"
 ) -> tuple[dict[int, str], str]:
     """Fallback when slides cannot be rendered: read each embedded picture."""
     try:
@@ -155,7 +156,7 @@ def _ocr_embedded_pictures(
 
         prs = Presentation(str(path))
     except Exception as e:
-        warnings.append(f"pptx_ocr_skipped: {e}")
+        warnings.append(diagnostic("pptx_ocr_skipped", detail=str(e)))
         return {}, "markitdown"
 
     todo: list[tuple[int, bytes]] = []
@@ -230,15 +231,15 @@ def _ocr_block(markdown: str) -> str:
 
 
 def _finish(
-    body: str, ext: str, library_used: str, warnings: list[str]
+    body: str, ext: str, library_used: str, warnings: list[Diagnostic]
 ) -> RawConversion:
     if not body.strip():
         warnings.append(
-            "empty_output: likely a scanned/image-only file — OCR fallback not wired up yet"
+            diagnostic("empty_output", detail="스캔/이미지 전용 파일일 수 있습니다")
         )
     return RawConversion(
         body=body,
         format=ext.lstrip("."),
         library_used=library_used,
-        warnings=warnings,
+        diagnostics=warnings,
     )

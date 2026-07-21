@@ -92,6 +92,22 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def canonical_sha256(body: str) -> str:
+    """Hash of the canonical body — the converted content, not the source file.
+
+    Source and canonical are two different versioned artifacts: the same .hwpx
+    can produce a different body when the converter improves, and an edit to the
+    canonical Markdown does not change the source. The consumer tracks both, so
+    it can tell "the source changed" apart from "our conversion changed".
+
+    Deliberately excludes the frontmatter (which would otherwise have to contain
+    its own hash) and normalises line endings, so the value does not depend on
+    which platform ran the conversion.
+    """
+    normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def detect_language(text: str) -> str:
     # Strip markdown/HTML scaffolding first so slide markers and image links
     # don't skew a Korean document toward "en" on its Latin noise.

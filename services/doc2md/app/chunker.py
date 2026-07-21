@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 DEFAULT_MAX_CHARS = 4000
 # A heading only starts a new chunk once the current one is already substantial.
@@ -246,3 +247,43 @@ def render_chunk(chunk: Chunk) -> str:
         return chunk.body
     crumb = " > ".join(chunk.heading_path)
     return f"<!-- section: {crumb} -->\n\n{chunk.body}"
+
+
+def build_document_chunks(
+    path: Path, doc_fm, body: str, opts
+) -> list:
+    """Split the body and give every chunk its own usable frontmatter.
+
+    A chunk shares the document's ``id`` (it is the same document) but gets its
+    own ``chunk_no``, so a retrieved chunk can always be traced back to its
+    source document and position.
+    """
+    from app import frontmatter
+    from app.schemas import DocumentChunk
+
+    max_chars, min_chars = opts.resolve(len(body))
+    pieces = chunk_markdown(
+        body,
+        max_chars=max_chars,
+        min_chars=min_chars,
+        split_level=opts.split_level,
+    )
+
+    slug = frontmatter.slugify(path.name)
+    out: list[DocumentChunk] = []
+    for piece in pieces:
+        chunk_no = f"{slug}_{piece.index:03d}"
+        chunk_fm = doc_fm.model_copy(update={"chunk_no": chunk_no})
+        rendered = render_chunk(piece)
+        out.append(
+            DocumentChunk(
+                chunk_no=chunk_no,
+                index=piece.index,
+                markdown=frontmatter.render(chunk_fm, rendered),
+                body=rendered,
+                frontmatter=chunk_fm,
+                heading_path=piece.heading_path,
+                chars=piece.chars,
+            )
+        )
+    return out
