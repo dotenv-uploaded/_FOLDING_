@@ -1,0 +1,59 @@
+flowchart TB
+
+    USER["🧑 사용자"]
+
+    subgraph DEVICE["사용자 기기"]
+        direction TB
+
+        subgraph APP["Electron 앱 〔우창 · codegate-2026-local〕"]
+            direction TB
+            UI["렌더러 · React/shadcn<br/>3분할 UI · 인용 배지 · diff 승인 모달<br/>execution 폴링 · Undo"]
+            MAIN["메인 (Node · 얇게)<br/>sidecar 수명주기 · OAuth 콜백 + safeStorage<br/>폴더 capability · 원본 열기"]
+            UI <-->|"IPC"| MAIN
+        end
+
+        subgraph SIDE["codegate-local sidecar (Python) 〔성주 · codegate-2026-agent〕 — loopback bind"]
+            direction TB
+            SDK["Claude Agent SDK<br/>app-owned read tools<br/>❌ 내장 Read/Edit/Write/Bash 비활성<br/>PreToolUse allowlist"]
+            WRITE["쓰기 경로 (결정적)<br/>exact diff → plan_hash → 승인<br/>→ backup → atomic replace<br/>→ outbox → Undo"]
+            WIKI["LLMWIKI WikiBuildService 〔용휘〕<br/>in-process · CAS build"]
+            D2M["doc2md 클라이언트 〔민규〕"]
+            SDK --> WRITE
+        end
+
+        ROOTS["로컬 디렉터리 (서로 비중첩)<br/>source/ 원본·정본 · source-md/ 정규화 md<br/>llmwiki-storage/ current.json + 불변 builds<br/>app-data/ SQLite · backup · session"]
+    end
+
+    subgraph CLOUD["클라우드"]
+        direction TB
+        SUPA["Supabase Auth<br/>OAuth · 이메일"]
+        BE["배포 Backend 〔성주〕<br/>JWKS 검증 · GET /auth/me"]
+        ANT["Anthropic API<br/>모델 추론 (사용자 API key)"]
+    end
+
+    USER <==> UI
+    MAIN ==>|"① OAuth · PKCE<br/>시스템 브라우저"| SUPA
+    MAIN ==>|"② cloud client (Bearer)<br/>신원·권한 확인"| BE
+    MAIN ==>|"③ sidecar 기동·health<br/>(클라이언트 분리)"| SIDE
+    UI ==>|"④ local sidecar client<br/>chat · approve · execution 폴링"| SDK
+    SDK <-->|"⑤ 추론"| ANT
+    D2M ==>|"⑥ 원본 → 정규화 md"| ROOTS
+    WIKI ==>|"⑦ 불변 빌드 · current.json 공개"| ROOTS
+    WRITE ==>|"⑧ 승인된 원본 변경<br/>md/txt만 · 바이너리 read-only"| ROOTS
+    ROOTS -.->|"⑨ 재변환 → 재빌드 → 새 VERSION"| D2M
+
+    classDef ui fill:#ece8f5,stroke:#6b5ca5,color:#463c6e
+    classDef side fill:#f0eefb,stroke:#6b5ca5,color:#3d3560,stroke-width:2px
+    classDef write fill:#f7ecdf,stroke:#b96a24,color:#7a4517,stroke-width:2px
+    classDef wiki fill:#e3f2ef,stroke:#0e8a7b,color:#0e5a50,stroke-width:2px
+    classDef cloud fill:#fdecec,stroke:#c05252,color:#8a3030
+    classDef roots fill:#e6edf5,stroke:#3d5a80,color:#27394f
+    classDef user fill:#fff,stroke:#888,color:#333
+
+    class USER user
+    class UI,MAIN ui
+    class SDK side
+    class WRITE write
+    class WIKI,D2M wiki
+    class SUPA,BE,ANT cloud
+    class ROOTS roots
