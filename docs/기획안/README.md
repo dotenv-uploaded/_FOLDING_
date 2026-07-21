@@ -1,4 +1,4 @@
-# CODEGATE 2026 — 제품 기획 개요 v2.0 (팀 계약 정합 개정판)
+# CODEGATE 2026 — 제품 기획 개요 v2.1 (팀 계약 정합 개정판)
 
 - 작성: 우창 · 위치: `codegate-2026-local/docs/기획안/`
 - 성격: **파생 문서**. 팀의 정본은 성주 레포의 계약 문서다.
@@ -11,6 +11,9 @@
 > 런타임·도구 경계·컴포넌트 소유권이 실제 구현과 어긋나 있었다. 전면 개정했다.
 > 폐기: TS 단일 런타임 · SDK 내장 도구 사용 · kordoc 파이프라인 · 프론트의 enrichment 직접 호출 ·
 > "서버=로그인·구독만" · "오프라인 동작" 표현.
+>
+> **v2.1**: 인증을 성주 구현 기준으로 정정(D9). 데스크톱 MVP는 `auth_mode=local`이라
+> **로그인 UI 없이 핵심 흐름이 완결**된다. 성주 레포는 수정하지 않는다.
 
 ---
 
@@ -38,9 +41,9 @@
 
 ```
 사용자 기기
-├─ Electron 앱 〔우창 · codegate-2026-local〕
+├─ Electron 앱 〔우창 · codegate-2026-local〕  ※ MVP는 로그인 없이 동작
 │    렌더러(React/shadcn) — UI · 인용 · diff 승인 · execution 폴링 · Undo
-│    메인(Node, 얇음) — sidecar 수명주기 · OAuth 콜백 · safeStorage · 폴더 capability
+│    메인(Node, 얇음) — sidecar 수명주기 · 폴더 capability · 원본 열기
 │
 └─ codegate-local sidecar (Python) 〔성주 · codegate-2026-agent〕  ← loopback bind
      Claude Agent SDK (app-owned read tools, 내장 Read/Edit/Write/Bash 비활성)
@@ -49,9 +52,8 @@
      승인·backup·atomic replace·outbox·Undo·SQLite journal
 
 클라우드
-├─ Supabase Auth — 프론트가 직접 로그인 (OAuth/이메일)
-├─ 배포 Backend 〔성주〕 — JWKS로 access token 검증, GET /auth/me
-└─ Anthropic API — 모델 추론 (사용자 소유 ANTHROPIC_API_KEY)
+├─ Anthropic API — 모델 추론 (사용자 소유 ANTHROPIC_API_KEY)  ※ 상시 필요
+└─ (선택 · 클라우드 계정 도입 시) Supabase Auth + 배포 Backend JWKS 검증
 ```
 
 ### 3.2 로컬 디렉터리 (서로 겹칠 수 없음)
@@ -103,8 +105,8 @@ source와 source-md를 같은 경로로 두면 frontmatter의 source SHA가 자�
 | D6 | 실제 write는 **UTF-8 Markdown/TXT만**. PDF·DOCX·HWP는 verified round-trip writer 전까지 read-only | 무손실 왕복이 검증되지 않은 포맷의 파괴적 변경 방지 (§8 제안 참조) |
 | D7 | 원본이 정본, 정규화 Markdown은 파생 | 책임이 한 방향으로 흐름 |
 | D8 | LLMWIKI `current.json`이 **유일한 활성 포인터**, `build-<hex>`는 불변 | split-brain 방지. Backend는 build ID별 read cache만 |
-| D9 | **로그인은 프론트가 Supabase Auth와 직접** 수행, Backend는 JWKS 검증만 | Backend가 password·refresh·service-role key를 보관하지 않음 |
-| D10 | UI = **Electron 데스크톱 앱** (렌더러 React/shadcn) | 로컬 파일 capability·sidecar 관리·OAuth 콜백을 네이티브로 처리 |
+| D9 | 인증은 성주 구현(`TokenAuthenticator`)을 **모드 선택으로 소비**. 데스크톱 MVP는 `auth_mode=local`(로그인 불필요), 클라우드 전환 시 `auth_mode=supabase` | 이미 4개 인증자·JWKS·마이그레이션·테스트가 구현돼 있음. Backend에 자체 OAuth 엔드포인트를 만들지 않음(ADR 0004가 secret 보관 중복으로 기각) |
+| D10 | UI = **Electron 데스크톱 앱** (렌더러 React/shadcn) | 로컬 파일 capability·sidecar 프로세스 관리·원본 열기를 네이티브로 처리 |
 | D11 | **Supabase 신원과 로컬 파일 capability 분리** | 로그인만으로 폴더 권한이 생기지 않음. capability는 OS 다이얼로그 범위에서 발생 |
 | D12 | sidecar는 **loopback만 bind**, 명시적 CORS origin, 클라이언트 2개 분리 | cloud identity와 local capability 경계 유지 |
 | D13 | LLMWIKI bundle은 **앱과 함께 배포·검증된 고정 bundle**만 실행 | 사용자 임의 폴더를 project root로 실행 금지 (신뢰 구성요소) |
@@ -112,7 +114,7 @@ source와 source-md를 같은 경로로 두면 frontmatter의 source SHA가 자�
 
 ## 6. MVP 범위
 
-**포함**: 로그인(OAuth) → 폴더 선택 → doc2md 변환 → LLMWIKI 빌드 → 질문·인용 답변(위치 찾기)
+**포함**: 폴더 선택(로그인 불필요 — `auth_mode=local`) → doc2md 변환 → LLMWIKI 빌드 → 질문·인용 답변(위치 찾기)
 → 변경 요청·diff·plan_hash 승인 → md/txt 실제 수정 → 재빌드 → Undo
 
 **제외**: 바이너리 포맷 쓰기, 멀티디바이스, 웹 UI, enrichment 기반 검색 확장(계약상 아직 로드 안 함),
