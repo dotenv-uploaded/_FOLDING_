@@ -14,13 +14,16 @@ import type {
   Root,
   ScanPreview,
   Session,
+  WikiGraph,
 } from '@contracts';
 import { AuthError, IPC_EVENTS } from '@contracts';
 import { AuthService, SafeStorageAuthStorage } from '@main/auth';
 import { SafeStorageLlmKeyStore, type LlmKeyStore } from '@main/auth/llm-key';
+import { ManagedLlmKeyStore, readInternalApiKey } from '@main/auth/internal-key';
 import { createConverter } from '@main/build/convert';
 import { LlmEnricher, MockEnricher } from '@main/build/enrich';
 import { createBuilderCore } from '@main/build/assemble';
+import { readWikiGraph } from '@main/build/graph';
 import { BuildService } from '@main/build/service';
 import { openDb, Store, type FileRow } from '@main/db/store';
 import { ApprovalBroker } from '@main/agent/approval';
@@ -31,6 +34,7 @@ import { buildTree } from '@main/tree';
 import { UserFacingError, logError, toUserMessage } from '@main/util/errors';
 import { ensureDir } from '@main/util/fsx';
 import { isInside, makeRootId, sourceUriToRelativePath, splitVirtualPath } from '@main/util/vpath';
+import { resolveRootSelection } from '@main/util/roots';
 import { FileWatcher, type WatchChange } from '@main/watcher';
 import { describeFile, indexRoot, scanPreview } from '@main/watcher/scan';
 import { SidecarClient } from '@main/sidecar/client';
@@ -120,7 +124,7 @@ export class AppServices {
   }
 
   static async create(options: ServicesOptions): Promise<AppServices> {
-    const authMode = process.env.CODEGATE_AUTH_MODE === 'supabase' ? 'supabase' : 'local';
+    const authMode = process.env.CODEGATE_AUTH_MODE === 'cloud' ? 'cloud' : 'local';
     const cloudApiUrl =
       process.env.CODEGATE_CLOUD_API_URL ??
       process.env.CODEGATE_BACKEND_URL ??
@@ -129,7 +133,21 @@ export class AppServices {
     await ensureDir(wikiDir);
     const store = new Store(openDb(path.join(options.userDataDir, 'codegate.db')));
     store.clearStaleStreaming();
-    const llmKeys = new SafeStorageLlmKeyStore(options.userDataDir);
+    /*
+     * 문서 분석 키는 **구독에 포함**된다 — 사용자는 발급받지도 입력하지도 않는다.
+     * 내부 키가 있으면 그것이 이기고, 없으면 예전처럼 사용자가 넣어 둔 키로 폴백한다.
+     * (내부 키를 설치본에 심는 것은 임시 배선이다 — 근거는 internal-key.ts 주석 참고)
+     */
+    const internalApiKey = readInternalApiKey(process.env);
+    const llmKeys = new ManagedLlmKeyStore(
+      new SafeStorageLlmKeyStore(options.userDataDir),
+      internalApiKey,
+    );
+    console.info(
+      internalApiKey
+        ? '[codegate:llm] 구독 키(내부)로 동작합니다 — 사용자 키 입력 단계 없음.'
+        : '[codegate:llm] 내부 키가 없습니다. 설정에 저장된 사용자 키로 폴백합니다.',
+    );
 
     /*
      * sidecar 수명주기 (스펙 v2.1 §1 L2).
@@ -156,8 +174,6 @@ export class AppServices {
     const auth = new AuthService({
       authMode,
       cloudApiUrl,
-      supabaseUrl: process.env.CODEGATE_SUPABASE_URL,
-      supabasePublishableKey: process.env.CODEGATE_SUPABASE_PUBLISHABLE_KEY,
       store: new SafeStorageAuthStorage(options.userDataDir),
       onSessionChanged: (session: Session) => options.send(IPC_EVENTS.sessionChanged, session),
     });
@@ -197,7 +213,7 @@ export class AppServices {
       onFilesChanged: () => self?.emitTree(),
       // 구독 검사는 빌드 시작 전에 (스펙 v1.4 §5)
       ensureSubscription: async () => {
-        if (authMode === 'supabase') await auth.ensureActiveSubscription();
+        if (authMode === 'cloud') await auth.ensureActiveSubscription();
       },
       onAuthError: (error: AuthError) => auth.handleAuthError(error),
     });
@@ -279,20 +295,38 @@ export class AppServices {
     return preview;
   }
 
+  /**
+   * 문서 폴더를 등록한다. **여러 개를 등록할 수 있고, 겹치면 최상위만 남는다.**
+   *
+   * 겹치는 폴더를 그대로 두면 같은 파일이 두 번 인덱싱되어 위키에 중복 문서가 생기고,
+   * 인용이 어느 쪽을 가리키는지 알 수 없게 된다. 그래서 표현이 아니라 **저장 단계에서**
+   * 정리한다 (`resolveRootSelection`).
+   */
   async addRoot(rootPath: string): Promise<Root> {
     const existing = this.store.listRoots();
     try {
-      if (existing.length > 0 && existing[0]?.path !== rootPath) {
-        throw new UserFacingError(
-          '현재 버전은 문서 폴더 하나만 연결할 수 있습니다. 기존 폴더를 제거한 뒤 다시 선택해 주세요.',
-        );
-      }
-      if (existing[0]?.path === rootPath) {
+      const selection = resolveRootSelection(
+        existing.map((root) => root.path),
+        [rootPath],
+      );
+
+      // 이미 등록된 폴더 안에 있으면 새로 넣지 않고, 문서만 다시 확인한다.
+      if (selection.alreadyCovered.length > 0) {
+        const covering =
+          existing.find((root) => root.path === rootPath) ??
+          existing.find((root) => isInside(root.path, rootPath));
         this.requestKnowledgeSync(
           this.chat.busy ? '현재 답변이 끝나면 문서를 다시 확인합니다' : '문서를 다시 확인하는 중',
         );
-        return existing[0];
+        if (covering) return covering;
       }
+
+      // 상위 폴더를 고른 경우 — 흡수된 하위 폴더들을 먼저 걷어낸다.
+      for (const absorbed of selection.replaced) {
+        const stale = existing.find((root) => root.path === absorbed);
+        if (stale) this.store.removeRoot(stale.id);
+      }
+
       const preview = this.scanPreviews.get(rootPath);
       const root: Root = {
         id: makeRootId(rootPath),
@@ -306,7 +340,9 @@ export class AppServices {
       const pendingRows = (preview?.included ?? []).map((relativePath) =>
         pendingFileRow(root.id, root.path, relativePath),
       );
-      await this.watcher.sync([root]);
+      // 남아 있는 폴더 전부를 감시한다 — 새로 넣은 것만 감시하면 기존 폴더의 변경을 놓친다.
+      const kept = this.store.listRoots().filter((r) => r.path !== root.path);
+      await this.watcher.sync([...kept, root]);
       this.store.replaceRootFiles(root, pendingRows);
       this.syncAgentRoots();
       this.emitTree();
@@ -359,6 +395,24 @@ export class AppServices {
     this.options.send(IPC_EVENTS.treeChanged, this.getTree());
   }
 
+  /**
+   * 활성 위키 빌드의 지식 그래프.
+   *
+   * 저장 경로는 sidecar 런타임과 같은 규칙으로 정한다 — 그래야 sidecar 가 만든 빌드를
+   * 그대로 읽는다. 빌드가 없으면 빈 그래프가 나오고, 화면은 그 사실을 그대로 보여준다.
+   */
+  async getWikiGraph(): Promise<WikiGraph> {
+    const root = this.store.listRoots()[0];
+    const runtime = sidecarRuntimePaths(this.options, root?.path ?? '');
+    return readWikiGraph({
+      storageRoot: runtime.llmwikiStorageRoot,
+      // 런타임 설정에서 비어 있으면 sidecarRuntimePaths 와 같은 기본값을 쓴다 —
+      // 여기서만 다른 값을 쓰면 sidecar 가 쓴 빌드를 못 찾는다.
+      tenantId: runtime.tenantId ?? 'local',
+      wikiId: runtime.wikiId ?? 'workspace',
+    });
+  }
+
   /** 가상 경로(`<rootId>/<상대경로>`) → 원본 절대경로. 등록 폴더 밖이면 null. */
   resolveOriginal(virtualPath: string): string | null {
     const roots = this.store.listRoots();
@@ -387,15 +441,15 @@ export class AppServices {
     return summary;
   }
 
+  /**
+   * 채팅은 **문서 준비 상태와 무관하게 항상 받는다.**
+   *
+   * 예전에는 준비가 끝나지 않으면 질문 자체를 거부했다. 그런데 위키 빌드는 불변이라
+   * 새 빌드를 만드는 중에도 **직전 활성 빌드로 답할 수 있고**, 준비가 실패하면 영영
+   * 질문할 수 없는 막다른 길이 됐다. 근거가 없으면 에이전트가 "위키에서 확인되지 않음"
+   * 이라고 답하므로, 막는 것보다 답하게 두는 편이 정직하고 쓸모 있다.
+   */
   sendChat(conversationId: string, text: string): { messageId: string } {
-    const state = this.currentBuildState;
-    if (state?.buildId === 'knowledge-sync' && state.status !== 'done') {
-      throw new UserFacingError(
-        state.status === 'failed'
-          ? (state.error ?? '문서 검색 엔진을 준비하지 못했습니다.')
-          : '문서 검색 엔진을 준비하고 있습니다. 완료된 뒤 다시 질문해 주세요.',
-      );
-    }
     return this.chat.send(conversationId, text);
   }
 

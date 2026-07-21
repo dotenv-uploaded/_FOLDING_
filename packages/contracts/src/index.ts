@@ -237,6 +237,45 @@ export interface ChatMessage {
   /** 스트리밍이 아직 진행 중인지 */
   streaming?: boolean;
   execution?: ExecutionSummary;
+  /**
+   * 이 답변이 승인을 거쳐 손댄 문서의 경로 (`ApprovalRequest.target` 과 같은 값).
+   * 답변에서 그 문서를 바로 열거나 폴더에서 찾아보게 하기 위한 것이다.
+   * 승인 요청 자체가 없었으면 비어 있다.
+   */
+  changedPath?: string;
+}
+
+/* ---- 지식 그래프 (활성 위키 빌드의 manifest + links) ---- */
+
+export interface WikiGraphNode {
+  /** 문서 식별자 — 엣지가 이 값으로 노드를 가리킨다 */
+  docId: string;
+  title: string;
+  /** regulation · policy · contract · report … 색 구분에 쓴다 */
+  docType: string;
+  /** active · draft · archived · superseded */
+  status: string;
+  /**
+   * 원본 파일을 가리키는 URI. **트리에서 고른 파일과 그래프 노드를 잇는 유일한 열쇠다.**
+   * 변환 단계에서 원본을 확인하지 못하면 비어 있을 수 있다.
+   */
+  sourceUri?: string;
+  sourceFilename?: string;
+  summary?: string;
+}
+
+export interface WikiGraphEdge {
+  from: string;
+  to: string;
+  /** references · implements · implemented_by · based_on · supersedes · superseded_by */
+  relationType: string;
+}
+
+export interface WikiGraph {
+  /** 활성 build id. 빌드가 없으면 `null` 이고 노드·엣지도 비어 있다. */
+  buildId: string | null;
+  nodes: WikiGraphNode[];
+  edges: WikiGraphEdge[];
 }
 
 export interface ExecutionSummary {
@@ -264,6 +303,7 @@ export const IPC = {
   // L4/L2 — 폴더
   rootsList: 'roots:list',
   rootsPickDialog: 'roots:pickDialog',
+  rootsPickDialogMulti: 'roots:pickDialogMulti',
   rootsScanPreview: 'roots:scanPreview',
   rootsAdd: 'roots:add',
   rootsRemove: 'roots:remove',
@@ -300,6 +340,11 @@ export const IPC = {
 
   // L1 — 인용 클릭 시 원본 열기
   openOriginal: 'shell:openOriginal',
+  /** L1 — 원본을 파일 탐색기에서 선택된 채로 보여준다 (백업 `.bak` 을 찾을 수 있게) */
+  revealOriginal: 'shell:revealOriginal',
+
+  // L1 — 활성 빌드의 지식 그래프 (그래프 탭)
+  wikiGraph: 'wiki:graph',
 } as const;
 
 /** 메인 → 렌더러 (webContents.send, 단방향 푸시) */
@@ -419,6 +464,11 @@ export interface LlmKeyStatus {
   configured: boolean;
   /** 끝 4자리 (예: `…8f2a`). 설정돼 있을 때만. */
   hint?: string;
+  /**
+   * 앱이 구독의 일부로 직접 공급하는 키.
+   * 사용자가 입력하지도, 지우지도 못한다 — 화면은 입력폼 대신 안내만 보여준다.
+   */
+  managed?: boolean;
 }
 
 /** 키 저장 요청. 메인이 safeStorage 로 암호화해 보관한다. */
@@ -427,9 +477,14 @@ export interface LlmKeyInput {
   apiKey: string;
 }
 
-/** enrichment 키가 없어 빌드를 시작할 수 없을 때 쓰는 문장. */
+/**
+ * 문서 분석용 LLM 키를 구하지 못해 빌드를 시작할 수 없을 때 쓰는 문장.
+ *
+ * 키는 구독에 포함돼 앱이 내부적으로 공급한다(스펙 v2.4). 사용자가 할 수 있는 일이
+ * 없으므로 "키를 입력하라"고 하지 않는다.
+ */
 export const LLM_KEY_MISSING_MESSAGE =
-  '문서 분석에 쓸 LLM API 키가 없습니다. 설정에서 키를 입력하면 빌드를 시작할 수 있어요.';
+  '문서 분석 서비스에 연결하지 못했습니다. 구독 상태를 확인하거나 잠시 후 다시 시도해 주세요.';
 
 /** 인증/구독 오류 — 로그인·구독 확인 시 발생한다 (스펙 v1.4 §1 각주). */
 export class AuthError extends Error {
@@ -458,7 +513,7 @@ export type AuthErrorKind = 'unauthenticated' | 'subscription_expired' | 'not_pr
 export const AUTH_ERROR_MESSAGE: Record<AuthErrorKind, string> = {
   unauthenticated: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
   subscription_expired: '구독이 만료되었습니다. 구독을 갱신하면 빌드를 이어갈 수 있어요.',
-  not_provisioned: '계정에 CODEGATE 작업 권한이 아직 연결되지 않았습니다.',
+  not_provisioned: '계정에 Folding 작업 권한이 아직 연결되지 않았습니다.',
 };
 
 /** 위키에서 근거를 찾지 못했을 때 에이전트가 쓰는 고정 문구 (AGENT_GUIDE 규칙). */

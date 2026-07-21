@@ -1,15 +1,18 @@
-import { FolderOpen, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { FolderOpen, Plus, Trash2 } from 'lucide-react';
 import type { Session } from '@contracts';
 import type { useWorkspace } from '@/state/useWorkspace';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/ui/Dialog';
 import { Button } from '@/ui/Button';
 import { Badge } from '@/ui/Badge';
-import { LlmKeyForm } from '@/components/LlmKeyForm';
-import { useLlmKey } from '@/state/useLlmKey';
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
-/** 설정 — 구독 상태 · 등록 폴더 관리 · Anthropic 자격증명 (스펙 v1.3 §3). */
+/**
+ * 설정 — 계정·구독 상태와 등록 폴더 관리 (스펙 v2.4).
+ *
+ * 문서 분석 키 입력란은 없다. 토큰은 구독으로 우리가 내므로 사용자가 키를 넣을 일이 없다.
+ * 키는 메인 프로세스의 ManagedLlmKeyStore 가 환경변수에서 공급한다.
+ */
 export function SettingsScreen({
   open,
   onClose,
@@ -23,8 +26,6 @@ export function SettingsScreen({
   workspace: Workspace;
   onLogout: () => Promise<void>;
 }) {
-  const llmKey = useLlmKey();
-
   async function addFolder() {
     const path = await workspace.pickFolder();
     if (!path) return;
@@ -96,33 +97,6 @@ export function SettingsScreen({
                 </li>
               )}
             </ul>
-          </section>
-
-          {/* ── 자격증명 ② — enrichment LLM 키 (스펙 v1.4 §5) ── */}
-          <section>
-            <h3 className="fold-eyebrow mb-3">문서 분석 LLM 키</h3>
-            <LlmKeyForm keys={llmKey.keys} onSave={llmKey.save} onClear={llmKey.clear} />
-          </section>
-
-          {/* ── 자격증명 ③ — Anthropic (SDK 추론). ①·②와 절대 섞지 않는다 ── */}
-          <section>
-            <h3 className="fold-eyebrow mb-3">Anthropic 자격증명</h3>
-            <div className="flex items-start gap-3 rounded-md border border-ink-100 bg-ink-50 px-4 py-3.5">
-              <KeyRound size={16} className="mt-0.5 shrink-0 text-ink-400" />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs leading-relaxed text-ink-600">
-                  채팅 추론에 쓰이는 Anthropic 자격증명은 환경변수{' '}
-                  <code className="rounded-xs bg-ink-150 px-1 py-0.5 font-mono text-2xs text-ink-700">
-                    ANTHROPIC_API_KEY
-                  </code>{' '}
-                  로 주입됩니다.
-                </p>
-                <p className="mt-1.5 text-2xs leading-relaxed text-ink-400">
-                  위의 문서 분석 키, 로그인 계정과는 각각 별개의 자격증명입니다. 앱에 저장하지
-                  않습니다.
-                </p>
-              </div>
-            </div>
           </section>
         </div>
 
