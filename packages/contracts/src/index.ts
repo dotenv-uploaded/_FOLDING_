@@ -291,6 +291,10 @@ export const IPC = {
   executionRetry: 'execution:retry',
   executionUndo: 'execution:undo',
 
+  // L2 — sidecar 프로세스 수명주기 (스펙 v2.1 §1 L2)
+  sidecarState: 'sidecar:state',
+  sidecarRestart: 'sidecar:restart',
+
   // L1 — 승인 모달 응답
   approvalRespond: 'approval:respond',
 
@@ -307,7 +311,47 @@ export const IPC_EVENTS = {
   buildState: 'build:state:changed',
   treeChanged: 'tree:changed',
   sessionChanged: 'auth:session:changed',
+  /** sidecar 기동·재기동 상태 — 엔진이 준비되기 전 UI 가 멈춘 듯 보이지 않게 한다 */
+  sidecarState: 'sidecar:state:changed',
 } as const;
+
+/* ---------------------------------------------------------------------------
+ * sidecar 프로세스 수명주기 (스펙 v2.1 §1 L2)
+ *
+ * 앱이 `codegate-local` 을 직접 띄우고 지켜본다. 렌더러는 상태만 보며
+ * 프로세스를 직접 다루지 않는다.
+ * ------------------------------------------------------------------------- */
+
+export type SidecarStatus =
+  | 'external'
+  | 'stopped'
+  | 'starting'
+  | 'ready'
+  | 'unhealthy'
+  | 'crashed'
+  | 'restarting';
+
+export interface SidecarLifecycleState {
+  status: SidecarStatus;
+  /** `http://127.0.0.1:<port>` — 포트는 기동 전에 미리 잡으므로 값이 먼저 정해진다 */
+  baseUrl: string | null;
+  /** 사용자에게 그대로 보여줄 문장 */
+  message: string;
+  error?: string;
+  /** 비정상 종료 후 되살린 횟수 */
+  restarts: number;
+  updatedAt: string;
+}
+
+export const SIDECAR_STATUS_MESSAGE: Record<SidecarStatus, string> = {
+  external: '외부 엔진에 연결했습니다.',
+  stopped: '엔진이 꺼져 있습니다.',
+  starting: '엔진을 준비하는 중…',
+  ready: '준비됨',
+  unhealthy: '엔진이 응답하지 않습니다.',
+  crashed: '엔진이 예기치 않게 종료됐습니다.',
+  restarting: '엔진을 다시 시작하는 중…',
+};
 
 /** IPC로 오가는 AgentEvent 봉투 — 어느 대화의 이벤트인지 식별. */
 export interface AgentEventEnvelope {

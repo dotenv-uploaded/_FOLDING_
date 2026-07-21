@@ -31,10 +31,12 @@ import { isInside, makeRootId, splitVirtualPath } from '@main/util/vpath';
 import { FileWatcher, type WatchChange } from '@main/watcher';
 import { describeFile, indexRoot, scanPreview } from '@main/watcher/scan';
 import { SidecarClient } from '@main/sidecar/client';
+import { SidecarSupervisor } from '@main/sidecar/supervisor';
 import { executionSummary } from '@main/agent/sidecar-agent';
 
 const DEFAULT_CLOUD_API_URL = 'http://127.0.0.1:8787/api/v1';
-const DEFAULT_SIDECAR_URL = 'http://127.0.0.1:8000/api/v1';
+// sidecar 주소는 더 이상 고정값이 아니다 — SidecarSupervisor 가 빈 포트를 잡아 정한다.
+// 이미 떠 있는 엔진에 붙으려면 CODEGATE_SIDECAR_URL 로 지정한다.
 
 export interface ServicesOptions {
   /** `app.getPath('userData')` */
@@ -56,6 +58,8 @@ export class AppServices {
   /** 자격증명 ② — enrichment LLM 키. IPC 핸들러가 이 객체만 만진다. */
   readonly llmKeys: LlmKeyStore;
   readonly sidecar: SidecarClient;
+  /** L2 — sidecar 프로세스를 띄우고 지켜본다 (스펙 v2.1 §1 L2). */
+  readonly supervisor: SidecarSupervisor;
   /** `~/.codegate/wiki` — `AgentDeps.config.wikiDir` 로 주입된다. */
   readonly wikiDir: string;
 
@@ -77,6 +81,7 @@ export class AppServices {
       agentSource: AgentSource;
       llmKeys: LlmKeyStore;
       sidecar: SidecarClient;
+      supervisor: SidecarSupervisor;
       wikiDir: string;
       agentRoots: string[];
     },
@@ -90,6 +95,7 @@ export class AppServices {
     this.agentSource = parts.agentSource;
     this.llmKeys = parts.llmKeys;
     this.sidecar = parts.sidecar;
+    this.supervisor = parts.supervisor;
     this.wikiDir = parts.wikiDir;
     this.agentRoots = parts.agentRoots;
   }
@@ -99,7 +105,23 @@ export class AppServices {
       process.env.CODEGATE_CLOUD_API_URL ??
       process.env.CODEGATE_BACKEND_URL ??
       DEFAULT_CLOUD_API_URL;
-    const sidecarUrl = process.env.CODEGATE_SIDECAR_URL ?? DEFAULT_SIDECAR_URL;
+    /*
+     * sidecar 수명주기 (스펙 v2.1 §1 L2).
+     *
+     * `CODEGATE_SIDECAR_URL` 이 있으면 이미 떠 있는 엔진에 붙기만 하고 spawn 하지 않는다
+     * (개발 중 수동 실행 등 — 남의 프로세스를 관리하려 들지 않는다).
+     * 없으면 우리가 빈 포트를 잡아 직접 띄우고, 죽으면 되살리고, 앱 종료 시 함께 내린다.
+     *
+     * prepare() 를 먼저 불러 URL 을 확정한 뒤 클라이언트를 만든다 — 포트를 미리 잡아 두면
+     * 재기동해도 URL 이 바뀌지 않아 이미 만들어진 클라이언트가 그대로 유효하다.
+     */
+    const supervisor = new SidecarSupervisor({
+      corsOrigin: process.env['ELECTRON_RENDERER_URL'] ?? 'app://codegate',
+      externalUrl: process.env.CODEGATE_SIDECAR_URL,
+      onState: (state) => options.send(IPC_EVENTS.sidecarState, state),
+    });
+    const sidecarOrigin = await supervisor.prepare();
+    const sidecarUrl = supervisor.managed ? `${sidecarOrigin}/api/v1` : sidecarOrigin;
     const sidecar = new SidecarClient(sidecarUrl);
     // v1.4: 조립 스테이징은 wikiDir 안에서 일어난다 (stagingDirFor) — 별도 tmpDir 불필요
     const wikiDir = path.join(options.homeDir, '.codegate', 'wiki');
@@ -200,6 +222,7 @@ export class AppServices {
       agentSource: source,
       llmKeys,
       sidecar,
+      supervisor,
       wikiDir,
       agentRoots,
     });
@@ -207,6 +230,14 @@ export class AppServices {
 
     services.syncAgentRoots();
     await watcher.sync(store.listRoots());
+
+    /*
+     * sidecar 기동은 **기다리지 않는다**. 엔진이 없거나 느려도 창은 즉시 떠야 하고,
+     * 진행 상황은 IPC_EVENTS.sidecarState 로 흘러 UI 가 "준비 중"을 보여준다.
+     * 여기서 await 하면 엔진이 없는 환경에서 앱이 30초간 하얗게 멈춘다.
+     */
+    void supervisor.start().catch((err: unknown) => logError('sidecar:start', err));
+
     return services;
   }
 
@@ -298,6 +329,8 @@ export class AppServices {
     this.approval.rejectAll();
     this.chat.abortAll();
     await this.watcher.close();
+    // 파이썬을 고아 프로세스로 남기지 않는다 (스펙 v2.1 §1 L2)
+    await this.supervisor.stop().catch((err: unknown) => logError('sidecar:stop', err));
     this.store.close();
   }
 
