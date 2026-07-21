@@ -117,9 +117,14 @@ def wrap_long_lines(text: str, limit: int = MAX_LINE_CHARS) -> str:
     arbitrary offset. Breaking it here, at a sentence boundary, means the cut
     lands where a reader would already have paused.
 
-    **Table rows and fenced code are left alone.** A markdown row split across
-    two lines stops being a table, which would undo repair_tables; code is
-    whitespace-significant. Both are structural units that a line break destroys.
+    The cap is unconditional, **including table rows**: a row longer than the
+    limit is wrapped even though its continuation lines no longer parse as part
+    of the table. That is a deliberate trade — the limit matters more than the
+    row staying machine-readable — and it affects few rows (16 in the corpus).
+    Rows at or under the limit are untouched, so repair_tables' work stands.
+
+    Fenced code is the one exemption, because whitespace there carries meaning
+    and a wrap would change what the code does.
     """
     out: list[str] = []
     fence: str | None = None
@@ -130,7 +135,7 @@ def wrap_long_lines(text: str, limit: int = MAX_LINE_CHARS) -> str:
             fence = None if fence and line.strip().startswith(fence) else fence or token
             out.append(line)
             continue
-        if fence is not None or len(line) <= limit or _is_table_row(line):
+        if fence is not None or len(line) <= limit:
             out.append(line)
             continue
         out.extend(_wrap_one(line, limit))

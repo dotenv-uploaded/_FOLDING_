@@ -60,19 +60,20 @@ def test_unbroken_run_is_still_capped():
 # --------------------------------------------------------------------------
 
 
-def test_long_table_rows_are_never_split():
-    """Splitting a row stops it being a table — that would undo repair_tables."""
+def test_overlong_table_rows_are_wrapped_too():
+    """The cap is unconditional; a row over it is wrapped like anything else."""
     row = "| " + "셀 내용 " * 200 + "|"
     assert len(row) > MAX_LINE_CHARS
-    assert wrap_long_lines(row) == row
+    out = wrap_long_lines(row)
+
+    assert widest(out) <= MAX_LINE_CHARS
+    assert re.sub(r"\s+", "", out) == re.sub(r"\s+", "", row)
 
 
-def test_table_survives_wrapping_intact():
-    md = "| 항목 | " + "긴 설명 " * 150 + "|\n| --- | --- |\n| 재료비 | 1,000 |"
-    out = wrap_long_lines(md)
-
-    assert out == md
-    assert all(line.startswith("|") for line in out.splitlines())
+def test_table_rows_within_the_cap_are_untouched():
+    """repair_tables' output stands wherever the limit is not exceeded."""
+    md = "| 항목 | 금액 |\n| --- | --- |\n| 재료비 | 1,000 |"
+    assert wrap_long_lines(md) == md
 
 
 def test_fenced_code_is_left_alone():
@@ -88,7 +89,8 @@ def test_wrapping_is_idempotent():
     assert wrap_long_lines(once) == once
 
 
-def test_real_corpus_has_no_overlong_prose_line():
+def test_real_corpus_has_no_line_over_the_cap():
+    """Unconditional: nothing in the published output exceeds the limit."""
     from pathlib import Path
 
     out_dir = Path("output")
@@ -96,7 +98,4 @@ def test_real_corpus_has_no_overlong_prose_line():
         return
     for f in sorted(out_dir.rglob("*.md")):
         for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-            if len(line) > MAX_LINE_CHARS:
-                assert line.strip().startswith("|"), (
-                    f"{f.name}:{i} is {len(line)} chars and is not a table row"
-                )
+            assert len(line) <= MAX_LINE_CHARS, f"{f.name}:{i} is {len(line)} chars"
