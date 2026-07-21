@@ -8,11 +8,12 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from codegate_api.api import auth_session, change_plans, chat, demo, documents, executions, health
 from codegate_api.config import Settings, get_settings
 from codegate_api.container import build_container
+from codegate_api.docs_page import render_api_docs
 from codegate_api.rate_limit import FixedWindowRateLimiter
 from codegate_api.request_limits import RequestBodyLimitMiddleware
 
@@ -61,6 +62,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(
         title=application_settings.app_name,
         version="0.2.0",
+        docs_url=None,
+        redoc_url=None,
         lifespan=lifespan,
     )
     application.state.container = container
@@ -146,6 +149,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         RequestBodyLimitMiddleware,
         max_bytes=application_settings.max_request_bytes,
     )
+
+    @application.get("/", include_in_schema=False)
+    async def api_root() -> RedirectResponse:
+        return RedirectResponse(url="/docs", status_code=307)
+
+    @application.get("/docs", include_in_schema=False)
+    async def api_docs() -> Response:
+        return render_api_docs(
+            app_name=application.title,
+            version=application.version,
+            schema=application.openapi(),
+        )
 
     application.include_router(health.router, prefix="/api/v1")
     application.include_router(auth_session.router, prefix="/api/v1")

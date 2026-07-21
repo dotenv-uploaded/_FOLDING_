@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,7 @@ def test_supabase_and_railway_contract_files_are_fail_closed() -> None:
     )
     env_example = Path(".env.example").read_text(encoding="utf-8")
     railway = Path("railway.toml").read_text(encoding="utf-8")
+    railway_config = tomllib.loads(railway)
 
     assert "grant usage on schema public to supabase_auth_admin" in migration
     assert "references public.codegate_user_access(user_id) on delete cascade" in migration
@@ -174,3 +176,5 @@ def test_supabase_and_railway_contract_files_are_fail_closed() -> None:
     assert "CODEGATE_CLAUDE_MODEL" in env_example
     assert "multiRegionConfig" not in railway
     assert "--workers" not in railway
+    assert railway_config["deploy"]["startCommand"].startswith("sh -c ")
+    assert "${PORT:-8000}" in railway_config["deploy"]["startCommand"]

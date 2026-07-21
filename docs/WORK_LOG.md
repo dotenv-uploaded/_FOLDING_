@@ -1,5 +1,25 @@
 # 작업 로그
 
+## 2026-07-22 — Railway Backend·doc2md 통합 데모 배포
+
+- 목적: Claude Sonnet Backend와 doc2md v0.2를 하나의 공개 API 뒤에서 Railway로 검증
+- 변경:
+  - Railway `codegate-backend/backend` 서비스와 `/data` 영구 volume 구성
+  - 같은 project에 private `doc2md` service를 추가하고 authenticated bytes transport로 연결
+  - development/demo auth, Claude Sonnet, 프런트 CORS, 읽기 전용 문서 권한을 환경변수로 설정
+  - Railway start command가 `$PORT`를 literal로 전달하던 문제를 `sh -c`와 `${PORT:-8000}`으로 수정
+  - 외부 Swagger CDN 없이 endpoint를 보여주는 자체 `/docs`와 root redirect 추가
+  - start command, docs 화면과 배포 topology 회귀 테스트·장애 기록 추가
+- 검증: Railway 두 image build와 healthcheck, doc2md synthetic bytes 변환의 SHA·section·version,
+  Backend `converter_available=true`, `/docs` 200, anonymous 401, demo read-only scope와 실제 Sonnet
+  근거 요약 HTTP 200을 확인했다. Ruff format/check, mypy와 pytest 211개도 통과했고 coverage는 85%다.
+- 전달 상태: `backend`와 `doc2md` 모두 `SUCCESS`/`RUNNING`이다. 공개 주소는
+  `https://backend-production-724c.up.railway.app` 하나이고 doc2md public domain은 제거했다.
+- 결정: 운영 형태는 Backend public gateway + private Converter process로 두되 사용자에게는 단일
+  API로 제공한다. Supabase·실 corpus가 준비되기 전에는 development/demo auth와 write 0건을 유지한다.
+- 남은 일: Supabase custom claims와 실제 volume knowledge release를 준비한 뒤 production fail-closed
+  설정으로 전환하고 대형 PDF/HWP CPU 성능을 측정한다.
+
 ## 2026-07-22 — Claude Agent SDK prompt contract와 근거 검증 강화
 
 - 목적: Claude Agent SDK의 문서 routing·exact change prompt를 현재 turn의 실제 도구 근거와 결박하고,

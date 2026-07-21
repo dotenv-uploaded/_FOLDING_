@@ -149,6 +149,21 @@ def test_chat_locates_document_with_evidence(client: TestClient) -> None:
     assert response.headers["X-Request-ID"]
 
 
+def test_api_root_redirects_to_self_contained_docs(client: TestClient) -> None:
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code == 307
+    assert root.headers["location"] == "/docs"
+
+    docs = client.get("/docs")
+    assert docs.status_code == 200
+    assert docs.headers["cache-control"] == "no-store"
+    assert "cdn.jsdelivr.net" not in docs.text
+    assert "<script" not in docs.text
+    assert "/api/v1/health" in docs.text
+    assert "/api/v1/chat/messages" in docs.text
+    assert "/openapi.json" in docs.text
+
+
 def test_chat_returns_structured_not_found(client: TestClient) -> None:
     response = client.post(
         "/api/v1/chat/messages",

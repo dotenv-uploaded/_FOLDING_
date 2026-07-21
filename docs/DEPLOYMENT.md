@@ -42,6 +42,13 @@ Backend adapter는 doc2md v0.2 `POST /v2/convert`를 사용한다. 배치 방식
 `GET /health?deep=1`로 synthetic 변환과 OCR·보안 설정을 확인하고, 이어서 Backend가 선택한
 transport로 synthetic source를 한 번 변환해야 배포 완료로 본다.
 
+현재 Railway 데모는 같은 `codegate-backend` project의 `backend`와 `doc2md` 두 service로
+구성한다. public domain은 Backend에만 연결하고 doc2md는
+`http://doc2md.railway.internal:8080`에서만 접근한다. Uvicorn 기반 doc2md는 Railway private
+network의 IPv4/IPv6를 함께 받도록 빈 host에 bind한다. 사용자는 하나의 Backend URL만 사용하지만
+OCR process와 API process는 독립 배포해 자원과 장애를 격리한다. 이 선택의 근거는
+[ADR 0007](adr/0007-railway-backend-doc2md-topology.md)에 기록한다.
+
 ## 3. 필수 환경변수
 
 ```text
@@ -79,5 +86,8 @@ deterministic agent, 누락된 Claude model ID, local demo bootstrap, 누락된 
 5. source hash, backup, 새 revision·section citation, graph version 변경을 확인한다.
 6. vector stage failure를 주입할 수 있는 staging에서 이전 version 유지와 retry-sync를 확인한다.
 7. Undo 후 원본 byte와 새 graph version을 확인한다.
+
+데모 배포에서는 `/docs`가 외부 CDN 없이 렌더되는지, `/`가 `/docs`로 이동하는지도 확인한다.
+Swagger UI asset CDN이 차단된 브라우저에서도 endpoint 목록과 OpenAPI JSON 링크가 보여야 한다.
 
 실제 production migration, volume 변경, deployment와 restart는 자동 수행하지 않는다.

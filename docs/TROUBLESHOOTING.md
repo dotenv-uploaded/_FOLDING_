@@ -1,5 +1,60 @@
 # 트러블슈팅 기록
 
+## 2026-07-22 — `/docs`는 200이지만 브라우저에 Swagger UI가 보이지 않음
+
+### 상황과 영향
+
+Railway Backend의 `/docs`와 `/openapi.json`은 각각 200이었지만 사용자 브라우저에서는 문서 화면이
+열리지 않았다. API endpoint를 발견하고 확인할 경로가 없어 base URL의 정상 404도 서버 장애처럼
+보였다.
+
+### 증거와 원인
+
+기본 FastAPI docs HTML은 CSS와 JavaScript를 `cdn.jsdelivr.net`에서 내려받았다. 서버 HTML과
+OpenAPI schema는 정상이지만 browser/network policy가 외부 CDN을 차단하면 빈 문서 shell만 남는다.
+
+### 해결과 검증
+
+FastAPI 기본 Swagger/Redoc route를 끄고 OpenAPI schema에서 endpoint 목록을 만드는 self-contained
+HTML `/docs`를 추가했다. 페이지는 inline CSS 외에 외부 asset이나 JavaScript가 없고 `/`는 `/docs`로
+이동한다. TestClient에서 redirect, no-store, endpoint 목록, CDN·script 부재를 검증한다.
+
+### 재발 방지와 남은 위험
+
+배포 smoke에 `/`, `/docs`, `/openapi.json`을 포함한다. 향후 interactive API console이 필요하면
+외부 CDN을 다시 참조하지 말고 version과 license를 고정한 asset을 직접 제공한다.
+
+## 2026-07-22 — Railway startCommand에서 `$PORT`가 확장되지 않아 컨테이너 반복 종료
+
+### 상황과 영향
+
+Railway Backend 첫 배포에서 Docker image build와 push는 성공했지만 healthcheck가 30초 동안 503을
+반환했고 배포가 실패했다. 인스턴스는 시작 직후 제거되어 API를 제공하지 못했다.
+
+### 기대와 실제
+
+- 기대: `uvicorn ... --port $PORT`가 Railway의 동적 포트에서 서버를 시작한다.
+- 실제: Railway가 `railway.toml`의 start command를 shell expansion 없이 전달해 Uvicorn이
+  `'$PORT' is not a valid integer`로 종료됐다.
+
+### 증거와 원인
+
+배포 로그에서 volume mount는 정상 완료됐지만 모든 restart가 같은 Uvicorn port parsing 오류로
+끝났다. 설정 문자열에 `$PORT`를 썼지만 명시적인 shell process가 없어 환경변수 확장을 보장하지
+않은 것이 직접 원인이다.
+
+### 해결과 검증
+
+start command를 `sh -c`와 `exec`로 감싸고 `${PORT:-8000}`을 사용했다. TOML parser 기반 회귀
+테스트로 shell wrapper와 port expression을 고정했다. 후속 Railway 배포에서 Uvicorn이 PID 1로
+port 8080에 시작했고 Railway healthcheck와 실제 공개 `/api/v1/health`가 모두 200을 반환했다.
+
+### 재발 방지와 남은 위험
+
+플랫폼 변수를 쓰는 start command는 로컬 문자열 검토만 하지 않고 배포 로그와 실제 healthcheck로
+검증한다. `exec`를 유지해 Uvicorn이 PID 1의 signal을 직접 받고 정상 종료하도록 한다. 면접에서는
+“process runner와 shell expansion의 차이가 컨테이너 시작에 어떤 영향을 주는가?”를 설명할 수 있다.
+
 ## 2026-07-22 — Claude 구조화 결과 실패, stale resume, 원문 덤프 응답
 
 ### 상황과 영향
