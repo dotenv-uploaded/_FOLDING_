@@ -20,7 +20,16 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const knowledgeBlocked = build?.buildId === 'knowledge-sync' && build.status !== 'done';
+  /*
+   * **문서 준비 상태로 채팅을 막지 않는다.**
+   *
+   * 예전에는 `status !== 'done'` 이면 입력을 잠갔는데, 실패(`failed`)도 여기 걸려서
+   * 배너는 "준비 실패", 입력창은 "준비하는 중"이라고 말하는 모순이 생겼고 되돌릴 길이
+   * 없는 막다른 길이 됐다. 위키 빌드는 불변이라 준비 중에도 직전 빌드로 답할 수 있고,
+   * 근거가 없으면 에이전트가 "위키에서 확인되지 않음"이라고 말한다.
+   */
+  const knowledgeSyncing =
+    build?.buildId === 'knowledge-sync' && build.status !== 'done' && build.status !== 'failed';
   const buildFailed = build?.status === 'failed';
   const building = build && build.status !== 'idle' && build.status !== 'done' && !buildFailed;
 
@@ -32,7 +41,7 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
 
   function submit() {
     const text = draft.trim();
-    if (!text || chat.streaming || knowledgeBlocked) return;
+    if (!text || chat.streaming) return;
     setDraft('');
     void chat.send(text);
     if (taRef.current) taRef.current.style.height = 'auto';
@@ -46,11 +55,13 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
   }
 
   return (
-    <main className="flex min-h-0 min-w-0 flex-col bg-white">
+    // `h-full` 이 필요하다 — 예전에는 3분할 grid 의 직접 자식이라 자동으로 늘어났지만,
+    // 탭이 생기며 래퍼 안으로 들어가면서 내용 높이만 차지하게 됐다(하단에 빈 공간).
+    <main className="flex h-full min-h-0 min-w-0 flex-col bg-white">
       <div className="h-4 shrink-0" />
 
       {/* 빌드 중에도 답할 수 있다는 걸 알린다 (스펙 v1.3 §3) */}
-      {(building || (knowledgeBlocked && buildFailed)) && (
+      {(building || buildFailed) && (
         <div
           className={cn(
             'mx-6 mb-3 flex items-center gap-2.5 rounded-md px-3.5 py-2.5 text-xs',
@@ -70,10 +81,9 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
           </span>
           <span className={buildFailed ? 'text-red-600' : 'text-blue-600'}>
             —{' '}
-            {knowledgeBlocked
-              ? buildFailed
-                ? (build.error ?? '검색 엔진을 준비하지 못했습니다.')
-                : '검색 엔진 준비가 끝나면 질문할 수 있습니다'
+            {/* 실패해도 질문은 받는다 — 그 사실을 문장으로 분명히 말한다. */}
+            {buildFailed
+              ? `${build.error ?? '검색 엔진을 준비하지 못했습니다.'} 지금까지 정리된 범위에서는 답변할 수 있습니다.`
               : '지금까지 정리된 범위에서 답변합니다'}
           </span>
         </div>
@@ -121,10 +131,13 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
           >
             <textarea
               ref={taRef}
-              disabled={knowledgeBlocked}
               rows={1}
               value={draft}
-              placeholder={knowledgeBlocked ? '문서 검색 엔진을 준비하는 중입니다' : '문서에 대해 물어보세요'}
+              placeholder={
+                knowledgeSyncing
+                  ? '준비 중 — 지금까지 정리된 범위에서 답합니다'
+                  : '문서에 대해 물어보세요'
+              }
               onChange={(e) => {
                 setDraft(e.target.value);
                 e.target.style.height = 'auto';
@@ -144,11 +157,11 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
             ) : (
               <button
                 onClick={submit}
-                disabled={knowledgeBlocked || !draft.trim()}
+                disabled={!draft.trim()}
                 aria-label="보내기"
                 className={cn(
                   'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-all duration-[--dur-fast] fold-focus',
-                  draft.trim() && !knowledgeBlocked
+                  draft.trim()
                     ? 'bg-blue-500 text-white shadow-brand-sm hover:bg-blue-600 active:translate-y-[0.5px] active:bg-blue-700'
                     : 'cursor-not-allowed bg-ink-100 text-ink-300',
                 )}

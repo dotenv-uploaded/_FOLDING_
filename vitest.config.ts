@@ -7,6 +7,8 @@ export default defineConfig({
     alias: {
       '@contracts': resolve('packages/contracts/src/index.ts'),
       '@main': resolve('src/main'),
+      // 렌더러의 **순수 로직**만 테스트한다 (JSX 는 node 환경에서 못 돈다).
+      '@renderer': resolve('src/renderer/src'),
     },
   },
   test: {

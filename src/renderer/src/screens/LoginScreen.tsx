@@ -35,6 +35,21 @@ export function LoginScreen({ onLogin }: { onLogin: () => Promise<Session> }) {
         style={{ background: 'var(--gradient-ink)' }}
         data-drag-region
       >
+        {/*
+          흐르는 그라디언트 — 배경을 화면보다 넓게(220%) 깔고 위치만 천천히 움직인다.
+          `background-position` 만 바뀌므로 레이아웃·페인트를 다시 하지 않는다(합성만).
+          로그인 화면은 오래 떠 있을 수 있어 18초로 느리게 돈다.
+        */}
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backgroundImage:
+              'linear-gradient(115deg, rgba(43,93,253,0) 12%, rgba(43,93,253,.42) 38%, rgba(92,134,254,.16) 58%, rgba(43,93,253,0) 86%)',
+            backgroundSize: '220% 220%',
+            animation: 'fold-gradient-drift 18s ease-in-out infinite',
+          }}
+        />
+
         {/* 라디얼 블루 글로우 — 은은하게, 강하지 않게 */}
         <div
           className="pointer-events-none absolute -right-24 -top-24 h-[420px] w-[420px] rounded-full"
@@ -77,7 +92,7 @@ export function LoginScreen({ onLogin }: { onLogin: () => Promise<Session> }) {
 
           <h2 className="text-h3 font-bold tracking-tight text-ink-950">로그인</h2>
           <p className="mt-2 text-sm leading-relaxed text-ink-500">
-            시스템 브라우저에서 Google 계정으로 인증합니다. 비밀번호는 CODEGATE 앱이나
+            시스템 브라우저에서 Google 계정으로 인증합니다. 비밀번호는 Folding 앱이나
             백엔드로 전달되지 않습니다.
           </p>
 

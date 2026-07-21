@@ -62,7 +62,7 @@ export class SidecarClient {
   health(signal?: AbortSignal): Promise<HealthResponse> {
     return httpJson(joinUrl(this.baseUrl, 'health'), {
       signal,
-      failureMessage: '로컬 CODEGATE 서비스 상태를 확인하지 못했습니다.',
+      failureMessage: '로컬 Folding 서비스 상태를 확인하지 못했습니다.',
     });
   }
 

@@ -2,6 +2,7 @@ import { MessageSquarePlus, Settings } from 'lucide-react';
 import type { Conversation, Session } from '@contracts';
 import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/format';
+import { Logo } from '@/ui/Wordmark';
 
 /** 좌측 패널 — 채팅 목록. */
 export function ChatList({
@@ -21,6 +22,11 @@ export function ChatList({
 }) {
   return (
     <aside className="flex min-h-0 flex-col border-r border-ink-100 bg-white">
+      {/* 로고는 타이틀바가 아니라 여기 — 창 신호등 바로 아래 자리다. */}
+      <div className="px-4 pb-1 pt-4">
+        <Logo height={22} />
+      </div>
+
       <div className="p-3">
         <button
           onClick={onCreate}
@@ -83,7 +89,7 @@ export function ChatList({
               {session.email ?? '설정'}
             </span>
             <span className="block truncate text-2xs text-ink-400">
-              {session.tenantId ?? (session.provisioned ? 'CODEGATE 연결됨' : '권한 확인 필요')}
+              {session.tenantId ?? (session.provisioned ? 'Folding 연결됨' : '권한 확인 필요')}
             </span>
           </span>
         </button>

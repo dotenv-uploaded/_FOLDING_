@@ -64,6 +64,23 @@ input, textarea, [data-selectable] {
 /* 스트리밍 커서 */
 @keyframes fold-caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
 
+/* 채팅 메시지 등장 — fold-rise 보다 조금 더 멀리서 올라온다 */
+@keyframes fold-message-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/*
+ * 로그인 좌측 레일의 그라디언트 흐름.
+ * `background-position` 만 움직이므로 레이아웃을 다시 계산하지 않는다 — 합성만 일어난다.
+ * 아주 느리게(18초) 돈다: 로그인 화면에서 눈에 띄되 시선을 빼앗지 않도록.
+ */
+@keyframes fold-gradient-drift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
