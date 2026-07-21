@@ -20,11 +20,40 @@ from codegate_api.knowledge.schemas import AccessLevel
 class TokenAuthenticator(Protocol):
     def authenticate(self, token: str) -> AccessContext: ...
 
+    def unauthenticated_context(self) -> AccessContext: ...
+
 
 class DisabledAuthenticator:
     def authenticate(self, token: str) -> AccessContext:
         del token
         raise _unauthorized("인증이 설정되지 않았습니다.")
+
+    def unauthenticated_context(self) -> AccessContext:
+        return AccessContext.anonymous()
+
+
+class LocalAuthenticator:
+    """Single-user capability used only by the loopback-bound local application."""
+
+    def __init__(self, settings: Settings) -> None:
+        if settings.environment != "local":
+            raise ValueError("local authentication requires CODEGATE_ENVIRONMENT=local")
+        self._context = AccessContext(
+            subject_id="local-user",
+            tenant_id=settings.llmwiki_tenant_id,
+            readable_access=frozenset(AccessLevel),
+            writable_document_ids=frozenset(),
+            provisioned=True,
+            allow_all_writes=True,
+            authz_source="local-workspace",
+        )
+
+    def authenticate(self, token: str) -> AccessContext:
+        del token
+        raise _unauthorized("로컬 모드는 Bearer token을 받지 않습니다.")
+
+    def unauthenticated_context(self) -> AccessContext:
+        return self._context
 
 
 class DemoTokenAuthenticator:
@@ -41,12 +70,17 @@ class DemoTokenAuthenticator:
             tenant_id=settings.demo_tenant_id,
             readable_access=_parse_access_levels(settings.demo_read_access),
             writable_document_ids=frozenset(settings.demo_write_document_ids),
+            provisioned=True,
+            authz_source="demo-token",
         )
 
     def authenticate(self, token: str) -> AccessContext:
         if not secrets.compare_digest(token, self._token):
             raise _unauthorized("Bearer token이 유효하지 않습니다.")
         return self._context
+
+    def unauthenticated_context(self) -> AccessContext:
+        return AccessContext.anonymous()
 
 
 class SupabaseJwtAuthenticator:
@@ -78,6 +112,9 @@ class SupabaseJwtAuthenticator:
         self._tenant_claim = settings.supabase_tenant_claim
         self._read_access_claim = settings.supabase_read_access_claim
         self._write_documents_claim = settings.supabase_write_documents_claim
+
+    def unauthenticated_context(self) -> AccessContext:
+        return AccessContext.anonymous()
 
     def authenticate(self, token: str) -> AccessContext:
         try:
@@ -115,13 +152,17 @@ class SupabaseJwtAuthenticator:
         write_document_ids = [
             item
             for item in _string_list(claims.get(self._write_documents_claim, []))[:100]
-            if re.fullmatch(r"[A-Z]{3}-[0-9]{6}", item)
+            if re.fullmatch(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+", item) and len(item) <= 96
         ]
+        provisioned = claims.get("codegate_provisioned") is True
         return AccessContext(
             subject_id=subject_id,
             tenant_id=tenant_id,
             readable_access=_parse_access_levels(access_values),
             writable_document_ids=frozenset(write_document_ids),
+            provisioned=provisioned,
+            email=_optional_string(claims, "email"),
+            authz_source="supabase-hook",
         )
 
     def _signing_key(self, token: str) -> Any:
@@ -177,6 +218,8 @@ def build_authenticator(settings: Settings) -> TokenAuthenticator:
         return DemoTokenAuthenticator(settings)
     if settings.auth_mode == "supabase":
         return SupabaseJwtAuthenticator(settings)
+    if settings.auth_mode == "local":
+        return LocalAuthenticator(settings)
     return DisabledAuthenticator()
 
 
@@ -185,7 +228,7 @@ def authenticate_authorization_header(
     authenticator: TokenAuthenticator,
 ) -> AccessContext:
     if authorization is None:
-        return AccessContext.anonymous()
+        return authenticator.unauthenticated_context()
     scheme, separator, token = authorization.partition(" ")
     if not separator or scheme.lower() != "bearer" or not token.strip():
         raise _unauthorized("Authorization 헤더는 Bearer 형식이어야 합니다.")

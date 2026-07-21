@@ -15,7 +15,8 @@ create table if not exists public.codegate_document_permissions (
     updated_at timestamptz not null default now(),
     primary key (user_id, document_id),
     constraint codegate_document_id_format check (
-        document_id ~ '^[A-Z]{3}-[0-9]{6}$'
+        document_id ~ '^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$'
+        and length(document_id) <= 96
     )
 );
 
@@ -76,6 +77,12 @@ begin
         ) allowed_documents;
     end if;
 
+    claims := jsonb_set(
+        claims,
+        '{codegate_provisioned}',
+        to_jsonb(access_row.user_id is not null),
+        true
+    );
     claims := jsonb_set(
         claims,
         '{codegate_tenant_id}',

@@ -23,13 +23,30 @@
   ],
   "properties": {
     "schema_version": {"const": "1.0.0"},
-    "id": {"type": "string", "pattern": "^[A-Z]{3}-[0-9]{6}$"},
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$",
+      "maxLength": 96
+    },
     "file_version_id": {"type": "string", "minLength": 1},
     "title": {"type": "string", "minLength": 1},
-    "doc_type": {"enum": ["regulation", "manual", "report"]},
+    "doc_type": {
+      "enum": [
+        "regulation",
+        "policy",
+        "procedure",
+        "manual",
+        "guide",
+        "specification",
+        "contract",
+        "report",
+        "meeting_note",
+        "general"
+      ]
+    },
     "language": {"type": "string", "minLength": 2},
     "revision": {"type": "string", "minLength": 1},
-    "status": {"enum": ["active", "inactive", "draft", "superseded"]},
+    "status": {"enum": ["active", "inactive", "draft", "archived", "superseded"]},
     "official_number": {"type": ["string", "null"]},
     "authority_level": {"type": "string", "minLength": 1},
     "issuing_org": {"type": ["string", "null"]},
@@ -59,7 +76,7 @@
       "properties": {
         "converter": {"type": "string", "minLength": 1},
         "conversion_version": {"type": "string", "minLength": 1},
-        "converted_at": {"type": "string", "format": "date-time"},
+        "converted_at": {"type": ["string", "null"], "format": "date-time"},
         "status": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false

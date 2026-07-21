@@ -5,6 +5,68 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+def test_auth_me_returns_frontend_session_contract(
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    response = client.get("/api/v1/auth/me", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.json() == {
+        "authenticated": True,
+        "subject_id": "demo-editor",
+        "tenant_id": "demo",
+        "email": None,
+        "read_access": ["internal", "public"],
+        "write_scope": "documents",
+        "writable_document_ids": [
+            "MAN-000001",
+            "MAN-000002",
+            "REG-000001",
+            "REG-000002",
+        ],
+        "provisioned": True,
+        "authz_source": "demo-token",
+    }
+    assert "access_token" not in response.json()
+    assert "refresh_token" not in response.json()
+
+
+def test_auth_me_requires_login(client: TestClient) -> None:
+    response = client.get("/api/v1/auth/me")
+
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert response.json()["detail"]["code"] == "UNAUTHORIZED"
+
+
+def test_auth_cors_uses_bearer_headers_without_credentials(client: TestClient) -> None:
+    response = client.options(
+        "/api/v1/auth/me",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "Authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+    assert "Access-Control-Allow-Credentials" not in response.headers
+
+
+def test_local_mode_rejects_non_loopback_clients(test_app: FastAPI) -> None:
+    test_app.state.container.settings.environment = "local"
+
+    with TestClient(test_app, client=("192.0.2.10", 50000)) as local_client:
+        response = local_client.get("/api/v1/health")
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "LOCAL_ACCESS_ONLY"
+
+
 def test_health_reports_loaded_knowledge_version(client: TestClient) -> None:
     response = client.get("/api/v1/health")
 

@@ -82,3 +82,38 @@
   - Railway persistent volume과 production 환경변수를 설정하고 single-replica 배포 후 source write·재기동 복구·health smoke test
   - 실제 팀 산출물로 검색 근거, 승인 전 무변경, 승인 후 원본·FTS·vector·graph 동시 반영, 부분 실패 비공개, retry·Undo·stale 거부 E2E 검증
   - 통합 결과를 draft PR에 반영하고 전체 CI·배포 smoke 통과 후 review-ready 전환, 팀 검토와 merge 진행
+
+## 2026-07-21 — 로컬 Claude·LLMWIKI runtime과 로그인 경계 통합
+
+- 목적: 다운로드한 사용자 PC에서 Claude Agent SDK와 LLMWIKI를 함께 실행하고, 파일 읽기·승인 수정·지식 재발행을 로컬 경계 안에서 끝내며 Frontend 로그인 계약을 확정
+- 변경:
+  - `codegate-local` CLI, loopback bind, 고정 origin CORS, 로컬 data/source/input/storage root 격리와 실행 가이드 추가
+  - Frontend가 Supabase Auth를 직접 처리하고 Backend가 asymmetric JWKS access token만 검증하는 경계와 `GET /api/v1/auth/me` bootstrap API 추가
+  - 미등록 사용자의 write를 fail-closed로 막는 `codegate_provisioned` claim과 local OS file grant를 별도 권한으로 분리
+  - Claude built-in file/shell tool은 계속 끄고 ACL·document ID·hash·size로 제한한 knowledge/source read MCP tool 추가
+  - LLMWIKI `WikiBuildService`를 subprocess 없이 호출하고 native `current.json`만 active pointer로 사용하는 build-ID compatibility cache와 update pipeline 추가
+  - LLMWIKI document type/ID/status, manifest/chunk/link/alias schema를 Backend read 계약으로 변환
+  - Active normalized input checksum, 승인-derived input state, live source hash 재검증과 publish 실패 뒤 Undo 복구 추가
+  - Legacy `art-*`와 generated `sec-*` anchor 공존, 첫 H2 앞 상태 경고 evidence를 실제 upstream 의미에 맞게 변환
+  - local runtime, 인증, LLMWIKI 경계 ADR과 팀 handoff·배포·통합 문서 갱신
+- 검증:
+  - Ruff format/check 통과
+  - mypy strict 통과
+  - pytest 108개 통과, line coverage 84%
+  - 승인 밖 normalized input, live source race, sync 실패 뒤 Undo와 legacy/preamble anchor 회귀 테스트 통과
+  - LLMWIKI `fb0f8c7` fresh 50문서 build의 문서 50개, chunk 148개, link 38개 materialize/load 성공
+  - Section anchor 148개 일치, legacy anchor 3개 보존, compatibility index artifact 확인
+- 전달 상태: 로컬 검증 완료. 기존 PR #1에 반영해 review-ready 전환, GitHub Actions와 merge를 진행한다. Production 배포와 Supabase 운영 migration은 적용하지 않는다.
+- 결정:
+  - 사용자의 원본, normalized input, native active build, Backend compatibility cache를 단방향 artifact로 분리
+  - Mutable input은 active ingest hash 또는 같은 active build의 승인-derived hash만 허용
+  - Frontend 로그인 session과 Backend authorization을 분리하고 다운로드 앱에 JWT signing secret을 포함하지 않음
+  - Compatibility cache는 read model일 뿐 별도 active pointer가 아니며 native build CAS가 유일한 publish 경계
+- 남은 일:
+  - Frontend의 Supabase sign-in/up/reset/OAuth, refresh/logout, `/auth/me`, Bearer 주입과 401 재인증 연결
+  - 팀 Supabase project에 access token hook을 적용하고 실제 JWT provisioning·권한 회수·JWKS rotation E2E 검증
+  - 실제 Anthropic credential로 Claude Agent SDK session과 제한된 read tool 호출 smoke test
+  - 민규의 실제 원본 PDF/HWP/DOCX와 doc2md location mapping으로 source hash·round-trip write capability 검증
+  - 용휘의 실제 vector·graph adapter를 native publish barrier에 연결
+  - 우창의 chat·diff 승인/거절·Undo UI를 execution polling 계약에 연결
+  - Production migration·volume·single-replica 배포는 별도 명시 승인 뒤 실행

@@ -16,6 +16,7 @@ from codegate_api.auth import (
 )
 from codegate_api.changes.hashing import change_plan_hash, request_hash
 from codegate_api.config import Settings
+from codegate_api.knowledge.schemas import Editability, WriteAccess
 from codegate_api.models import (
     ChangePlanStatus,
     ChangePlanView,
@@ -51,6 +52,7 @@ def test_supabase_jwt_verifies_signature_issuer_audience_and_acl() -> None:
             "codegate_tenant_id": "tenant-a",
             "codegate_read_access": ["public", "internal", "invalid"],
             "codegate_write_document_ids": ["REG-000001"],
+            "codegate_provisioned": True,
         },
         private_key,
         algorithm="RS256",
@@ -63,6 +65,57 @@ def test_supabase_jwt_verifies_signature_issuer_audience_and_acl() -> None:
     assert context.tenant_id == "tenant-a"
     assert {level.value for level in context.readable_access} == {"public", "internal"}
     assert context.writable_document_ids == frozenset({"REG-000001"})
+    assert context.provisioned is True
+    assert context.email == "user@example.com"
+    assert context.authz_source == "supabase-hook"
+
+
+def test_unprovisioned_supabase_user_cannot_write_signed_document_claims() -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    authenticator = SupabaseJwtAuthenticator(
+        Settings(auth_mode="supabase", supabase_url="https://project.supabase.co")
+    )
+    authenticator._jwks = SimpleNamespace(  # type: ignore[assignment]  # noqa: SLF001
+        get_signing_key_from_jwt=lambda _: SimpleNamespace(key=private_key.public_key())
+    )
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "iss": "https://project.supabase.co/auth/v1",
+            "aud": "authenticated",
+            "sub": "user-123",
+            "exp": now + timedelta(minutes=5),
+            "iat": now,
+            "role": "authenticated",
+            "aal": "aal1",
+            "session_id": "session-123",
+            "email": "user@example.com",
+            "phone": "",
+            "is_anonymous": False,
+            "codegate_tenant_id": "default",
+            "codegate_read_access": ["public"],
+            "codegate_write_document_ids": ["REG-000001"],
+            "codegate_provisioned": False,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+
+    context = authenticator.authenticate(token)
+
+    assert context.provisioned is False
+    assert context.writable_document_ids == frozenset({"REG-000001"})
+    assert (
+        context.can_write(
+            SimpleNamespace(
+                id="REG-000001",
+                write_access=WriteAccess.RESTRICTED,
+                editability=Editability.EDITABLE,
+            )
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(

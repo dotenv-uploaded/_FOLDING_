@@ -18,6 +18,9 @@ class CanonicalSection:
 _HTML_ANCHOR = re.compile(
     r"^\s*<a\s+id=[\"'](?P<id>[0-9A-Za-z][0-9A-Za-z._:-]{0,127})[\"']\s*></a>\s*$"
 )
+_HTML_SPAN_ANCHOR = re.compile(
+    r"^\s*<span\s+id=[\"'][0-9A-Za-z][0-9A-Za-z._:-]{0,127}[\"']\s*></span>\s*$"
+)
 _HEADING = re.compile(r"^(?P<marks>#{1,6})[ \t]+(?P<title>.+?)[ \t]*$")
 _INLINE_ANCHOR = re.compile(r"[ \t]+\{#(?P<id>[0-9A-Za-z][0-9A-Za-z._:-]{0,127})\}[ \t]*$")
 
@@ -72,6 +75,23 @@ def build_section_index(markdown: str) -> dict[str, CanonicalSection]:
     if pending_anchor is not None:
         raise CanonicalEvidenceError("section anchor is not followed by a heading")
 
+    h1_lines = [line_number for line_number, level, _, _ in headings if level == 1]
+    first_section_line = next(
+        (
+            line_number
+            for line_number, level, section_id, _ in headings
+            if level == 2 and section_id is not None
+        ),
+        None,
+    )
+    preamble: list[str] = []
+    if len(h1_lines) == 1 and first_section_line is not None and h1_lines[0] < first_section_line:
+        preamble = [
+            line
+            for line in lines[h1_lines[0] + 1 : first_section_line]
+            if not _HTML_ANCHOR.fullmatch(line) and not _HTML_SPAN_ANCHOR.fullmatch(line)
+        ]
+
     sections: dict[str, CanonicalSection] = {}
     for index, (line_number, level, section_id, heading_path) in enumerate(headings):
         if section_id is None:
@@ -81,9 +101,12 @@ def build_section_index(markdown: str) -> dict[str, CanonicalSection]:
             if next_level <= level:
                 end = next_line
                 break
+        body_lines = lines[line_number + 1 : end]
+        if line_number == first_section_line and any(line.strip() for line in preamble):
+            body_lines = [*preamble, "", *body_lines]
         sections[section_id] = CanonicalSection(
             section_id=section_id,
             heading_path=heading_path,
-            body="\n".join(lines[line_number + 1 : end]),
+            body="\n".join(body_lines),
         )
     return sections

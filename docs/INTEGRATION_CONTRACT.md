@@ -1,4 +1,4 @@
-# 팀 통합 계약 v0.2
+# 팀 통합 계약 v0.3
 
 이 문서는 각 담당자가 내부 구현을 추측하지 않고 병렬 개발하기 위한 최소 wire·artifact 계약이다. 실행 중인 Backend의 `/openapi.json`과 이 문서가 다르면 OpenAPI를 우선하고 계약 version을 함께 올린다.
 
@@ -15,7 +15,7 @@
 
 ## 공통 ID와 불변 조건
 
-- `document_id`: 논리 문서의 stable 6자리 ID. 내용·경로·revision이 바뀌어도 유지한다.
+- `document_id`: `^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$`, 최대 96자인 stable ID다. 내용·경로·revision이 바뀌어도 유지한다.
 - `file_version_id`: 원본 bytes가 바뀔 때마다 새 값이다.
 - `graph_version`: 검증된 knowledge snapshot이 공개될 때마다 새 값이다.
 - `event_id`: outbox와 모든 downstream consumer의 idempotency key다.
@@ -30,6 +30,11 @@
 - request는 시작 시 하나의 snapshot을 pin한다. 한 응답에서 version을 섞지 않는다.
 
 ## `llm-wiki` acceptance 계약
+
+실제 연동 기준은 `LLMWIKI@fb0f8c7`이다. native package의
+`tenants/<tenant>/wikis/<wiki>/current.json`이 유일한 active pointer이며
+`builds/build-<20 hex>`는 불변이다. Backend는 native manifest/chunks/links/aliases와 schema를
+검증한 뒤 build ID별 compatibility read cache를 만들지만 두 번째 active pointer를 만들지 않는다.
 
 필수 package 파일:
 
@@ -125,6 +130,7 @@ Link endpoint와 evidence chunk는 같은 package에 존재해야 한다. `VERIF
 Base path는 `/api/v1`이다.
 
 - `GET /health`
+- `GET /auth/me`
 - `POST /chat/messages`
 - `GET /documents/{document_id}`
 - `POST /documents/{document_id}/source-sync-plans`
@@ -170,6 +176,48 @@ watchdog/File System Access client는 변경된 전체 UTF-8 본문, active sour
 ### 인증 경계
 
 Supabase JWT는 허용된 asymmetric algorithm과 bounded `kid`를 먼저 확인한 뒤 signature, issuer, audience, expiry와 필수 claim을 검증한다. known key는 제한 시간 cache하고 unknown `kid`는 negative cache하며 JWKS refresh에는 process-wide 최소 간격과 fetch timeout을 둔다. 모든 Authorization 요청에는 header 크기 제한과 pre-auth IP rate limit이 적용된다. Railway 앞단에서도 플랫폼 gateway/WAF rate limit을 유지해야 한다.
+
+Frontend는 Supabase SDK로 직접 로그인한다. password와 refresh token은 Backend API로 보내지
+않는다. cloud API request에 access token을 Bearer로 보내고 `GET /auth/me`에서 다음 권한
+snapshot을 확인한다.
+
+```json
+{
+  "authenticated": true,
+  "subject_id": "uuid",
+  "tenant_id": "tenant-a",
+  "email": "user@example.com",
+  "read_access": ["public", "internal"],
+  "write_scope": "documents",
+  "writable_document_ids": ["REG-000001"],
+  "provisioned": true,
+  "authz_source": "supabase-hook"
+}
+```
+
+응답은 `Cache-Control: private, no-store`이며 token을 반환하지 않는다. Access Token Hook은
+access row가 있을 때만 `codegate_provisioned=true`를 넣는다. Backend는 이 claim이 true가
+아니면 signed `codegate_write_document_ids`가 있어도 쓰기를 거부한다.
+
+로컬 sidecar는 별도 filesystem capability다. loopback에서만 받고 Bearer token을 받지 않으며
+`authz_source=local-workspace`, `write_scope=workspace`를 반환한다. Frontend는 Supabase Bearer가
+있는 cloud client와 Bearer가 없는 local client를 분리한다. 로그인 성공이 로컬 폴더 권한을
+부여하지 않는다.
+
+### 로컬 LLMWIKI 동기화
+
+원본 file write 성공 뒤 같은 outbox event가 다음 순서를 지킨다.
+
+1. doc2md가 설정됐으면 현재 source hash로 normalized Markdown을 다시 만든다. 없으면 지원되는
+   Markdown/TXT exact operation을 기존 normalized body에 멱등 적용한다.
+2. normalized frontmatter의 `source.sha256`와 revision을 함께 갱신한다.
+3. `WikiBuildService.build(..., activate_incomplete=true)`를 expected current build ID CAS로 호출한다.
+4. native current가 가리키는 schema와 build metadata, source hash와 canonical evidence를 검증한다.
+5. native build ID에 결박된 compatibility cache를 만들고 execution을 published로 완료한다.
+
+부분 실패 때 native current는 바뀌지 않는다. publish 뒤 DB 완료 전에 process가 중단된 경우
+current의 final source hash를 확인해 같은 event를 중복 build 없이 완료한다. source, normalized
+input, native storage root는 서로 겹칠 수 없다.
 
 ## 문서 변환 계약
 

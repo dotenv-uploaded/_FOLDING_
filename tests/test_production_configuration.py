@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from codegate_api.auth import LocalAuthenticator, authenticate_authorization_header
 from codegate_api.config import Settings
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.knowledge.catalog import KnowledgeCatalog, KnowledgeCatalogError
@@ -20,6 +21,62 @@ def _production_settings(volume: Path, **overrides: object) -> Settings:
     }
     values.update(overrides)
     return Settings.model_validate(values)
+
+
+def _local_settings(root: Path, **overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "environment": "local",
+        "auth_mode": "local",
+        "knowledge_mode": "llmwiki",
+        "bootstrap_demo": False,
+        "source_root": root / "source",
+        "llmwiki_project_root": root / "project",
+        "llmwiki_input_root": root / "input",
+        "llmwiki_storage_root": root / "storage",
+        "cors_origins": ["http://127.0.0.1:3000"],
+    }
+    values.update(overrides)
+    return Settings.model_validate(values)
+
+
+def test_local_auth_is_loopback_workspace_capability(tmp_path: Path) -> None:
+    context = authenticate_authorization_header(
+        None,
+        LocalAuthenticator(_local_settings(tmp_path)),
+    )
+
+    assert context.subject_id == "local-user"
+    assert context.tenant_id == "local"
+    assert context.provisioned is True
+    assert context.allow_all_writes is True
+    assert context.authz_source == "local-workspace"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"auth_mode": "supabase"}, "AUTH_MODE=local"),
+        ({"bootstrap_demo": True}, "BOOTSTRAP_DEMO=false"),
+        ({"knowledge_mode": "codegate"}, "KNOWLEDGE_MODE=llmwiki"),
+        ({"cors_origins": ["*"]}, "explicit CORS origin"),
+        (
+            {"llmwiki_input_root": Path("source/normalized")},
+            "must not overlap",
+        ),
+    ],
+)
+def test_local_mode_rejects_unsafe_configuration(
+    tmp_path: Path,
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    if "llmwiki_input_root" in overrides:
+        overrides = {
+            **overrides,
+            "llmwiki_input_root": tmp_path / Path(str(overrides["llmwiki_input_root"])),
+        }
+    with pytest.raises(ValueError, match=message):
+        _local_settings(tmp_path, **overrides)
 
 
 def test_railway_volume_maps_every_mutable_runtime_path(tmp_path: Path) -> None:

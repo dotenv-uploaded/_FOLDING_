@@ -71,7 +71,7 @@ class WriteJournal:
     state: str
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StateStore:
@@ -1108,6 +1108,65 @@ class StateStore:
                     (event_id, stage, status, _json(output or {}), now),
                 )
 
+    def record_llmwiki_input_state(
+        self,
+        *,
+        document_id: str,
+        active_build_id: str,
+        source_sha256: str,
+        revision: str,
+        content_sha256: str,
+        event_ids: list[str],
+    ) -> None:
+        """Trust one normalized input only after deriving it from approved events."""
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                DELETE FROM llmwiki_input_states
+                WHERE document_id = ? AND active_build_id != ?
+                """,
+                (document_id, active_build_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO llmwiki_input_states(
+                    document_id, active_build_id, source_sha256, revision,
+                    content_sha256, event_ids_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id, active_build_id, content_sha256) DO UPDATE SET
+                    source_sha256 = excluded.source_sha256,
+                    revision = excluded.revision,
+                    event_ids_json = excluded.event_ids_json
+                """,
+                (
+                    document_id,
+                    active_build_id,
+                    source_sha256,
+                    revision,
+                    content_sha256,
+                    _json(event_ids),
+                    _now_text(),
+                ),
+            )
+
+    def is_known_llmwiki_input_state(
+        self,
+        *,
+        document_id: str,
+        active_build_id: str,
+        content_sha256: str,
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM llmwiki_input_states
+                WHERE document_id = ? AND active_build_id = ? AND content_sha256 = ?
+                LIMIT 1
+                """,
+                (document_id, active_build_id, content_sha256),
+            ).fetchone()
+        return row is not None
+
     def complete_event_batch(self, event_ids: list[str], graph_version: str) -> None:
         if not event_ids:
             return
@@ -1258,6 +1317,7 @@ class StateStore:
         tables = [
             "processed_events",
             "sync_tasks",
+            "llmwiki_input_states",
             "outbox_events",
             "write_journals",
             "file_versions",
@@ -1713,6 +1773,17 @@ CREATE TABLE IF NOT EXISTS sync_tasks (
     output_json TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY(event_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS llmwiki_input_states (
+    document_id TEXT NOT NULL,
+    active_build_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK(length(source_sha256) = 64),
+    revision TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+    event_ids_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(document_id, active_build_id, content_sha256)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_versions (

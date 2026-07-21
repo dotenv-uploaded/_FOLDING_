@@ -12,6 +12,7 @@ from codegate_api.agent.runtime import build_claude_agent_options
 from codegate_api.config import Settings
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
+from codegate_api.knowledge.schemas import DOCUMENT_ID_PATTERN
 from codegate_api.models import ReplaceExactOperation
 
 
@@ -27,7 +28,11 @@ class AgentDecision(BaseModel):
     intent: Literal["locate", "change"]
     assistant_text: str = Field(min_length=1, max_length=2_000)
     search_query: str = Field(min_length=1, max_length=4_000)
-    target_document_id: str | None = Field(default=None, pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    target_document_id: str | None = Field(
+        default=None,
+        pattern=DOCUMENT_ID_PATTERN,
+        max_length=96,
+    )
     operation: ReplaceExactOperation | None = None
 
 
@@ -123,9 +128,9 @@ class ClaudeAgentGateway:
         )
         prompt = (
             "Classify this user turn as locate or change. Use the CODEGATE read tools when needed. "
-            "For a change, return exactly one replace_exact operation only when the old and new "
-            "text "
-            "are explicit. Never claim a write occurred.\n\n"
+            "For a change, return exactly one replace_exact operation only when the requested new "
+            "value is clear and the exact old text is verified from the current source. Never "
+            "claim a write occurred.\n\n"
             f"selected_document_id={selected_document_id or 'none'}\n"
             f"user_message={message}"
         )
@@ -189,7 +194,7 @@ def _canonical_session_id(value: str) -> str:
 
 
 def _extract_document_id(message: str) -> str | None:
-    match = re.search(r"\b[A-Z]{3}-[0-9]{6}\b", message)
+    match = re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", message)
     return match.group(0) if match else None
 
 

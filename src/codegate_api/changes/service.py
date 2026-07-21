@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -20,10 +21,8 @@ from codegate_api.files.atomic import (
     SafeSourceFileStore,
 )
 from codegate_api.knowledge.access import AccessContext
-from codegate_api.knowledge.catalog import KnowledgeCatalog
 from codegate_api.knowledge.pipeline import (
     ContentChangedPayload,
-    LocalKnowledgePipeline,
     SyncPipelineError,
 )
 from codegate_api.knowledge.repository import KnowledgeRepository
@@ -43,6 +42,14 @@ from codegate_api.state.store import (
     StateStore,
     StoredExecution,
 )
+
+
+class KnowledgeCatalogSnapshot(Protocol):
+    def snapshot(self) -> KnowledgeRepository: ...
+
+
+class ChangeSyncPipeline(Protocol):
+    async def process_pending(self) -> str: ...
 
 
 class ChangeServiceError(RuntimeError):
@@ -256,11 +263,11 @@ class ChangeExecutionService:
     def __init__(
         self,
         *,
-        catalog: KnowledgeCatalog,
+        catalog: KnowledgeCatalogSnapshot,
         file_store: SafeSourceFileStore,
         state_store: StateStore,
         lock_manager: DocumentLockManager,
-        pipeline: LocalKnowledgePipeline,
+        pipeline: ChangeSyncPipeline,
         sync_notifier: Callable[[], None] | None = None,
     ) -> None:
         self._catalog = catalog

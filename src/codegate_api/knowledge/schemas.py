@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+DOCUMENT_ID_PATTERN = r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$"
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,7 +68,7 @@ class SourceMetadata(StrictModel):
 class SourceReference(StrictModel):
     schema_version: Literal["1.0.0"]
     kind: Literal["source_reference"]
-    document_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    document_id: str = Field(pattern=DOCUMENT_ID_PATTERN, max_length=96)
     source_uri: str = Field(pattern=r"^source://")
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -74,19 +76,30 @@ class SourceReference(StrictModel):
 class ConversionMetadata(StrictModel):
     converter: str
     conversion_version: str
-    converted_at: datetime
+    converted_at: datetime | None = None
     status: str
 
 
 class ManifestEntry(StrictModel):
     schema_version: Literal["1.0.0"]
-    id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    id: str = Field(pattern=DOCUMENT_ID_PATTERN, max_length=96)
     file_version_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
-    doc_type: Literal["regulation", "manual", "report"]
+    doc_type: Literal[
+        "regulation",
+        "policy",
+        "procedure",
+        "manual",
+        "guide",
+        "specification",
+        "contract",
+        "report",
+        "meeting_note",
+        "general",
+    ]
     language: str = Field(min_length=2)
     revision: str = Field(min_length=1)
-    status: Literal["active", "inactive", "draft", "superseded"]
+    status: Literal["active", "inactive", "draft", "archived", "superseded"]
     official_number: str | None = None
     authority_level: str = Field(min_length=1)
     issuing_org: str | None = None
@@ -116,7 +129,7 @@ class ManifestEntry(StrictModel):
 class Chunk(StrictModel):
     schema_version: Literal["1.0.0"]
     chunk_id: str = Field(min_length=1)
-    document_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    document_id: str = Field(pattern=DOCUMENT_ID_PATTERN, max_length=96)
     file_version_id: str = Field(min_length=1)
     section_id: str = Field(pattern=r"^[0-9A-Za-z][0-9A-Za-z._:-]{0,127}$")
     section: str = Field(min_length=1)
@@ -134,8 +147,8 @@ class RelationStatus(StrEnum):
 
 class Link(StrictModel):
     schema_version: Literal["1.0.0"]
-    source_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
-    target_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    source_id: str = Field(pattern=DOCUMENT_ID_PATTERN, max_length=96)
+    target_id: str = Field(pattern=DOCUMENT_ID_PATTERN, max_length=96)
     relation: str = Field(min_length=1)
     status: RelationStatus
     evidence_chunk_ids: list[str]

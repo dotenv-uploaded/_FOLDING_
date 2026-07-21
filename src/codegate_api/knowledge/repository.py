@@ -242,6 +242,58 @@ class KnowledgeRepository:
             if chunk.document_id == document_id
         )
 
+    def read_canonical_text(
+        self,
+        document_id: str,
+        *,
+        access_context: AccessContext,
+        max_bytes: int = 262_144,
+    ) -> tuple[ManifestEntry, str] | None:
+        """Read one validated llm-wiki document without exposing a filesystem path."""
+
+        self._ensure_loaded()
+        document = self._documents.get(document_id)
+        if (
+            document is None
+            or not self._is_retrievable(document, access_context)
+            or not self._source_is_current(document)
+        ):
+            return None
+        content = self._safe_package_path(document.canonical_path).read_bytes()
+        if len(content) > max_bytes:
+            raise KnowledgePackageError("canonical document exceeds the agent read limit")
+        try:
+            return document.model_copy(deep=True), content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise KnowledgePackageError("canonical document is not valid UTF-8") from error
+
+    def read_source_text(
+        self,
+        document_id: str,
+        *,
+        access_context: AccessContext,
+        max_bytes: int = 262_144,
+    ) -> tuple[ManifestEntry, str] | None:
+        """Read a current allowlisted UTF-8 source file through its stable document ID."""
+
+        self._ensure_loaded()
+        document = self._documents.get(document_id)
+        if (
+            document is None
+            or not self._is_retrievable(document, access_context)
+            or not self._source_is_current(document)
+            or document.source.media_type not in {"text/markdown", "text/plain"}
+        ):
+            return None
+        source = self._source_resolver.resolve(document.source.uri)
+        content = source.read_bytes()
+        if len(content) > max_bytes:
+            raise KnowledgePackageError("source document exceeds the agent read limit")
+        try:
+            return document.model_copy(deep=True), content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise KnowledgePackageError("source document is not valid UTF-8") from error
+
     def _to_result(
         self,
         document_id: str,

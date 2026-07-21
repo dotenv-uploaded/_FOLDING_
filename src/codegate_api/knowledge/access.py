@@ -11,6 +11,10 @@ class AccessContext:
     tenant_id: str | None
     readable_access: frozenset[AccessLevel]
     writable_document_ids: frozenset[str]
+    provisioned: bool = False
+    allow_all_writes: bool = False
+    email: str | None = None
+    authz_source: str = "anonymous"
 
     @classmethod
     def anonymous(cls) -> "AccessContext":
@@ -19,6 +23,9 @@ class AccessContext:
             tenant_id=None,
             readable_access=frozenset({AccessLevel.PUBLIC}),
             writable_document_ids=frozenset(),
+            provisioned=False,
+            allow_all_writes=False,
+            authz_source="anonymous",
         )
 
     def can_read(self, document: ManifestEntry) -> bool:
@@ -27,7 +34,8 @@ class AccessContext:
     def can_write(self, document: ManifestEntry) -> bool:
         return (
             self.subject_id is not None
-            and document.id in self.writable_document_ids
+            and self.provisioned
+            and (self.allow_all_writes or document.id in self.writable_document_ids)
             and document.write_access is not WriteAccess.NONE
             and document.editability is Editability.EDITABLE
         )

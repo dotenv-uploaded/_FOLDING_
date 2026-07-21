@@ -18,6 +18,8 @@ SAFE_AGENT_TOOLS = frozenset(
     {
         "mcp__codegate__knowledge_search",
         "mcp__codegate__document_get",
+        "mcp__codegate__knowledge_document_read",
+        "mcp__codegate__source_file_read",
     }
 )
 

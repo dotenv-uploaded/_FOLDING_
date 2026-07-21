@@ -13,6 +13,12 @@ from codegate_api.files.atomic import DocumentLockManager, SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.integrations.doc2md import Doc2MdClient
 from codegate_api.knowledge.catalog import KnowledgeCatalog
+from codegate_api.knowledge.llmwiki import (
+    InProcessLLMWikiBuildRunner,
+    LLMWikiCompatibilityAdapter,
+    NativeLLMWikiCatalog,
+    NativeLLMWikiPipeline,
+)
 from codegate_api.knowledge.pipeline import LocalKnowledgePipeline
 from codegate_api.knowledge.worker import KnowledgeSyncWorker
 from codegate_api.runtime_workspace import RuntimeWorkspace
@@ -26,8 +32,8 @@ class AppContainer:
     state: StateStore
     resolver: SourceUriResolver
     files: SafeSourceFileStore
-    catalog: KnowledgeCatalog
-    pipeline: LocalKnowledgePipeline
+    catalog: KnowledgeCatalog | NativeLLMWikiCatalog
+    pipeline: LocalKnowledgePipeline | NativeLLMWikiPipeline
     sync_worker: KnowledgeSyncWorker
     plans: ChangePlanService
     executions: ChangeExecutionService
@@ -39,11 +45,11 @@ class AppContainer:
 
     async def startup(self) -> None:
         if (
-            self.settings.environment == "production"
+            self.settings.environment in {"local", "production"}
             and self.settings.agent_mode == "claude"
             and not os.environ.get("ANTHROPIC_API_KEY")
         ):
-            raise RuntimeError("production Claude Agent SDK requires ANTHROPIC_API_KEY")
+            raise RuntimeError("Claude Agent SDK requires ANTHROPIC_API_KEY")
         self.workspace.bootstrap()
         self.state.initialize()
         await self.executions.recover_files()
@@ -103,12 +109,6 @@ def build_container(settings: Settings) -> AppContainer:
         backup_root=settings.resolved_backup_root(),
         max_bytes=settings.max_edit_bytes,
     )
-    catalog = KnowledgeCatalog(
-        seed_root=settings.resolved_seed_knowledge_root(),
-        releases_root=settings.resolved_knowledge_releases_root(),
-        pointer_path=settings.resolved_knowledge_pointer_path(),
-        source_resolver=resolver,
-    )
     doc2md = None
     if settings.doc2md_base_url:
         doc2md = Doc2MdClient(
@@ -116,12 +116,52 @@ def build_container(settings: Settings) -> AppContainer:
             resolver=resolver,
             timeout_seconds=settings.doc2md_timeout_seconds,
         )
-    pipeline = LocalKnowledgePipeline(
-        catalog=catalog,
-        file_store=files,
-        state_store=state,
-        doc2md=doc2md,
-    )
+    if settings.knowledge_mode == "llmwiki":
+        project_root = settings.resolved_llmwiki_project_root()
+        input_root = settings.resolved_llmwiki_input_root()
+        storage_root = settings.resolved_llmwiki_storage_root()
+        assert project_root is not None and input_root is not None and storage_root is not None
+        runner = InProcessLLMWikiBuildRunner(
+            project_root=project_root,
+            input_root=input_root,
+            storage_root=storage_root,
+            tenant_id=settings.llmwiki_tenant_id,
+            wiki_id=settings.llmwiki_wiki_id,
+            actor_id=settings.llmwiki_actor_id,
+        )
+        adapter = LLMWikiCompatibilityAdapter(
+            source_resolver=resolver,
+            input_root=input_root,
+            storage_root=storage_root,
+            compatibility_root=settings.resolved_knowledge_releases_root(),
+            tenant_id=settings.llmwiki_tenant_id,
+            wiki_id=settings.llmwiki_wiki_id,
+        )
+        native_catalog = NativeLLMWikiCatalog(
+            adapter=adapter,
+            runner=runner,
+            source_resolver=resolver,
+        )
+        catalog: KnowledgeCatalog | NativeLLMWikiCatalog = native_catalog
+        pipeline: LocalKnowledgePipeline | NativeLLMWikiPipeline = NativeLLMWikiPipeline(
+            catalog=native_catalog,
+            file_store=files,
+            state_store=state,
+            doc2md=doc2md,
+        )
+    else:
+        catalog = KnowledgeCatalog(
+            seed_root=settings.resolved_seed_knowledge_root(),
+            releases_root=settings.resolved_knowledge_releases_root(),
+            pointer_path=settings.resolved_knowledge_pointer_path(),
+            source_resolver=resolver,
+        )
+        pipeline = LocalKnowledgePipeline(
+            catalog=catalog,
+            file_store=files,
+            state_store=state,
+            doc2md=doc2md,
+        )
     sync_worker = KnowledgeSyncWorker(pipeline=pipeline, state_store=state)
     locks = DocumentLockManager(settings.resolved_runtime_root() / "locks")
     plan_service = ChangePlanService(settings=settings, file_store=files, state_store=state)

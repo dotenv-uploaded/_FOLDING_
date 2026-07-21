@@ -5,6 +5,7 @@ from claude_agent_sdk import McpSdkServerConfig, create_sdk_mcp_server, tool
 
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
+from codegate_api.knowledge.schemas import DOCUMENT_ID_PATTERN
 
 
 def create_codegate_tool_server(
@@ -47,7 +48,8 @@ def create_codegate_tool_server(
             "properties": {
                 "document_id": {
                     "type": "string",
-                    "pattern": "^[A-Z]{3}-[0-9]{6}$",
+                    "pattern": DOCUMENT_ID_PATTERN,
+                    "maxLength": 96,
                 }
             },
             "required": ["document_id"],
@@ -64,10 +66,85 @@ def create_codegate_tool_server(
             )
         return _json_tool_result({"document": document.model_dump(mode="json")})
 
+    @tool(
+        "knowledge_document_read",
+        "Read one ACL-visible validated canonical Markdown document from the local llm-wiki.",
+        {
+            "type": "object",
+            "properties": {
+                "document_id": {
+                    "type": "string",
+                    "pattern": DOCUMENT_ID_PATTERN,
+                    "maxLength": 96,
+                }
+            },
+            "required": ["document_id"],
+            "additionalProperties": False,
+        },
+    )
+    async def knowledge_document_read(args: dict[str, Any]) -> dict[str, Any]:
+        document_id = str(args["document_id"])
+        result = repository.read_canonical_text(
+            document_id,
+            access_context=access_context,
+        )
+        if result is None:
+            return _json_tool_result(
+                {"error": {"code": "DOCUMENT_NOT_FOUND", "document_id": document_id}},
+                is_error=True,
+            )
+        document, content = result
+        return _json_tool_result(
+            {
+                "document_id": document.id,
+                "revision": document.revision,
+                "graph_version": repository.version,
+                "content": content,
+            }
+        )
+
+    @tool(
+        "source_file_read",
+        "Read the current allowlisted UTF-8 Markdown or text source for one visible document.",
+        {
+            "type": "object",
+            "properties": {
+                "document_id": {
+                    "type": "string",
+                    "pattern": DOCUMENT_ID_PATTERN,
+                    "maxLength": 96,
+                }
+            },
+            "required": ["document_id"],
+            "additionalProperties": False,
+        },
+    )
+    async def source_file_read(args: dict[str, Any]) -> dict[str, Any]:
+        document_id = str(args["document_id"])
+        result = repository.read_source_text(
+            document_id,
+            access_context=access_context,
+        )
+        if result is None:
+            return _json_tool_result(
+                {"error": {"code": "SOURCE_NOT_READABLE", "document_id": document_id}},
+                is_error=True,
+            )
+        document, content = result
+        return _json_tool_result(
+            {
+                "document_id": document.id,
+                "revision": document.revision,
+                "source_uri": document.source.uri,
+                "source_sha256": document.source.sha256,
+                "content": content,
+            }
+        )
+
     return create_sdk_mcp_server(
         name="codegate",
-        version="0.1.0",
-        tools=[knowledge_search, document_get],
+        version="0.2.0",
+        tools=[knowledge_search, document_get, knowledge_document_read, source_file_read],
     )
 
 

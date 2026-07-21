@@ -501,6 +501,7 @@ def test_change_plan_rejects_unverified_pdf_write_format(tmp_path: Path) -> None
         tenant_id="tenant-1",
         readable_access=frozenset({AccessLevel.PUBLIC}),
         writable_document_ids=frozenset({"REG-000001"}),
+        provisioned=True,
     )
 
     with pytest.raises(ChangeServiceError) as raised:

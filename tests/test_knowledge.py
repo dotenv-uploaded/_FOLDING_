@@ -8,6 +8,7 @@ import pytest
 from codegate_api.agent.instructions import build_system_prompt
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.knowledge.access import AccessContext
+from codegate_api.knowledge.evidence import build_section_index
 from codegate_api.knowledge.repository import KnowledgePackageError, KnowledgeRepository
 
 
@@ -234,6 +235,22 @@ def test_package_rejects_duplicate_section_anchor(tmp_path: Path) -> None:
 
     with pytest.raises(KnowledgePackageError, match="duplicate section anchor"):
         repository.load()
+
+
+def test_first_section_evidence_includes_native_pre_heading_preamble() -> None:
+    markdown = (
+        "# 구형 매뉴얼\n\n"
+        "> 현재 절차로 사용해서는 안 된다.\n\n"
+        '<span id="legacy-warning"></span>\n'
+        '<a id="sec-first"></a>\n'
+        "## 과거 적용 범위\n\n"
+        "2023년부터 2025년까지 적용되었다.\n"
+    )
+    native_chunk = "> 현재 절차로 사용해서는 안 된다.\n\n\n\n2023년부터 2025년까지 적용되었다."
+
+    section = build_section_index(markdown)["sec-first"]
+
+    assert section.body.count(native_chunk) == 1
 
 
 def test_package_rejects_heading_path_and_file_version_mismatch(tmp_path: Path) -> None:

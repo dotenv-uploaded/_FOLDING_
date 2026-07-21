@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "CODEGATE 2026 API"
-    environment: str = "development"
+    environment: Literal["development", "test", "local", "production"] = "development"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     seed_knowledge_root: Path = Path("demo/llm-wiki")
     seed_source_root: Path = Path("demo/source")
@@ -44,11 +44,25 @@ class Settings(BaseSettings):
     doc2md_base_url: str | None = None
     doc2md_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
 
+    knowledge_mode: Literal["codegate", "llmwiki"] = "codegate"
+    llmwiki_project_root: Path | None = None
+    llmwiki_input_root: Path | None = None
+    llmwiki_storage_root: Path | None = None
+    llmwiki_tenant_id: str = Field(default="local", pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    llmwiki_wiki_id: str = Field(
+        default="workspace",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    )
+    llmwiki_actor_id: str = Field(
+        default="codegate-local",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    )
+
     agent_mode: Literal["deterministic", "claude"] = "deterministic"
     claude_model: str | None = None
     claude_timeout_seconds: float = Field(default=45.0, ge=1.0, le=300.0)
 
-    auth_mode: Literal["disabled", "demo", "supabase"] = "disabled"
+    auth_mode: Literal["disabled", "demo", "local", "supabase"] = "disabled"
     demo_auth_token: str | None = None
     demo_subject_id: str = "demo-editor"
     demo_tenant_id: str = "demo"
@@ -81,6 +95,44 @@ class Settings(BaseSettings):
             self.database_path = mount / "codegate.sqlite3"
             self.backup_root = mount / "backups"
             self.agent_state_root = mount / "claude"
+        if self.knowledge_mode == "llmwiki":
+            missing = [
+                name
+                for name, value in (
+                    ("CODEGATE_LLMWIKI_PROJECT_ROOT", self.llmwiki_project_root),
+                    ("CODEGATE_LLMWIKI_INPUT_ROOT", self.llmwiki_input_root),
+                    ("CODEGATE_LLMWIKI_STORAGE_ROOT", self.llmwiki_storage_root),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError("llmwiki knowledge mode requires " + ", ".join(missing))
+        if self.environment == "local":
+            if self.auth_mode != "local":
+                raise ValueError("local environment requires CODEGATE_AUTH_MODE=local")
+            if self.bootstrap_demo:
+                raise ValueError("local environment requires CODEGATE_BOOTSTRAP_DEMO=false")
+            if self.knowledge_mode != "llmwiki":
+                raise ValueError("local environment requires CODEGATE_KNOWLEDGE_MODE=llmwiki")
+            if not self.cors_origins or "*" in self.cors_origins:
+                raise ValueError("local environment requires an explicit CORS origin allowlist")
+            local_roots = {
+                "source": self.resolved_source_root(),
+                "LLMWIKI project": self.resolved_llmwiki_project_root(),
+                "LLMWIKI input": self.resolved_llmwiki_input_root(),
+                "LLMWIKI storage": self.resolved_llmwiki_storage_root(),
+            }
+            for left_name, left in local_roots.items():
+                assert left is not None
+                for right_name, right in local_roots.items():
+                    assert right is not None
+                    if left_name < right_name and (
+                        left == right or left.is_relative_to(right) or right.is_relative_to(left)
+                    ):
+                        raise ValueError(
+                            "local source, LLMWIKI project, input, and storage roots "
+                            f"must not overlap: {left_name}, {right_name}"
+                        )
         if self.environment == "production":
             if self.auth_mode != "supabase":
                 raise ValueError("production requires CODEGATE_AUTH_MODE=supabase")
@@ -136,6 +188,27 @@ class Settings(BaseSettings):
 
     def resolved_agent_state_root(self) -> Path:
         return self.agent_state_root.expanduser().resolve()
+
+    def resolved_llmwiki_project_root(self) -> Path | None:
+        return (
+            self.llmwiki_project_root.expanduser().resolve()
+            if self.llmwiki_project_root is not None
+            else None
+        )
+
+    def resolved_llmwiki_input_root(self) -> Path | None:
+        return (
+            self.llmwiki_input_root.expanduser().resolve()
+            if self.llmwiki_input_root is not None
+            else None
+        )
+
+    def resolved_llmwiki_storage_root(self) -> Path | None:
+        return (
+            self.llmwiki_storage_root.expanduser().resolve()
+            if self.llmwiki_storage_root is not None
+            else None
+        )
 
     def effective_supabase_issuer(self) -> str | None:
         if self.supabase_jwt_issuer:

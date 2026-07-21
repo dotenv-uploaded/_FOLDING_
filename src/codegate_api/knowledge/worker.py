@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Protocol
 
-from codegate_api.knowledge.pipeline import LocalKnowledgePipeline
 from codegate_api.state.store import StateStore
 
 logger = logging.getLogger(__name__)
+
+
+class KnowledgePipeline(Protocol):
+    async def process_pending(self) -> str: ...
 
 
 class KnowledgeSyncWorker:
@@ -16,7 +20,7 @@ class KnowledgeSyncWorker:
     def __init__(
         self,
         *,
-        pipeline: LocalKnowledgePipeline,
+        pipeline: KnowledgePipeline,
         state_store: StateStore,
         retry_delays: tuple[float, ...] = (0.05, 0.2, 1.0),
     ) -> None:

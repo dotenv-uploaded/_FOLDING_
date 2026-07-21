@@ -206,6 +206,18 @@ class HealthResponse(StrictModel):
     persistence_available: bool
 
 
+class AuthMeResponse(StrictModel):
+    authenticated: Literal[True] = True
+    subject_id: str
+    tenant_id: str
+    email: str | None = None
+    read_access: list[str]
+    write_scope: Literal["none", "documents", "workspace"]
+    writable_document_ids: list[str]
+    provisioned: bool
+    authz_source: str
+
+
 class DemoResetResponse(StrictModel):
     status: Literal["reset"]
     knowledge_version: str

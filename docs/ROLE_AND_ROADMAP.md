@@ -36,6 +36,9 @@
 
 ### Knowledge adapter
 
+- `LLMWIKI`의 tenant/wiki `current.json`과 불변 build를 native source of truth로 사용
+- `WikiBuildService` in-process build와 expected current build ID CAS
+- native schema를 Backend read 계약으로 변환한 build-ID compatibility cache
 - versioned `llm-wiki`의 `VERSION`과 checksum 검증
 - 요청자 ACL을 검색·relation 확장 전에 적용하고 권한 없는 문서의 존재도 숨김
 - source와 chunk SHA-256을 실제 bytes·text와 대조
@@ -120,8 +123,13 @@ MVP actual write는 Markdown/TXT부터 지원한다. JSON/YAML은 schema 검증�
 | 4 | approval·write·Undo | 승인 전 무변경, atomic write, crash recovery, Undo hash 복구 | 완료 |
 | 5 | converter·graph sync | outbox, doc2md adapter, 병렬 local index, immutable VERSION publish | 완료(팀 adapter 대기) |
 | 6 | 통합·데모 보호 | E2E, 실패·retry, reset, Supabase/Railway fail-closed 설정 | 완료(외부 적용 대기) |
+| 7 | 다운로드 앱 local runtime | loopback sidecar, 실제 LLMWIKI build, source/input 동기화, local capability | 완료(패키징 UI 대기) |
+| 8 | 로그인 handoff | Supabase direct login, `/auth/me`, provisioning write gate, CORS 계약 | 완료(프로젝트 hook·UI 적용 대기) |
 
-`완료`는 합성 fixture와 adapter contract 기준이다. 실제 Anthropic 호출은 server key, Supabase hook은 project 설정, 민규 converter와 용휘 graph는 각 팀 산출물이 있어야 staging에서 최종 smoke test할 수 있다. 이 외부 조건을 Backend 구현 완료와 혼동하지 않는다.
+Phase 7은 실제 `LLMWIKI@fb0f8c7` checkout으로 명령, 승인, source write, native current
+교체와 변경된 근거 재검색까지 검증했다. 실제 Claude 모델 호출은 사용자 API key, Supabase hook은
+팀 project 설정, frontend login 화면과 desktop bundle은 각 담당 환경이 있어야 최종 smoke할 수
+있다. 이 외부 조건을 Backend 구현 완료와 혼동하지 않는다.
 
 ## 최종 완료 기준
 

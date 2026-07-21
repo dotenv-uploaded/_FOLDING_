@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -9,7 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from codegate_api.api import change_plans, chat, demo, documents, executions, health
+from codegate_api.api import auth_session, change_plans, chat, demo, documents, executions, health
 from codegate_api.config import Settings, get_settings
 from codegate_api.container import build_container
 from codegate_api.rate_limit import FixedWindowRateLimiter
@@ -24,6 +25,13 @@ def _normalized_caller_identity(authorization: str | None, client_host: str) -> 
             digest = hashlib.sha256(normalized_token.encode()).hexdigest()
             return f"bearer:{digest}"
     return f"anonymous:{client_host}"
+
+
+def _is_loopback_client(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -59,7 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=application_settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
     )
@@ -74,6 +82,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request_id = str(uuid4())
         authorization = request.headers.get("Authorization")
         client_host = request.client.host if request.client else "unknown"
+        if application_settings.environment == "local" and not _is_loopback_client(client_host):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": {
+                        "code": "LOCAL_ACCESS_ONLY",
+                        "message": "로컬 앱 API는 loopback 요청만 허용합니다.",
+                    }
+                },
+                headers={"X-Request-ID": request_id},
+            )
         if authorization and len(authorization.encode("utf-8")) > (
             application_settings.authorization_header_max_bytes
         ):
@@ -129,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     application.include_router(health.router, prefix="/api/v1")
+    application.include_router(auth_session.router, prefix="/api/v1")
     application.include_router(chat.router, prefix="/api/v1")
     application.include_router(documents.router, prefix="/api/v1")
     application.include_router(change_plans.router, prefix="/api/v1")

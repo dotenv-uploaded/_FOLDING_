@@ -8,9 +8,10 @@
 2. `codegate_user_access`에 user의 tenant와 read scope를 넣는다.
 3. `codegate_document_permissions`에 실제 write 가능 문서만 넣는다.
 4. Supabase Dashboard의 `Authentication > Hooks`에서 Custom Access Token SQL hook을 `public.codegate_custom_access_token_hook`으로 활성화한다.
-5. 새 token을 발급해 `codegate_tenant_id`, `codegate_read_access`, `codegate_write_document_ids`를 확인한다.
+5. 새 token을 발급해 `codegate_provisioned`, `codegate_tenant_id`, `codegate_read_access`, `codegate_write_document_ids`를 확인한다.
+6. Frontend가 그 access token으로 `GET /api/v1/auth/me`를 호출해 같은 tenant와 권한 snapshot을 받는지 확인한다.
 
-Migration은 `supabase_auth_admin`에 schema usage, 두 ACL table의 select, hook execute만 주고 `anon`, `authenticated`, `public` 실행 권한은 회수한다. access row가 없는 user는 write claim을 받지 않는다. Supabase는 hook이 기존 필수 JWT claims를 보존하도록 요구하므로 함수는 원래 claims에 세 custom claim만 덧붙인다. [Supabase Auth Hooks](https://supabase.com/docs/guides/auth/auth-hooks), [Custom Access Token Hook](https://supabase.com/docs/guides/auth/auth-hooks/custom-access-token-hook)
+Migration은 `supabase_auth_admin`에 schema usage, 두 ACL table의 select, hook execute만 주고 `anon`, `authenticated`, `public` 실행 권한은 회수한다. access row가 없는 user는 `codegate_provisioned=false`이고 Backend write gate를 통과하지 못한다. Supabase는 hook이 기존 필수 JWT claims를 보존하도록 요구하므로 함수는 원래 claims에 네 custom claim만 덧붙인다. [Supabase Auth Hooks](https://supabase.com/docs/guides/auth/auth-hooks), [Custom Access Token Hook](https://supabase.com/docs/guides/auth/auth-hooks/custom-access-token-hook)
 
 JWT 권한은 발급 시점 snapshot이다. 해커톤 MVP는 access token 만료 시간을 짧게 두고 권한 변경 뒤 token refresh를 강제한다. 즉시 권한 회수가 필수인 운영 단계에서는 approve와 Undo 직전에 authoritative permission store를 재조회하는 adapter를 추가한다.
 
@@ -56,7 +57,7 @@ ANTHROPIC_API_KEY=<server-secret>
 ## 5. 배포 후 확인
 
 1. `/api/v1/health`의 auth mode, persistence, agent, converter, worker, knowledge version, `stale_sync_events=0`과 `index_artifacts_available=true`를 확인한다.
-2. anonymous public 검색과 valid/invalid JWT를 각각 확인한다.
+2. anonymous public 검색, valid/invalid JWT와 `/api/v1/auth/me`의 provisioned/unprovisioned 응답을 각각 확인한다.
 3. synthetic Markdown 문서로 preview가 write 0건인지 확인한다.
 4. 승인 후 `202 Location`을 polling해 `file_applied → syncing → completed`를 확인한다.
 5. source hash, backup, 새 revision·section citation, graph version 변경을 확인한다.
