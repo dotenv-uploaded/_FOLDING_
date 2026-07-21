@@ -135,7 +135,8 @@
   - pytest 144개 통과, line coverage 84%
   - wheel·sdist build와 `codegate-local --help` 진입점 확인
   - Docker image build 후 container `/health`와 canonical citation 위치 검색 HTTP smoke 성공
-- 전달 상태: `777b758`을 `docs/role-contract-audit`에 push하고 draft PR #7 생성. CI 확인 중
+- 전달 상태: `777b758`, `41edf57`을 `docs/role-contract-audit`에 push하고 draft PR #7 생성.
+  GitHub Actions run `29841686245` 성공
 - 결정:
   - 사진의 Electron main 임베드·agent write tool·kordoc 구조는 폐기된 v1.x로 유지하지 않고,
     Python sidecar와 application-owned deterministic write 경계를 정본으로 사용
