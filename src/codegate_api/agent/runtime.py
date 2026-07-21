@@ -1,0 +1,93 @@
+from pathlib import Path
+
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    HookContext,
+    HookInput,
+    HookJSONOutput,
+    HookMatcher,
+)
+
+from codegate_api.agent.instructions import build_system_prompt
+from codegate_api.agent.tools import create_codegate_tool_server
+from codegate_api.knowledge.access import AccessContext
+from codegate_api.knowledge.repository import KnowledgeRepository
+
+SAFE_AGENT_TOOLS = frozenset(
+    {
+        "mcp__codegate__knowledge_search",
+        "mcp__codegate__document_get",
+    }
+)
+
+
+async def enforce_tool_allowlist(
+    input_data: HookInput,
+    tool_use_id: str | None,
+    context: HookContext,
+) -> HookJSONOutput:
+    del tool_use_id, context
+    tool_name = str(input_data.get("tool_name", ""))
+    if tool_name in SAFE_AGENT_TOOLS:
+        return {}
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Tool is outside the CODEGATE backend allowlist.",
+        }
+    }
+
+
+def build_claude_agent_options(
+    repository: KnowledgeRepository,
+    *,
+    working_directory: Path,
+    state_directory: Path,
+    access_context: AccessContext,
+) -> ClaudeAgentOptions:
+    tool_server = create_codegate_tool_server(repository, access_context)
+    return ClaudeAgentOptions(
+        system_prompt=build_system_prompt(repository.agent_guide),
+        tools=[],
+        mcp_servers={"codegate": tool_server},
+        strict_mcp_config=True,
+        allowed_tools=sorted(SAFE_AGENT_TOOLS),
+        disallowed_tools=["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"],
+        permission_mode="dontAsk",
+        hooks={
+            "PreToolUse": [
+                HookMatcher(hooks=[enforce_tool_allowlist]),
+            ]
+        },
+        cwd=working_directory.resolve(),
+        env={
+            "CLAUDE_CONFIG_DIR": str(state_directory.resolve()),
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
+        },
+        setting_sources=[],
+        skills=[],
+        plugins=[],
+        max_turns=8,
+        max_budget_usd=0.50,
+        enable_file_checkpointing=False,
+    )
+
+
+def create_claude_agent_client(
+    repository: KnowledgeRepository,
+    *,
+    working_directory: Path,
+    state_directory: Path,
+    access_context: AccessContext,
+) -> ClaudeSDKClient:
+    return ClaudeSDKClient(
+        options=build_claude_agent_options(
+            repository,
+            working_directory=working_directory,
+            state_directory=state_directory,
+            access_context=access_context,
+        )
+    )

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegate.local/schemas/manifest.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "file_version_id",
+    "title",
+    "doc_type",
+    "source",
+    "canonical_path",
+    "access",
+    "write_access",
+    "editability",
+    "conversion"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "id": {"type": "string", "pattern": "^[A-Z]{3}-[0-9]{6}$"},
+    "file_version_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "doc_type": {"enum": ["regulation", "manual", "report"]},
+    "source": {
+      "type": "object",
+      "required": ["filename", "uri", "media_type", "sha256"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "canonical_path": {"type": "string", "pattern": "^docs/"},
+    "access": {"enum": ["public", "internal", "restricted"]},
+    "write_access": {"enum": ["none", "restricted", "allowed"]},
+    "editability": {"enum": ["editable", "read_only"]},
+    "conversion": {"type": "object"}
+  },
+  "additionalProperties": true
+}
