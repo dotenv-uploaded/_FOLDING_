@@ -10,9 +10,10 @@ LLMWIKI도 사용자 장치에서 실행하되, 모델 호출은 Anthropic API�
 Supabase Auth를 사용한다. 로컬 파일 권한, 로그인한 사용자 신원, LLMWIKI의 활성 지식 버전은
 서로 다른 보안·일관성 경계다.
 
-협업 저장소의 현재 계약은 `LLMWIKI@fb0f8c7`의 `WikiBuildService`, tenant/wiki별
-`current.json`, 불변 `build-<20 hex>` 디렉터리와 `codegate-2026-api@360ff41`의 doc2md
-v0.1.0이다.
+초기 계약은 `LLMWIKI@fb0f8c7`과 `codegate-2026-api@360ff41`의 doc2md v0.1.0을 기준으로
+결정했다. 2026-07-22 재검증한 현재 integration pin은 `LLMWIKI@acf94f7`과 이름이 바뀐
+`codegate-2026-convert@30e6814`의 doc2md v0.2다. `server-v2` 쓰기 범위는
+[ADR 0005](0005-llmwiki-server-v2-write-compatibility.md)에서 별도로 결정한다.
 
 ## 결정
 

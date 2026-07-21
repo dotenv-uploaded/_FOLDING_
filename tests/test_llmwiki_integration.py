@@ -55,7 +55,13 @@ def _write_jsonl(path: Path, values: list[dict[str, Any]]) -> None:
     )
 
 
-def _frontmatter(source_sha256: str, body: str, *, revision: str = "1") -> str:
+def _frontmatter(
+    source_sha256: str,
+    body: str,
+    *,
+    revision: str = "1",
+    chunk_no: str | None = None,
+) -> str:
     metadata = {
         "schema_version": "1.0.0",
         "id": "REG-100001",
@@ -79,6 +85,8 @@ def _frontmatter(source_sha256: str, body: str, *, revision: str = "1") -> str:
         "tags": ["개인정보"],
         "aliases": ["보관 규정"],
     }
+    if chunk_no is not None:
+        metadata["chunk_no"] = chunk_no
     return "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False) + "---\n" + body
 
 
@@ -242,6 +250,53 @@ def _create_native_fixture(tmp_path: Path) -> NativeFixture:
         compatibility_root=compatibility_root,
         before_sha256=source_sha256,
     )
+
+
+def _use_server_v2_ingest(
+    fixture: NativeFixture,
+    fragments: list[tuple[Path, str | None]] | None = None,
+) -> None:
+    current = fixture.adapter.current_native_build()
+    assert current is not None
+    selected = fragments or [(fixture.input_path, None)]
+    records = [
+        {
+            "chunk_no": chunk_no,
+            "path": f"source-md/{path.name}",
+            "sha256": _sha256(path.read_bytes()),
+        }
+        for path, chunk_no in selected
+    ]
+    mode = (
+        "sections" if len(records) == 1 and records[0]["chunk_no"] is None else "source-fragments"
+    )
+    if mode == "sections":
+        aggregate_sha256 = str(records[0]["sha256"])
+    else:
+        aggregate_sha256 = _sha256(
+            json.dumps(
+                [
+                    {"chunk_no": record["chunk_no"], "sha256": record["sha256"]}
+                    for record in records
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+    manifest_path = current.build_dir / "manifest.jsonl"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ingest"] = {
+        "aggregate_sha256": aggregate_sha256,
+        "fragments": records,
+    }
+    manifest["source_fragment_count"] = len(records)
+    manifest["chunking_mode"] = mode
+    _write_jsonl(manifest_path, [manifest])
+    metadata_path = current.build_dir / "build-meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["build_format_version"] = "server-v2"
+    _write_json(metadata_path, metadata)
 
 
 def _build_pipeline(fixture: NativeFixture, tmp_path: Path) -> NativeLLMWikiPipeline:
@@ -420,6 +475,84 @@ def test_native_llmwiki_build_is_mapped_to_valid_read_cache(tmp_path: Path) -> N
     assert canonical.count('<a id="sec-0123456789"></a>') == 1
 
 
+def test_native_adapter_accepts_current_server_v2_build_format(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    _use_server_v2_ingest(fixture)
+    current = fixture.adapter.current_native_build()
+    assert current is not None
+
+    build = fixture.adapter.native_build("build-0123456789abcdefabcd")
+    baseline = fixture.adapter.input_baseline(build, "REG-100001")
+
+    assert build.build_id == "build-0123456789abcdefabcd"
+    assert baseline.path == fixture.input_path
+    assert baseline.file_sha256 == _sha256(fixture.input_path.read_bytes())
+
+
+def test_native_adapter_marks_server_v2_source_fragments_read_only(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    source_sha256 = fixture.before_sha256
+    first = _frontmatter(
+        source_sha256,
+        "# 개인정보 처리 규정\n\n첫 번째 의미 단위다.\n",
+        chunk_no="chunk-001",
+    )
+    second_path = fixture.input_path.with_name("REG-100001_002.md")
+    second = _frontmatter(
+        source_sha256,
+        "<!-- section: 후속 의미 단위 -->\n\n두 번째 의미 단위다.\n",
+        chunk_no="chunk-002",
+    )
+    fixture.input_path.write_text(first, encoding="utf-8")
+    second_path.write_text(second, encoding="utf-8")
+    _use_server_v2_ingest(
+        fixture,
+        [(fixture.input_path, "chunk-001"), (second_path, "chunk-002")],
+    )
+    build = fixture.adapter.current_native_build()
+    assert build is not None
+
+    package_root = fixture.adapter.materialize(build)
+    manifest = json.loads((package_root / "manifest.jsonl").read_text(encoding="utf-8"))
+
+    assert manifest["write_access"] == "none"
+    assert manifest["editability"] == "read_only"
+    with pytest.raises(LLMWikiCompatibilityError, match="source-fragment document is read-only"):
+        fixture.adapter.input_baseline(build, "REG-100001")
+
+    pipeline = _build_pipeline(fixture, tmp_path)
+    changed_source = fixture.source_path.read_text(encoding="utf-8").replace("1년", "3년")
+    fixture.source_path.write_text(changed_source, encoding="utf-8")
+    event = _event(
+        fixture,
+        event_id="evt_source_fragments",
+        before_sha256=fixture.before_sha256,
+        after_sha256=_sha256(changed_source.encode()),
+        expected_text="1년",
+        replacement_text="3년",
+    )
+    with pytest.raises(LLMWikiCompatibilityError, match="source-fragment document is read-only"):
+        pipeline._apply_inputs([event])  # noqa: SLF001
+    assert fixture.adapter.current_native_build().build_id == build.build_id  # type: ignore[union-attr]
+
+
+def test_native_adapter_rejects_invalid_server_v2_fragment_aggregate(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    _use_server_v2_ingest(fixture)
+    current = fixture.adapter.current_native_build()
+    assert current is not None
+    manifest_path = current.build_dir / "manifest.jsonl"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ingest"]["aggregate_sha256"] = "f" * 64
+    _write_jsonl(manifest_path, [manifest])
+
+    with pytest.raises(LLMWikiCompatibilityError, match="section ingest metadata is invalid"):
+        fixture.adapter.input_baseline(
+            fixture.adapter.native_build(current.build_id),
+            "REG-100001",
+        )
+
+
 def test_native_catalog_prepares_before_cas_activation(tmp_path: Path) -> None:
     fixture = _create_native_fixture(tmp_path)
     candidate_id = "build-11111111111111111111"
@@ -478,6 +611,33 @@ def test_native_catalog_rejects_unrelated_candidate_input(tmp_path: Path) -> Non
 
     assert fixture.adapter.current_native_build().build_id == parent_version  # type: ignore[union-attr]
     assert catalog.snapshot().version == parent_version
+
+
+def test_native_catalog_rejects_unrelated_candidate_input_path_change(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-88888888888888888888"
+    candidate_dir = _clone_native_build(fixture, candidate_id)
+    manifest_path = candidate_dir / "manifest.jsonl"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ingest"]["path"] = "source-md/renamed.md"
+    _write_jsonl(manifest_path, [manifest])
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=object(),  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+
+    with pytest.raises(LLMWikiCompatibilityError, match="unrelated input"):
+        catalog.prepare_candidate(
+            candidate_id,
+            expected_current_build_id=parent_version,
+            changed_document_ids=set(),
+        )
 
 
 def test_native_catalog_rechecks_sources_before_activation(tmp_path: Path) -> None:
@@ -744,6 +904,35 @@ def test_native_pipeline_updates_normalized_body_source_hash_and_revision(
     assert "개인정보는 3년간 보관한다." in lines[2]
 
 
+def test_native_pipeline_updates_server_v2_single_fragment_idempotently(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    _use_server_v2_ingest(fixture)
+    pipeline = _build_pipeline(fixture, tmp_path)
+
+    changed_source = fixture.source_path.read_text(encoding="utf-8").replace("1년", "3년")
+    fixture.source_path.write_text(changed_source, encoding="utf-8")
+    after_sha256 = _sha256(changed_source.encode())
+    event = _event(
+        fixture,
+        event_id="evt_server_v2",
+        before_sha256=fixture.before_sha256,
+        after_sha256=after_sha256,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+
+    assert pipeline._apply_inputs([event]) == {"REG-100001"}  # noqa: SLF001
+    assert pipeline._apply_inputs([event]) == {"REG-100001"}  # noqa: SLF001
+
+    text = fixture.input_path.read_text(encoding="utf-8")
+    metadata = yaml.safe_load(text.split("---", maxsplit=2)[1])
+    assert metadata["revision"] == "2"
+    assert metadata["source"]["sha256"] == after_sha256
+    assert "개인정보는 3년간 보관한다." in text
+
+
 def test_native_pipeline_renders_v2_body_with_llmwiki_v1_frontmatter(tmp_path: Path) -> None:
     fixture = _create_native_fixture(tmp_path)
     pipeline = _build_pipeline(fixture, tmp_path)
@@ -758,7 +947,7 @@ def test_native_pipeline_renders_v2_body_with_llmwiki_v1_frontmatter(tmp_path: P
         expected_text="1년",
         replacement_text="3년",
     )
-    converted_body = "# 개인정보 처리 규정\n\n## 보관 기간\n\n개인정보는 3년간 보관한다.\n"
+    converted_body = "# 원본 파일 제목\n\n## 보관 기간\n\n개인정보는 3년간 보관한다.\n"
 
     class FakeDoc2Md:
         def convert(self, *_args: object, **_kwargs: object) -> ConversionResult:
@@ -788,7 +977,56 @@ def test_native_pipeline_renders_v2_body_with_llmwiki_v1_frontmatter(tmp_path: P
     assert metadata["source"]["sha256"] == after_sha256
     assert "canonical_sha256" not in metadata
     assert "converter_version" not in metadata
+    assert "# 개인정보 처리 규정" in text
+    assert "# 원본 파일 제목" not in text
     assert "개인정보는 3년간 보관한다." in text
+
+
+@pytest.mark.parametrize(
+    "converted_body",
+    [
+        "본문만 있다.\n",
+        "서문이 먼저다.\n\n# 뒤늦은 제목\n",
+        "# 첫 제목\n\n# 두 번째 제목\n",
+    ],
+    ids=["missing", "not-leading", "duplicate"],
+)
+def test_native_pipeline_rejects_doc2md_body_without_one_leading_h1(
+    tmp_path: Path,
+    converted_body: str,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    pipeline = _build_pipeline(fixture, tmp_path)
+    changed_source = fixture.source_path.read_text(encoding="utf-8").replace("1년", "3년")
+    fixture.source_path.write_text(changed_source, encoding="utf-8")
+    after_sha256 = _sha256(changed_source.encode())
+    event = _event(
+        fixture,
+        event_id="evt_invalid_h1",
+        before_sha256=fixture.before_sha256,
+        after_sha256=after_sha256,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+
+    class FakeDoc2Md:
+        def convert(self, *_args: object, **_kwargs: object) -> ConversionResult:
+            return ConversionResult(
+                canonical_markdown=converted_body,
+                body=converted_body,
+                format="md",
+                converter="doc2md:0.2.0:markitdown",
+                warnings=(),
+                cached=False,
+                source_sha256=after_sha256,
+                canonical_sha256=_sha256(converted_body.encode()),
+                converter_version="0.2.0",
+            )
+
+    pipeline._doc2md = FakeDoc2Md()  # type: ignore[assignment]  # noqa: SLF001
+
+    with pytest.raises(LLMWikiCompatibilityError, match="exactly one leading H1"):
+        pipeline._apply_inputs([event])  # noqa: SLF001
 
 
 def test_native_pipeline_rejects_unapproved_normalized_input_content(tmp_path: Path) -> None:
@@ -850,6 +1088,7 @@ def test_native_pipeline_restores_active_input_after_failed_publish_undo(
     tmp_path: Path,
 ) -> None:
     fixture = _create_native_fixture(tmp_path)
+    _use_server_v2_ingest(fixture)
     pipeline = _build_pipeline(fixture, tmp_path)
     original_source = fixture.source_path.read_text(encoding="utf-8")
     changed_source = original_source.replace("1년", "3년")

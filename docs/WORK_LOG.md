@@ -1,5 +1,47 @@
 # 작업 로그
 
+## 2026-07-22 — 최신 민규 converter·성주 Backend·용휘 LLMWIKI 실제 연결
+
+- 목적: 팀 GitHub와 로컬 checkout을 전부 대조하고 민규의 최신 변환기와 용휘의 최신
+  LLMWIKI를 Backend 승인·재발행·Undo 경로에 실제 process로 연결
+- 기준:
+  - `codegate-2026-convert@30e6814`
+  - `LLMWIKI@acf94f7`
+  - Backend branch `fix/llmwiki-server-v2-compat`
+- 변경:
+  - `server-v1` legacy ingest와 `server-v2` aggregate/fragments ingest를 strict parser 하나로
+    정규화하고 mode·path·chunk number·fragment SHA를 candidate 승인 증거에 결박
+  - `sections` 단일 fragment만 승인·retry·Undo 쓰기를 허용하고 `source-fragments`는 검색 전용으로
+    materialize하며 직접 queued event도 실패 폐쇄
+  - doc2md body의 정확히 하나인 선행 H1을 활성 LLMWIKI title로 정규화하고 누락·중복 H1 거부
+  - compatibility cache suffix를 `codegate-v3`로 올리고 실제 v2 ingest, aggregate 변조, path 변경,
+    다중 fragment read-only와 H1 회귀 테스트 추가
+  - 현재 pin과 동기·비동기 converter 경계, 쓰기 가능 범위를 README·통합 계약·handoff·ADR에 반영
+- 검증:
+  - converter Python 3.12 격리 환경에서 pytest 104개 통과
+  - LLMWIKI wiki-builder pytest 39개, local-runtime pytest 14개와 각 Ruff gate 통과
+  - Backend focused Ruff·mypy와 pytest 33개 통과
+  - Backend 전체 Ruff format/check, mypy, pytest 152개 통과, line coverage 84%
+  - 독립 diff review에서 server-v2 계약·candidate 승인 경계 blocker/high finding 없음
+  - 세 컴포넌트 실제 runtime 연결에서 `ingest checksum is invalid`, 보완 뒤 H1/title 불일치를 각각 재현
+  - 같은 실패 execution을 retry해 `build-99801fba8b94ffc5f1a2`에서
+    `build-4147f2b0ed2a29246605`로 공개하고 `3년` 근거 재검색 성공
+  - Undo execution `exec_308416a4ca9e4ba19f662b09aaf1e2e5`가
+    `build-465cd13e13f397a818d7`을 공개하고 원본 backup SHA와 `1년` 근거를 복구
+  - Undo 뒤 `/health`는 `status=ok`, pending/failed/stale sync event 모두 0
+- 전달 상태: branch `fix/llmwiki-server-v2-compat`를 push하고 PR #8을 생성했다. 구현 commit 기준
+  GitHub Actions CI가 성공했으며, 이 전달 기록 commit의 required check를 다시 확인한 뒤 squash
+  merge한다. production 배포는 수행하지 않는다.
+- 결정:
+  - format 검사를 제거하지 않고 pin과 allowlist를 함께 유지
+  - aggregate-only 비교를 거부하고 단일 fragment 쓰기만 기존 journal의 원자성 범위로 인정
+  - LLMWIKI local-runtime `/convert/async` 최초 수집과 Backend `/v2/convert` outbox writer는 desktop
+    orchestration에서 직렬화
+- 남은 일:
+  - 다중 source-fragment 편집이 필요해지면 fragment-set snapshot·생성/삭제 journal·원자 Undo 구현
+  - pinned schema digest와 input dirfd immutable snapshot으로 app-owned storage/input 신뢰 경계 강화
+  - 우창 desktop orchestration에서 converter writer 직렬화와 설치 bundle smoke 적용
+
 ## 2026-07-21 — Backend 저장소 기반과 read-only 수직 기능
 
 - 목적: 성주 담당 FastAPI 저장소를 독립 실행 가능하게 만들고, 팀 산출물이 오기 전에도 `llm-wiki` 계약과 위치 검색을 검증

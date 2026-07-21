@@ -66,8 +66,30 @@ class NativeBuild:
 @dataclass(frozen=True, slots=True)
 class NativeInputBaseline:
     path: Path
-    ingest_sha256: str
+    file_sha256: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class NativeInputFragment:
+    chunk_no: str | None
+    relative_path: str
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class NativeIngest:
+    chunking_mode: str
+    fragments: tuple[NativeInputFragment, ...]
+    descriptor_sha256: str
+
+    @property
+    def supports_atomic_edit(self) -> bool:
+        return (
+            self.chunking_mode == "sections"
+            and len(self.fragments) == 1
+            and self.fragments[0].chunk_no is None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,7 +270,7 @@ class LLMWikiCompatibilityAdapter:
             meta.get("build_id") != build_id
             or meta.get("tenant_id") != self._tenant_id
             or meta.get("wiki_id") != self._wiki_id
-            or meta.get("build_format_version") != "server-v1"
+            or meta.get("build_format_version") not in {"server-v1", "server-v2"}
         ):
             raise LLMWikiCompatibilityError("LLMWIKI build metadata does not match current.json")
         manifests = self._read_validated_jsonl(build_dir, "manifest")
@@ -274,7 +296,7 @@ class LLMWikiCompatibilityAdapter:
         )
 
     def materialize(self, build: NativeBuild) -> Path:
-        destination = self._compatibility_root / f"{build.build_id}-codegate-v2"
+        destination = self._compatibility_root / f"{build.build_id}-codegate-v3"
         with self._lock:
             if destination.is_dir():
                 return destination
@@ -296,23 +318,24 @@ class LLMWikiCompatibilityAdapter:
         manifest = build.manifest_by_id.get(document_id)
         if manifest is None:
             raise LLMWikiCompatibilityError(f"unknown LLMWIKI document: {document_id}")
-        ingest = manifest.get("ingest")
-        if not isinstance(ingest, dict) or not isinstance(ingest.get("path"), str):
-            raise LLMWikiCompatibilityError(f"LLMWIKI ingest path is missing: {document_id}")
-        relative_text = str(ingest["path"])
-        if not relative_text.startswith("source-md/"):
-            raise LLMWikiCompatibilityError(f"LLMWIKI ingest path is invalid: {document_id}")
-        relative = Path(relative_text.removeprefix("source-md/"))
+        ingest = _native_ingest(manifest, document_id)
+        if not ingest.supports_atomic_edit:
+            raise LLMWikiCompatibilityError(
+                f"LLMWIKI source-fragment document is read-only: {document_id}"
+            )
+        relative = Path(ingest.fragments[0].relative_path.removeprefix("source-md/"))
         return _safe_child(self._input_root, relative.as_posix())
 
     def input_baseline(self, build: NativeBuild, document_id: str) -> NativeInputBaseline:
         manifest = build.manifest_by_id.get(document_id)
         if manifest is None:
             raise LLMWikiCompatibilityError(f"unknown LLMWIKI document: {document_id}")
-        ingest = manifest.get("ingest")
-        ingest_sha256 = ingest.get("sha256") if isinstance(ingest, dict) else None
-        if not isinstance(ingest_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", ingest_sha256):
-            raise LLMWikiCompatibilityError(f"LLMWIKI ingest checksum is invalid: {document_id}")
+        ingest = _native_ingest(manifest, document_id)
+        if not ingest.supports_atomic_edit:
+            raise LLMWikiCompatibilityError(
+                f"LLMWIKI source-fragment document is read-only: {document_id}"
+            )
+        fragment = ingest.fragments[0]
         canonical_path = _safe_child(build.build_dir, str(manifest["path"]))
         canonical_text = canonical_path.read_text(encoding="utf-8")
         baseline_text = _rewrite_native_anchors(
@@ -323,7 +346,7 @@ class LLMWikiCompatibilityAdapter:
         )
         return NativeInputBaseline(
             path=self.input_path(build, document_id),
-            ingest_sha256=ingest_sha256,
+            file_sha256=fragment.sha256,
             text=baseline_text,
         )
 
@@ -338,12 +361,13 @@ class LLMWikiCompatibilityAdapter:
 
         for native in native_manifests:
             document_id = str(native["doc_id"])
+            ingest = _native_ingest(native, document_id)
             source = dict(native["source"])
             source_uri = str(source["uri"])
             source_sha256 = str(source["sha256"]).lower()
             source_path = self._source_resolver.resolve(source_uri)
             media_type = _media_type(str(source["filename"]))
-            editable = media_type in {"text/markdown", "text/plain"}
+            editable = media_type in {"text/markdown", "text/plain"} and ingest.supports_atomic_edit
             file_version_id = f"fv_{source_sha256}"
             file_versions[document_id] = file_version_id
             manifests.append(
@@ -563,18 +587,24 @@ class NativeLLMWikiCatalog:
         if not changed_document_ids <= set(candidate.manifest_by_id):
             raise LLMWikiCompatibilityError("LLMWIKI candidate lacks a changed document")
         for document_id, candidate_manifest in candidate.manifest_by_id.items():
-            candidate_ingest = _native_ingest_sha256(candidate_manifest, document_id)
-            active_ingest = _native_ingest_sha256(active.manifest_by_id[document_id], document_id)
+            candidate_ingest = _native_ingest(candidate_manifest, document_id)
+            active_ingest = _native_ingest(active.manifest_by_id[document_id], document_id)
             if document_id in changed_document_ids:
-                if not self._state.is_known_llmwiki_input_state(
-                    document_id=document_id,
-                    active_build_id=expected_current_build_id,
-                    content_sha256=candidate_ingest,
+                if (
+                    not active_ingest.supports_atomic_edit
+                    or not candidate_ingest.supports_atomic_edit
+                    or candidate_ingest.fragments[0].relative_path
+                    != active_ingest.fragments[0].relative_path
+                    or not self._state.is_known_llmwiki_input_state(
+                        document_id=document_id,
+                        active_build_id=expected_current_build_id,
+                        content_sha256=candidate_ingest.fragments[0].sha256,
+                    )
                 ):
                     raise LLMWikiCompatibilityError(
                         f"LLMWIKI candidate contains an unapproved input: {document_id}"
                     )
-            elif candidate_ingest != active_ingest:
+            elif candidate_ingest.descriptor_sha256 != active_ingest.descriptor_sha256:
                 raise LLMWikiCompatibilityError(
                     f"LLMWIKI candidate changed an unrelated input: {document_id}"
                 )
@@ -887,7 +917,7 @@ class NativeLLMWikiPipeline:
                 ) from error
             current_sha256 = _sha256(current_bytes)
             if (
-                current_sha256 != baseline.ingest_sha256
+                current_sha256 != baseline.file_sha256
                 and not self._state.is_known_llmwiki_input_state(
                     document_id=document_id,
                     active_build_id=active_build_id,
@@ -910,9 +940,8 @@ class NativeLLMWikiPipeline:
                 raise LLMWikiCompatibilityError(f"normalized Markdown body is empty: {document_id}")
 
             if manifest.source.sha256 == final_sha256:
-                if (
-                    current_sha256 != baseline.ingest_sha256
-                    and current_bytes != baseline.text.encode("utf-8")
+                if current_sha256 != baseline.file_sha256 and current_bytes != baseline.text.encode(
+                    "utf-8"
                 ):
                     self._record_and_write_input(
                         path=baseline.path,
@@ -943,9 +972,13 @@ class NativeLLMWikiPipeline:
                     converted_manifest,
                     expected_source_sha256=final_sha256,
                 )
+                converted_body = _normalize_converted_h1(
+                    converted.body,
+                    expected_title=manifest.title,
+                )
                 updated = _render_normalized_markdown(
                     metadata,
-                    converted.body,
+                    converted_body,
                     source_sha256=final_sha256,
                     revision=target_revision,
                 )
@@ -1049,12 +1082,167 @@ class NativeLLMWikiPipeline:
             raise LLMWikiCompatibilityError(f"live source changed before publish: {document_id}")
 
 
-def _native_ingest_sha256(manifest: dict[str, Any], document_id: str) -> str:
+def _native_ingest(manifest: dict[str, Any], document_id: str) -> NativeIngest:
     ingest = manifest.get("ingest")
-    digest = ingest.get("sha256") if isinstance(ingest, dict) else None
-    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+    if not isinstance(ingest, dict):
+        raise LLMWikiCompatibilityError(f"LLMWIKI ingest metadata is invalid: {document_id}")
+    legacy_keys = {"path", "sha256"}
+    server_v2_keys = {"aggregate_sha256", "fragments"}
+    has_legacy = bool(legacy_keys & set(ingest))
+    has_server_v2 = bool(server_v2_keys & set(ingest))
+    if has_legacy == has_server_v2:
+        raise LLMWikiCompatibilityError(f"LLMWIKI ingest metadata is invalid: {document_id}")
+
+    fragments: tuple[NativeInputFragment, ...]
+    mode: str
+    aggregate_sha256: str
+    if has_legacy:
+        if set(ingest) != legacy_keys:
+            raise LLMWikiCompatibilityError(f"LLMWIKI ingest metadata is invalid: {document_id}")
+        path = _native_input_relative_path(ingest.get("path"), document_id)
+        digest = _native_sha256(ingest.get("sha256"), document_id)
+        fragments = (NativeInputFragment(chunk_no=None, relative_path=path, sha256=digest),)
+        mode = "sections"
+        aggregate_sha256 = digest
+    else:
+        if set(ingest) != server_v2_keys:
+            raise LLMWikiCompatibilityError(f"LLMWIKI ingest metadata is invalid: {document_id}")
+        aggregate_sha256 = _native_sha256(ingest.get("aggregate_sha256"), document_id)
+        raw_fragments = ingest.get("fragments")
+        if not isinstance(raw_fragments, list) or not raw_fragments:
+            raise LLMWikiCompatibilityError(f"LLMWIKI ingest fragments are invalid: {document_id}")
+        parsed: list[NativeInputFragment] = []
+        for raw_fragment in raw_fragments:
+            if not isinstance(raw_fragment, dict) or set(raw_fragment) != {
+                "chunk_no",
+                "path",
+                "sha256",
+            }:
+                raise LLMWikiCompatibilityError(
+                    f"LLMWIKI ingest fragments are invalid: {document_id}"
+                )
+            chunk_no = raw_fragment.get("chunk_no")
+            if chunk_no is not None and (
+                not isinstance(chunk_no, str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", chunk_no) is None
+            ):
+                raise LLMWikiCompatibilityError(
+                    f"LLMWIKI ingest fragments are invalid: {document_id}"
+                )
+            parsed.append(
+                NativeInputFragment(
+                    chunk_no=chunk_no,
+                    relative_path=_native_input_relative_path(
+                        raw_fragment.get("path"), document_id
+                    ),
+                    sha256=_native_sha256(raw_fragment.get("sha256"), document_id),
+                )
+            )
+        fragments = tuple(parsed)
+        declared_count = manifest.get("source_fragment_count")
+        declared_mode = manifest.get("chunking_mode")
+        if (
+            not isinstance(declared_count, int)
+            or isinstance(declared_count, bool)
+            or declared_count != len(fragments)
+            or not isinstance(declared_mode, str)
+            or declared_mode not in {"sections", "source-fragments"}
+        ):
+            raise LLMWikiCompatibilityError(f"LLMWIKI ingest metadata is invalid: {document_id}")
+        mode = declared_mode
+        paths = [fragment.relative_path for fragment in fragments]
+        if len(paths) != len(set(paths)):
+            raise LLMWikiCompatibilityError(f"LLMWIKI ingest fragments are invalid: {document_id}")
+        if mode == "sections":
+            if (
+                len(fragments) != 1
+                or fragments[0].chunk_no is not None
+                or aggregate_sha256 != fragments[0].sha256
+            ):
+                raise LLMWikiCompatibilityError(
+                    f"LLMWIKI section ingest metadata is invalid: {document_id}"
+                )
+        else:
+            chunk_numbers = [fragment.chunk_no for fragment in fragments]
+            if (
+                any(chunk_no is None for chunk_no in chunk_numbers)
+                or len(chunk_numbers) != len(set(chunk_numbers))
+                or list(chunk_numbers) != sorted(chunk_numbers, key=_natural_key)
+                or aggregate_sha256 != _source_fragment_aggregate_sha256(fragments)
+            ):
+                raise LLMWikiCompatibilityError(
+                    f"LLMWIKI source-fragment ingest metadata is invalid: {document_id}"
+                )
+
+    descriptor = {
+        "chunking_mode": mode,
+        "fragments": [
+            {
+                "chunk_no": fragment.chunk_no,
+                "path": fragment.relative_path,
+                "sha256": fragment.sha256,
+            }
+            for fragment in fragments
+        ],
+    }
+    descriptor_sha256 = _sha256(
+        b"codegate-llmwiki-ingest-v1\0"
+        + json.dumps(
+            descriptor,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    return NativeIngest(
+        chunking_mode=str(mode),
+        fragments=fragments,
+        descriptor_sha256=descriptor_sha256,
+    )
+
+
+def _native_input_relative_path(value: object, document_id: str) -> str:
+    if not isinstance(value, str) or not value.startswith("source-md/"):
+        raise LLMWikiCompatibilityError(f"LLMWIKI ingest path is invalid: {document_id}")
+    relative = Path(value.removeprefix("source-md/"))
+    if (
+        relative.is_absolute()
+        or len(relative.parts) != 1
+        or relative.suffix.lower() != ".md"
+        or relative.name in {"", ".", ".."}
+    ):
+        raise LLMWikiCompatibilityError(f"LLMWIKI ingest path is invalid: {document_id}")
+    return f"source-md/{relative.name}"
+
+
+def _native_sha256(value: object, document_id: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         raise LLMWikiCompatibilityError(f"LLMWIKI ingest checksum is invalid: {document_id}")
-    return digest
+    return value
+
+
+def _source_fragment_aggregate_sha256(
+    fragments: tuple[NativeInputFragment, ...],
+) -> str:
+    material = [
+        {"chunk_no": fragment.chunk_no, "sha256": fragment.sha256} for fragment in fragments
+    ]
+    return _sha256(
+        json.dumps(
+            material,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _natural_key(value: object) -> tuple[tuple[int, int | str], ...]:
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", str(value))
+        if part
+    )
 
 
 def _native_build_digest(build: NativeBuild) -> str:
@@ -1263,6 +1451,47 @@ def _render_normalized_markdown(
         width=1_000,
     )
     return f"---\n{frontmatter}---\n{body}"
+
+
+def _normalize_converted_h1(body: str, *, expected_title: str) -> str:
+    if (
+        not expected_title
+        or expected_title.strip() != expected_title
+        or "\n" in expected_title
+        or "\r" in expected_title
+    ):
+        raise LLMWikiCompatibilityError("LLMWIKI document title is invalid")
+    lines = body.splitlines(keepends=True)
+    first_content = next(
+        (index for index, line in enumerate(lines) if line.strip()),
+        None,
+    )
+    h1_lines: list[int] = []
+    fence: tuple[str, int] | None = None
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", content)
+        if fence is not None:
+            if (
+                fence_match is not None
+                and fence_match.group(1)[0] == fence[0]
+                and len(fence_match.group(1)) >= fence[1]
+            ):
+                fence = None
+            continue
+        if fence_match is not None:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            continue
+        if re.fullmatch(r"#\s+\S.*", content) is not None:
+            h1_lines.append(index)
+    if len(h1_lines) != 1 or first_content != h1_lines[0]:
+        raise LLMWikiCompatibilityError("doc2md body must contain exactly one leading H1 heading")
+    index = h1_lines[0]
+    line = lines[index]
+    line_ending = line[len(line.rstrip("\r\n")) :]
+    lines[index] = f"# {expected_title}{line_ending}"
+    return "".join(lines)
 
 
 def _validate_input_identity(

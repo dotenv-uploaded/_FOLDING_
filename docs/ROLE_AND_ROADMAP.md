@@ -126,8 +126,9 @@ MVP actual write는 Markdown/TXT부터 지원한다. JSON/YAML은 schema 검증�
 | 7 | 다운로드 앱 local runtime | loopback sidecar, 실제 LLMWIKI build, source/input 동기화, local capability | 완료(패키징 UI 대기) |
 | 8 | 로그인 handoff | Supabase direct login, `/auth/me`, provisioning write gate, CORS 계약 | 완료(프로젝트 hook·UI 적용 대기) |
 
-Phase 7은 실제 `LLMWIKI@fb0f8c7` checkout으로 명령, 승인, source write, native current
-교체와 변경된 근거 재검색까지 검증했다. 실제 Claude 모델 호출은 사용자 API key, Supabase hook은
+Phase 7은 실제 `codegate-2026-convert@30e6814` process와 `LLMWIKI@acf94f7` checkout으로 명령,
+승인, source write, native current 교체, 변경된 근거 재검색과 Undo까지 검증했다. 실제 Claude 모델
+호출은 사용자 API key, Supabase hook은
 팀 project 설정, frontend login 화면과 desktop bundle은 각 담당 환경이 있어야 최종 smoke할 수
 있다. 이 외부 조건을 Backend 구현 완료와 혼동하지 않는다.
 

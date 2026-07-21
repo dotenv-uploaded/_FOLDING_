@@ -1,4 +1,4 @@
-# 팀 통합 계약 v0.3
+# 팀 통합 계약 v0.4
 
 이 문서는 각 담당자가 내부 구현을 추측하지 않고 병렬 개발하기 위한 최소 wire·artifact 계약이다. 실행 중인 Backend의 `/openapi.json`과 이 문서가 다르면 OpenAPI를 우선하고 계약 version을 함께 올린다.
 
@@ -31,25 +31,52 @@
 
 ## `llm-wiki` acceptance 계약
 
-실제 연동 기준은 `LLMWIKI@fb0f8c7`이다. native package의
+실제 연동 기준은 `LLMWIKI@acf94f7`이다. native package의
 `tenants/<tenant>/wikis/<wiki>/current.json`이 유일한 active pointer이며
 `builds/build-<20 hex>`는 불변이다. Backend는 native manifest/chunks/links/aliases와 schema를
 검증한 뒤 build ID별 compatibility read cache를 만들지만 두 번째 active pointer를 만들지 않는다.
 
-필수 package 파일:
+현재 native `build_format_version`은 `server-v2`다. 쓰기 판단에는 aggregate hash만 사용하지 않고
+`chunking_mode`, fragment 수, 각 `chunk_no`·path·SHA를 함께 검증한다.
+
+```json
+{
+  "source_fragment_count": 1,
+  "chunking_mode": "sections",
+  "ingest": {
+    "aggregate_sha256": "...",
+    "fragments": [
+      {"chunk_no": null, "path": "source-md/REG-000001.md", "sha256": "..."}
+    ]
+  }
+}
+```
+
+Backend가 수정할 수 있는 형태는 `sections`, fragment 1개, `chunk_no=null`,
+`aggregate_sha256 == fragment.sha256`인 단일 Markdown뿐이다. `source-fragments` 문서는 native
+검색 결과에는 포함하지만 `write_access=none`, `editability=read_only`로 내린다. 여러 입력 파일의
+before/after bytes와 생성·삭제 목록을 한 journal로 snapshot하고 전부 원자 복구하는 계약이 없기
+때문이다. 이 제한을 풀 때는 fragment-set 상태 모델과 crash/Undo 회귀 테스트를 먼저 추가한다.
+
+필수 native build 파일:
 
 ```text
+.generated-by-wiki-builder
 AGENT_GUIDE.md
-VERSION
-checksums.sha256
+README.md
+build-meta.json
 manifest.jsonl
 docs/**/*.md
-references/<document_id>.source.json
+indexes/index-meta.json
 retrieval/aliases.json
 retrieval/chunks.jsonl
 retrieval/links.jsonl
 schemas/*.schema.json
 ```
+
+Backend가 build ID에 결박해 생성하는 compatibility read cache에는 `VERSION`,
+`checksums.sha256`, `references/<document_id>.source.json`과 Backend schema가 추가된다. Native
+`current.json`만 활성 포인터이며 cache에는 별도 current를 만들지 않는다.
 
 `enrichments.jsonl`은 현재 MVP acceptance의 선택 산출물이며 Backend 검색 adapter는 아직 로드하지 않는다. 용휘가 schema와 실제 후보 확장 adapter를 제공하면 `section_id`와 canonical exact quote를 검증한 항목만 검색 후보 확장에 사용한다. 그 전에는 enrichment를 답변 근거나 production graph readiness로 주장하지 않는다.
 
@@ -210,7 +237,8 @@ access row가 있을 때만 `codegate_provisioned=true`를 넣는다. Backend는
 
 1. doc2md가 설정됐으면 현재 source hash로 normalized Markdown을 다시 만든다. 없으면 지원되는
    Markdown/TXT exact operation을 기존 normalized body에 멱등 적용한다.
-2. normalized frontmatter의 `source.sha256`와 revision을 함께 갱신한다.
+2. doc2md body의 정확히 하나인 선행 H1을 활성 manifest title로 정규화하고, normalized
+   frontmatter의 `source.sha256`와 revision을 함께 갱신한다.
 3. `WikiBuildService.build(..., activate_incomplete=true)`를 expected current build ID CAS로 호출한다.
 4. native current가 가리키는 schema와 build metadata, source hash와 canonical evidence를 검증한다.
 5. native build ID에 결박된 compatibility cache를 만들고 execution을 published로 완료한다.
@@ -221,11 +249,16 @@ input, native storage root는 서로 겹칠 수 없다.
 
 ## 문서 변환 계약
 
-현재 연동 대상은 `codegate-2026-convert/services/doc2md@fa88f15`의 v0.2
+현재 연동 대상은 `codegate-2026-convert/services/doc2md@30e6814`의 v0.2
 `POST /v2/convert`다. 이 저장소는 `codegate-2026-api`에서 이름이 바뀌었다. ADR 0004와 이전
 WORK_LOG의 `codegate-2026-api@360ff41` 표기는 당시 기록으로 남기고, 현재 integration pin은
 여기를 따른다. Backend는 metadata로 stable ID, source URI, doc type, access를 강제하고 요청 직전과
 응답 후 source SHA를 대조한다. 응답은 `extra="forbid"`로 검증해 계약 밖 최상위 필드를 거부한다.
+
+Backend 요청은 `chunking.enabled=false`로 고정한다. LLMWIKI `local-runtime`이 최초 수집과 외부
+watcher에 사용하는 `POST /convert/async`는 별도 orchestration 경로이며 Backend outbox consumer가
+호출하지 않는다. 같은 normalized input에 두 writer가 동시에 접근하지 않도록 desktop 계층이
+직렬화해야 한다.
 
 doc2md의 v1 `POST /convert` 7키 응답은 호환성을 위해 동결되어 있지만 Backend는 더 이상 이를
 사용하지 않는다. 현재 adapter는 v0.2가 제공하는 다음 항목을 필수로 검증한다.
@@ -239,6 +272,11 @@ doc2md의 v1 `POST /convert` 7키 응답은 호환성을 위해 동결되어 있
 | 형식별 parse와 original write-back capability 분리 | `GET /capabilities`. **write_back은 전 형식 false** — 검증된 writer가 없으므로 read-only로 유지한다 |
 
 `sections[].ordinal`과 `anchor_hint`는 문서 중간에 절이 추가되면 이동한다. revision 간 같은 section을 매칭할 때는 반드시 `stable_key`를 쓴다.
+
+doc2md가 metadata title과 다른 원본 H1을 보존할 수 있으므로 Backend는 응답에 정확히 하나의 선행
+H1이 있는지 확인한 뒤 그 H1 text만 활성 LLMWIKI manifest title로 바꾼다. H1 누락·중복은 거부한다.
+LLMWIKI builder가 최종 section anchor와 chunk를 다시 계산하므로 doc2md span을 수정 결과의 정본으로
+재사용하지 않는다.
 
 `expected_source_sha256`을 요청에 넣으면 doc2md가 변환을 시작하기 전에 원본 hash를 대조해 불일치 시 `409 SOURCE_HASH_MISMATCH`로 거부한다. Backend의 응답측 stale cache 검증과 별개의 방어선이다.
 

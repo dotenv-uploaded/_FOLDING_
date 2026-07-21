@@ -20,7 +20,9 @@ app-data/               SQLite, backup, Claude session, compatibility cache
 source SHA가 자기 자신을 참조하므로 지원하지 않는다.
 
 LLMWIKI project root는 사용자가 고르는 문서 폴더가 아니라 앱과 함께 배포·검증한 code bundle
-경로다. 현재 호환 기준은 `dotenv-uploaded/LLMWIKI@fb0f8c7`이다.
+경로다. 현재 호환 기준은 `dotenv-uploaded/LLMWIKI@acf94f7`이다. `server-v2` native manifest 중
+`chunking_mode=sections`인 단일 fragment만 Backend 승인·Undo 쓰기를 허용한다. 여러
+`source-fragments`를 한 문서로 합친 build는 검색할 수 있지만 수정은 실패 폐쇄한다.
 
 ## 실행
 
@@ -39,10 +41,15 @@ uv run codegate-local \
 `codegate-local`은 loopback IP만 bind한다. Claude 연결 없이 상태 머신만 개발할 때에만
 `--deterministic-agent`를 추가한다. 제품 배포판은 이 옵션을 기본으로 사용하지 않는다.
 
-doc2md v0.2를 함께 실행하는 구성이라면 `--doc2md-url http://127.0.0.1:<port>`를 추가한다.
+`codegate-2026-convert/services/doc2md@30e6814`의 v0.2를 함께 실행하는 구성이라면
+`--doc2md-url http://127.0.0.1:<port>`를 추가한다.
 로컬 CLI의 기본 transport는 `source.kind=path`이므로 Backend와 같은 filesystem namespace와
 loopback/trusted process 경계가 필요하다. doc2md에 Bearer 인증을 켰다면
 `CODEGATE_DOC2MD_API_TOKEN`과 doc2md의 `DOC2MD_API_TOKEN`에 같은 값을 설정한다.
+
+Backend의 승인 변경 재발행은 동기 `POST /v2/convert`와 `chunking.enabled=false`를 사용한다.
+LLMWIKI `local-runtime`의 최초 수집·외부 watcher는 별도 `POST /convert/async` 경로다. 두 runtime이
+같은 source/input을 동시에 쓰지 않도록 desktop orchestration에서 writer를 하나로 직렬화한다.
 
 ## 한 번의 변경
 
@@ -62,6 +69,9 @@ loopback/trusted process 경계가 필요하다. doc2md에 Bearer 인증을 켰�
 
 LLMWIKI build가 실패해도 원본 write 기록과 backup은 남고 이전 current는 계속 제공된다.
 execution의 `sync_retryable`에서 동일 event를 retry하거나 Undo한다.
+doc2md가 원본 H1을 보존하더라도 Backend는 정확히 하나의 선행 H1만 받은 뒤 활성 LLMWIKI
+manifest의 안정된 title로 정규화한다. H1이 없거나 여러 개면 이전 current를 유지하고 재시도 가능한
+동기화 실패로 닫는다.
 
 ## 로그인과 로컬 권한
 
