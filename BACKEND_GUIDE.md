@@ -105,6 +105,7 @@ app/
 
 ## 7. 참고 문서
 
+- 디렉토리 구조/요청 흐름/데이터 모델 상세: [BACKEND_STRUCTURE.md](BACKEND_STRUCTURE.md)
 - 템플릿 자체 문서: `backend/README.md`
 - OWASP 전체 인덱스: `security/Index.md`
 - FastAPI 실전 패턴 요약(외부 링크, 설치 안 함): https://github.com/zhanymkanov/fastapi-best-practices

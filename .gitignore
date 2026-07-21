@@ -21,3 +21,4 @@ htmlcov/
 # os / editor
 .DS_Store
 Thumbs.db
+.obsidian/
