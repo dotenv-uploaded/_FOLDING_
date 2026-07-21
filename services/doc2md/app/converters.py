@@ -226,9 +226,16 @@ def _ocr_block(markdown: str) -> str:
 # noise to a retrieval index.
 _MIN_OCR_LINE = 2
 
+# A line with no letter in it is a number, a tick mark or stray punctuation —
+# never a quotable fact. One 2.3MB photo in a deck recognised as exactly
+# [":", "208"], and because that photo was reused in ten places the meaningless
+# "208" was spliced in ten times. Digits inside a real phrase are unaffected:
+# "10,000천원" and "P1" both contain letters and survive.
+_HAS_LETTER = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z一-鿿぀-ヿ]")
+
 
 def _novel_lines(text: str, body_flat: str) -> str:
-    """Drop OCR lines whose text the converter already extracted.
+    """Keep only OCR lines that say something the body does not already.
 
     A picture very often restates what is beside it — a title baked into a
     banner, a caption repeated in a text box. Without this, reading pictures
@@ -245,6 +252,8 @@ def _novel_lines(text: str, body_flat: str) -> str:
             continue
         flat = _WS.sub("", stripped)
         if len(flat) < _MIN_OCR_LINE or flat in body_flat:
+            continue
+        if not _HAS_LETTER.search(flat):
             continue
         kept.append(stripped)
     return "\n".join(kept)

@@ -172,3 +172,28 @@ def test_page_marker_round_trips(n):
     from app.structure import _PAGE_MARKER
 
     assert int(_PAGE_MARKER.search(converters.page_marker(n)).group(1)) == n
+
+
+# --------------------------------------------------------------------------
+# letterless fragments
+# --------------------------------------------------------------------------
+
+
+def test_letterless_lines_are_dropped():
+    """A 2.3MB photo recognised as [':', '208'], reused in ten places, put a
+    meaningless '208' into the body ten times."""
+    assert converters._novel_lines("208\n:\n2026", "") == ""
+
+
+def test_digits_inside_a_real_phrase_survive():
+    assert converters._novel_lines("10,000천원", "") == "10,000천원"
+    assert converters._novel_lines("P1 프로그램", "") == "P1 프로그램"
+
+
+def test_short_latin_tokens_survive():
+    assert converters._novel_lines("AI\nP1", "") == "AI\nP1"
+
+
+def test_mixed_block_keeps_only_the_meaningful_lines():
+    ocr = "208\n조직 재생 연구\n:\n99"
+    assert converters._novel_lines(ocr, "") == "조직 재생 연구"

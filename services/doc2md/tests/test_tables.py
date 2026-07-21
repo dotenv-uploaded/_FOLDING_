@@ -133,3 +133,16 @@ def test_repair_never_loses_a_character_on_the_real_corpus():
     for f in sorted(out_dir.rglob("*.md")):
         body = f.read_text(encoding="utf-8")
         assert content(body) == content(repair_tables(body)), f.name
+
+
+def test_office_lock_files_are_not_input(tmp_path):
+    """Word/PowerPoint leave ~$name.pptx beside an open document: same
+    extension, a few hundred bytes of bookkeeping, often unreadable."""
+    from app.batch_cli import _is_document
+
+    (tmp_path / "보고서.pptx").write_bytes(b"x")
+    (tmp_path / "~$보고서.pptx").write_bytes(b"lock")
+    (tmp_path / ".~lock.보고서.pptx#").write_bytes(b"lock")
+
+    kept = sorted(p.name for p in tmp_path.iterdir() if _is_document(p))
+    assert kept == ["보고서.pptx"]

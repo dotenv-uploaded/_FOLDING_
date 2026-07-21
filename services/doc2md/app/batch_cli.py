@@ -113,9 +113,21 @@ def convert_one(path: Path, out_root: Path, budget_tokens: int | None) -> dict:
     }
 
 
+def _is_document(p: Path) -> bool:
+    """Office leaves lock files beside an open document — ``~$report.pptx`` — that
+    carry the same extension but are a few hundred bytes of bookkeeping, and are
+    usually unreadable while the app holds them. They are not input."""
+    return (
+        p.is_file()
+        and p.suffix.lower() in SUPPORTED
+        and not p.name.startswith("~$")
+        and not p.name.startswith(".~lock.")
+    )
+
+
 def run(in_dir: Path, out_root: Path, budget_tokens: int | None = None) -> list[dict]:
     files = sorted(
-        (p for p in in_dir.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED),
+        (p for p in in_dir.iterdir() if _is_document(p)),
         key=lambda p: p.name.lower(),
     )
     if not files:
