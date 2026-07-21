@@ -162,8 +162,11 @@ def test_provider_fingerprint_changes_with_model_config(config: WikiConfig) -> N
     assert model_fingerprint(config) != model_fingerprint(changed)
 
 
-def test_env_file_exists_and_is_ignored(config: WikiConfig) -> None:
+def test_env_example_exists_and_secrets_are_ignored(config: WikiConfig) -> None:
     env_file = config.resolve_path("env_file")
-    assert env_file.is_file()
-    assert "GEMINI_API_KEY=" in env_file.read_text(encoding="utf-8")
-    assert ".env" in (config.project_dir / ".gitignore").read_text(encoding="utf-8")
+    env_example = env_file.with_name(".env.example")
+    assert env_example.is_file()
+    assert env_example.read_text(encoding="utf-8").splitlines() == ["GEMINI_API_KEY="]
+    ignore_rules = (config.project_dir / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".env" in ignore_rules
+    assert "!.env.example" in ignore_rules
