@@ -54,6 +54,19 @@ export function registerIpcHandlers(
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
 
+  handle(IPC.rootsPickDialogMulti, '폴더 선택 창을 열지 못했습니다.', async () => {
+    const window = getWindow();
+    // 초기 설정에서 여러 폴더를 한 번에 고른다. 겹치는 것은 등록 단계에서 최상위만 남긴다.
+    const result = window
+      ? await dialog.showOpenDialog(window, {
+          title: '문서 폴더 선택 (여러 개 가능)',
+          buttonLabel: '이 폴더 등록',
+          properties: ['openDirectory', 'multiSelections', 'createDirectory'],
+        })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'multiSelections'] });
+    return result.canceled ? [] : result.filePaths;
+  });
+
   handle(IPC.rootsScanPreview, '폴더를 훑어보지 못했습니다.', (rootPath: string) =>
     services.scanPreview(rootPath),
   );
@@ -125,6 +138,10 @@ export function registerIpcHandlers(
     services.approval.respond(id, approved);
   });
 
+  /* ----------------------------------------------------- L1 지식 그래프 */
+
+  handle(IPC.wikiGraph, '지식 그래프를 불러오지 못했습니다.', () => services.getWikiGraph());
+
   /* ------------------------------------------------------- L1 원본 열기 */
 
   handle(IPC.openOriginal, '원본 문서를 열지 못했습니다.', async (virtualPath: string) => {
@@ -134,6 +151,19 @@ export function registerIpcHandlers(
     }
     const failure = await shell.openPath(absPath);
     if (failure) throw new Error(`원본 문서를 열지 못했습니다: ${failure}`);
+  });
+
+  /*
+   * 파일 탐색기에서 보여주기 — 여는 것과 용도가 다르다.
+   * 문서를 고치면 옆에 `.bak` 백업이 생기는데, 파일을 여는 것만으로는 그 백업이 보이지 않는다.
+   * 되돌리려면 폴더를 봐야 하므로 별도 동작으로 둔다.
+   */
+  handle(IPC.revealOriginal, '폴더에서 문서를 찾지 못했습니다.', (virtualPath: string) => {
+    const absPath = services.resolveOriginal(virtualPath);
+    if (!absPath) {
+      throw new Error('등록된 폴더 안에서 원본을 찾지 못했습니다.');
+    }
+    shell.showItemInFolder(absPath);
   });
 }
 

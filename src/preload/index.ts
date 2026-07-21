@@ -15,6 +15,7 @@ import type {
   Root,
   ScanPreview,
   Session,
+  WikiGraph,
 } from '@contracts';
 
 /** `on*` 구독자는 해제 함수를 돌려준다 — 렌더러의 useEffect cleanup 에서 호출. */
@@ -36,6 +37,8 @@ const api = {
     list: (): Promise<Root[]> => ipcRenderer.invoke(IPC.rootsList),
     /** 네이티브 폴더 선택 다이얼로그. 취소하면 null. */
     pickDialog: (): Promise<string | null> => ipcRenderer.invoke(IPC.rootsPickDialog),
+    /** 여러 폴더를 한 번에 선택. 취소하면 빈 배열. (초기 설정용) */
+    pickDialogMulti: (): Promise<string[]> => ipcRenderer.invoke(IPC.rootsPickDialogMulti),
     /** 등록 전 포함/제외 미리보기 (스펙 v1.3 §3 온보딩) */
     scanPreview: (path: string): Promise<ScanPreview> =>
       ipcRenderer.invoke(IPC.rootsScanPreview, path),
@@ -94,10 +97,18 @@ const api = {
       ipcRenderer.invoke(IPC.approvalRespond, id, approved),
   },
 
+  wiki: {
+    /** 활성 빌드의 지식 그래프 (그래프 탭) */
+    graph: (): Promise<WikiGraph> => ipcRenderer.invoke(IPC.wikiGraph),
+  },
+
   shell: {
     /** 인용 클릭 → OS 기본 앱으로 원본 문서 열기 */
     openOriginal: (relPath: string): Promise<void> =>
       ipcRenderer.invoke(IPC.openOriginal, relPath),
+    /** 파일 탐색기에서 선택된 채로 보여주기 — 옆의 `.bak` 백업을 찾을 때 쓴다 */
+    revealOriginal: (relPath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.revealOriginal, relPath),
   },
 };
 

@@ -51,6 +51,7 @@ export function useWorkspace() {
     addRoot,
     removeRoot,
     pickFolder: window.codegate.roots.pickDialog,
+    pickFolders: window.codegate.roots.pickDialogMulti,
     scanPreview: window.codegate.roots.scanPreview,
     triggerBuild: window.codegate.build.trigger,
     /** 진행 중인 빌드 중단 — enrichment LLM 호출 비용을 멈춘다 (스펙 v1.4 §5) */

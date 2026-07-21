@@ -354,7 +354,8 @@ export class Store {
   listMessages(conversationId: string): ChatMessage[] {
     const rows = this.db
       .prepare(
-        `SELECT id, conversation_id, role, text, citations, tools, execution, streaming, created_at
+        `SELECT id, conversation_id, role, text, citations, tools, execution, changed_path,
+                streaming, created_at
          FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid`,
       )
       .all(conversationId) as {
@@ -365,6 +366,7 @@ export class Store {
       citations: string | null;
       tools: string | null;
       execution: string | null;
+      changed_path: string | null;
       streaming: number;
       created_at: string;
     }[];
@@ -376,6 +378,7 @@ export class Store {
       citations: parseJson<Citation[]>(r.citations) ?? undefined,
       tools: parseJson<{ name: string; summary: string }[]>(r.tools) ?? undefined,
       execution: parseJson<ExecutionSummary>(r.execution) ?? undefined,
+      changedPath: r.changed_path ?? undefined,
       createdAt: r.created_at,
       streaming: r.streaming === 1 ? true : undefined,
     }));
@@ -385,9 +388,11 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO messages (
-           id, conversation_id, role, text, citations, tools, execution, streaming, created_at
+           id, conversation_id, role, text, citations, tools, execution, changed_path,
+           streaming, created_at
          ) VALUES (
-           @id, @conversationId, @role, @text, @citations, @tools, @execution, @streaming, @createdAt
+           @id, @conversationId, @role, @text, @citations, @tools, @execution, @changedPath,
+           @streaming, @createdAt
          )`,
       )
       .run({
@@ -398,6 +403,7 @@ export class Store {
         citations: message.citations ? JSON.stringify(message.citations) : null,
         tools: message.tools ? JSON.stringify(message.tools) : null,
         execution: message.execution ? JSON.stringify(message.execution) : null,
+        changedPath: message.changedPath ?? null,
         streaming: message.streaming ? 1 : 0,
         createdAt: message.createdAt,
       });
@@ -411,6 +417,7 @@ export class Store {
       citations?: Citation[];
       tools?: { name: string; summary: string }[];
       execution?: ExecutionSummary;
+      changedPath?: string;
       streaming?: boolean;
     },
   ): void {
@@ -431,6 +438,10 @@ export class Store {
     if (patch.execution !== undefined) {
       sets.push('execution = @execution');
       params.execution = JSON.stringify(patch.execution);
+    }
+    if (patch.changedPath !== undefined) {
+      sets.push('changed_path = @changedPath');
+      params.changedPath = patch.changedPath;
     }
     if (patch.streaming !== undefined) {
       sets.push('streaming = @streaming');

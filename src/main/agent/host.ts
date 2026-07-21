@@ -118,6 +118,12 @@ export class ChatService {
     let buffer = '';
     let citations: Citation[] = [];
     let execution: ExecutionSummary | undefined;
+    /**
+     * 승인 요청이 가리킨 문서. 답변에 "열기" 를 붙이기 위해 들고 있는다.
+     * 승인 결과는 이벤트 스트림에 없으므로(에이전트가 내부에서 처리한다) 여기서는
+     * **대상만** 기억하고, 실제로 반영됐는지는 답변 본문·execution 이 말하게 둔다.
+     */
+    let changedPath: string | undefined;
     const tools: { name: string; summary: string }[] = [];
     let lastPersist = 0;
 
@@ -146,6 +152,8 @@ export class ChatService {
         } else if (event.type === 'tool_start') {
           tools.push({ name: event.name, summary: event.summary });
           persist(true);
+        } else if (event.type === 'approval_request') {
+          if (event.target) changedPath = event.target;
         } else if (event.type === 'done') {
           citations = event.citations;
           execution = event.execution;
@@ -183,6 +191,7 @@ export class ChatService {
         tools,
         citations,
         execution,
+        changedPath,
         streaming: false,
       });
       store.touchConversation(conversationId);

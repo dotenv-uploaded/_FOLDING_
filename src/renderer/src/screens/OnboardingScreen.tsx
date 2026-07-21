@@ -1,24 +1,23 @@
 import { useState } from 'react';
-import { ChevronDown, FolderOpen, FolderPlus } from 'lucide-react';
+import { FolderOpen, FolderPlus, Plus, X } from 'lucide-react';
 import type { ScanPreview, Session } from '@contracts';
 import type { useWorkspace } from '@/state/useWorkspace';
-import { useLlmKey } from '@/state/useLlmKey';
 import { Button } from '@/ui/Button';
 import { Card } from '@/ui/Card';
 import { Badge } from '@/ui/Badge';
 import { TitleBar } from '@/ui/TitleBar';
 import { Spinner } from '@/ui/Spinner';
 import { ProgressBar } from '@/ui/ProgressBar';
-import { LlmKeyForm } from '@/components/LlmKeyForm';
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
 /**
- * 온보딩 (스펙 v1.4 §3).
- *   로그인 → **LLM API 키 설정** → 폴더 등록 → 스캔 미리보기 → 로컬 빌드
+ * 온보딩 (스펙 v2.4).
+ *   로그인 → 폴더 등록 → 스캔 미리보기 → 로컬 빌드
  *
- * v1.4 에서 빌드는 전부 이 컴퓨터에서 돈다. enrichment 가 LLM 을 직접 호출하므로
- * 키가 없으면 빌드를 시작할 수 없다 — 그래서 키 설정이 폴더 등록보다 앞에 온다.
+ * 예전에는 폴더 등록 앞에 "Anthropic 키 설정" 단계가 있었다. 지금은 **토큰을 우리가 내고
+ * 사용자는 구독으로 쓴다** — 사용자가 키를 발급받을 이유가 없으므로 그 단계를 없앴다.
+ * 키는 메인 프로세스의 ManagedLlmKeyStore 가 공급한다.
  */
 export function OnboardingScreen({
   workspace,
@@ -27,20 +26,9 @@ export function OnboardingScreen({
   workspace: Workspace;
   session: Session;
 }) {
-  const llmKey = useLlmKey();
-  const anthropicConfigured = llmKey.keys.some(
-    (key) => key.provider === 'anthropic' && key.configured,
-  );
-
-  if (llmKey.loading) return <Shell session={session} />;
-
   return (
     <Shell session={session}>
-      {llmKey.configured && anthropicConfigured ? (
-        <FolderStep workspace={workspace} />
-      ) : (
-        <KeyStep llmKey={llmKey} />
-      )}
+      <FolderStep workspace={workspace} />
     </Shell>
   );
 }
@@ -62,45 +50,51 @@ function Shell({ session, children }: { session: Session; children?: React.React
   );
 }
 
-/* ── STEP 1 — LLM API 키 ───────────────────────────────────────────────── */
+/* ── 폴더 등록 (여러 개) ───────────────────────────────────────────────── */
 
-function KeyStep({ llmKey }: { llmKey: ReturnType<typeof useLlmKey> }) {
-  return (
-    <>
-      <span className="fold-eyebrow">STEP 1 · 분석 키 설정</span>
-      <h1 className="mt-3 text-h2 font-bold tracking-tight text-ink-950">
-        문서를 읽을 Anthropic 키가 필요해요.
-      </h1>
-      <p className="mt-2.5 text-base leading-relaxed text-ink-500">
-        로컬 sidecar의 Claude Agent SDK가 문서를 검색하고 변경안을 만들 때 Anthropic API를
-        사용합니다. 변환·조립과 원본 처리는 이 컴퓨터에서 이뤄지고,
-        <br />
-        문서가 저희 서버로 전송되는 일은 없습니다.
-      </p>
-
-      <Card className="mt-8 p-6">
-        <LlmKeyForm keys={llmKey.keys} onSave={llmKey.save} onClear={llmKey.clear} />
-      </Card>
-    </>
-  );
+/** `parent` 가 `child` 를 포함하는가 (같은 경로 포함). 경계에서 접두어 오탐을 막는다. */
+function covers(parent: string, child: string): boolean {
+  if (parent === child) return true;
+  return child.startsWith(parent.endsWith('/') ? parent : `${parent}/`);
 }
 
-/* ── STEP 2 — 폴더 등록 ────────────────────────────────────────────────── */
+/**
+ * 스테이징 목록에 폴더를 넣되 **최상위만 남긴다** — 등록 단계의 규칙(resolveRootSelection)을
+ * 화면에서도 그대로 보여 준다. 이미 포함되면 null 을 돌려 "이미 포함됨"을 알린다.
+ */
+function mergeStaged(existing: ScanPreview[], incoming: ScanPreview): ScanPreview[] | null {
+  if (existing.some((s) => covers(s.root, incoming.root))) return null; // 하위·중복
+  const kept = existing.filter((s) => !covers(incoming.root, s.root)); // 상위면 하위 흡수
+  return [...kept, incoming];
+}
 
 function FolderStep({ workspace }: { workspace: Workspace }) {
-  const [preview, setPreview] = useState<ScanPreview | null>(null);
+  const [staged, setStaged] = useState<ScanPreview[]>([]);
   const [scanning, setScanning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showExcluded, setShowExcluded] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
 
+  /** 폴더를 **여러 개** 고르고, 각각 스캔해 스테이징에 쌓는다. */
   async function pick() {
     setError(null);
-    const path = await workspace.pickFolder();
-    if (!path) return;
+    setNote(null);
+    const paths = await workspace.pickFolders();
+    if (paths.length === 0) return;
     setScanning(true);
     try {
-      setPreview(await workspace.scanPreview(path));
+      let current = staged;
+      const covered: string[] = [];
+      for (const path of paths) {
+        const preview = await workspace.scanPreview(path);
+        const merged = mergeStaged(current, preview);
+        if (merged === null) covered.push(path);
+        else current = merged;
+      }
+      setStaged(current);
+      if (covered.length > 0) {
+        setNote(`이미 포함된 폴더 ${covered.length}개는 건너뛰었습니다 (상위 폴더가 이미 있어요).`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '폴더를 읽지 못했습니다.');
     } finally {
@@ -108,33 +102,41 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
     }
   }
 
+  function removeStaged(root: string) {
+    setStaged((list) => list.filter((s) => s.root !== root));
+  }
+
   async function confirm() {
-    if (!preview) return;
+    if (staged.length === 0) return;
     setSubmitting(true);
     setError(null);
     try {
-      await workspace.addRoot(preview.root);
-      // 폴더만 등록되면 App이 즉시 메인 화면으로 넘긴다.
-      // 정규화·위키 조립·검색 엔진 준비는 메인 화면에서 백그라운드로 이어진다.
+      // 순서대로 등록한다. 첫 폴더가 등록되는 순간 App 이 메인 화면으로 넘어가고,
+      // 나머지 등록과 백그라운드 준비는 유지되는 workspace 훅에서 이어진다.
+      for (const preview of staged) {
+        await workspace.addRoot(preview.root);
+      }
     } catch (e) {
       setSubmitting(false);
       setError(e instanceof Error ? e.message : '빌드를 시작하지 못했습니다.');
     }
   }
 
+  const totalIncluded = staged.reduce((sum, s) => sum + s.included.length, 0);
+
   return (
     <>
-      <span className="fold-eyebrow">STEP 2 · 폴더 등록</span>
+      <span className="fold-eyebrow">폴더 등록</span>
       <h1 className="mt-3 text-h2 font-bold tracking-tight text-ink-950">
         어떤 폴더를 정리할까요?
       </h1>
       <p className="mt-2.5 text-base leading-relaxed text-ink-500">
-        선택한 폴더의 문서를 읽어 위키로 만듭니다. 위키는 이 컴퓨터에만 저장돼요.
+        선택한 폴더의 문서를 읽어 위키로 만듭니다. 폴더는 여러 개 등록할 수 있어요.
         <br />
-        나중에 언제든 폴더를 추가하거나 해제할 수 있어요.
+        겹치거나 상위 폴더를 고르면 최상위만 남깁니다. 위키는 이 컴퓨터에만 저장돼요.
       </p>
 
-      {!preview ? (
+      {staged.length === 0 ? (
         <Card
           interactive
           onClick={scanning ? undefined : pick}
@@ -153,7 +155,7 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
               <div>
                 <div className="text-[15px] font-semibold text-ink-900">폴더 선택하기</div>
                 <div className="mt-1 text-xs text-ink-400">
-                  hwp · hwpx · docx · pdf · md · txt 를 읽습니다
+                  hwp · hwpx · docx · pdf · md · txt 를 읽습니다 · 여러 개 선택 가능
                 </div>
               </div>
             </>
@@ -161,59 +163,57 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
         </Card>
       ) : (
         <Card className="mt-8 overflow-hidden">
-          <div className="flex items-center gap-3 border-b border-ink-100 px-6 py-5">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-500">
-              <FolderOpen size={19} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[15px] font-semibold text-ink-900">{preview.root}</div>
-              <div className="mt-0.5 font-mono text-xs text-ink-400">
-                {preview.included.length}개 포함 · {preview.excluded.length}개 제외
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={pick} disabled={submitting}>
-              변경
-            </Button>
-          </div>
-
-          <div className="max-h-[200px] overflow-auto px-6 py-4">
-            <ul className="flex flex-col gap-1.5">
-              {preview.included.slice(0, 40).map((p) => (
-                <li key={p} className="truncate font-mono text-xs text-ink-600">
-                  {p}
-                </li>
-              ))}
-            </ul>
-            {preview.included.length > 40 && (
-              <div className="mt-2 text-xs text-ink-400">외 {preview.included.length - 40}개</div>
-            )}
-          </div>
-
-          {preview.excluded.length > 0 && (
-            <div className="border-t border-ink-100 bg-ink-50">
-              <button
-                onClick={() => setShowExcluded((v) => !v)}
-                className="flex w-full items-center gap-2 px-6 py-3 text-xs font-semibold text-ink-600 hover:bg-ink-100"
+          <ul className="flex flex-col">
+            {staged.map((s) => (
+              <li
+                key={s.root}
+                className="flex items-center gap-3 border-b border-ink-100 px-6 py-4 last:border-b-0"
               >
-                <ChevronDown
-                  size={15}
-                  className={showExcluded ? 'rotate-180 transition-transform' : 'transition-transform'}
-                />
-                제외된 {preview.excluded.length}개 보기
-              </button>
-              {showExcluded && (
-                <ul className="max-h-[160px] overflow-auto px-6 pb-4">
-                  {preview.excluded.slice(0, 60).map((e) => (
-                    <li key={e.path} className="flex gap-2 py-0.5 font-mono text-xs">
-                      <span className="min-w-0 flex-1 truncate text-ink-400">{e.path}</span>
-                      <span className="shrink-0 text-ink-300">{e.reason}</span>
-                    </li>
-                  ))}
-                </ul>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-500">
+                  <FolderOpen size={19} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[15px] font-semibold text-ink-900">{s.root}</div>
+                  <div className="mt-0.5 font-mono text-xs text-ink-400">
+                    {s.included.length}개 포함 · {s.excluded.length}개 제외
+                  </div>
+                </div>
+                {!submitting && (
+                  <button
+                    onClick={() => removeStaged(s.root)}
+                    aria-label="폴더 제거"
+                    className="shrink-0 rounded-sm p-1.5 text-ink-300 transition-colors hover:bg-red-50 hover:text-red-500 fold-focus"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {!submitting && (
+            <button
+              onClick={scanning ? undefined : pick}
+              disabled={scanning}
+              className="flex w-full items-center justify-center gap-1.5 border-t border-ink-100 bg-ink-50 px-6 py-3 text-xs font-semibold text-blue-600 hover:bg-ink-100 disabled:opacity-60"
+            >
+              {scanning ? (
+                <>
+                  <Spinner size={14} className="text-blue-500" /> 폴더를 훑어보는 중…
+                </>
+              ) : (
+                <>
+                  <Plus size={14} /> 폴더 더 추가
+                </>
               )}
-            </div>
+            </button>
           )}
         </Card>
+      )}
+
+      {note && !error && (
+        <p className="mt-3 rounded-md bg-amber-50 px-3.5 py-2.5 text-xs leading-relaxed text-amber-600">
+          {note}
+        </p>
       )}
 
       {error && (
@@ -225,7 +225,7 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
         </div>
       )}
 
-      {preview && (
+      {staged.length > 0 && (
         <div className="mt-6 flex flex-col gap-3">
           <div className="flex items-center gap-3">
             <Button size="lg" onClick={confirm} loading={submitting}>
@@ -233,7 +233,7 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
                 ? workspace.build?.phase?.name === 'convert'
                   ? `문서 변환 중 ${workspace.build.phase.done}/${workspace.build.phase.total}`
                   : (workspace.build?.message ?? '문서를 준비하는 중…')
-                : `${preview.included.length}개 문서로 시작하기`}
+                : `폴더 ${staged.length}개 · 문서 ${totalIncluded}개로 시작하기`}
             </Button>
             <span className="text-xs text-ink-400">
               변환 ▸ 분석 ▸ 조립 순서로 이 컴퓨터에서 처리합니다.

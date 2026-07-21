@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -18,12 +18,16 @@ export function TreePane({
   tree,
   build,
   roots,
+  onOpenInGraph,
 }: {
   tree: FileNode[];
   build: BuildState | null;
   roots: Root[];
+  /** 파일 더블클릭 → 그래프 탭에서 그 문서를 짚어 준다 (경로로 넘긴다 — 트리는 doc_id 를 모른다) */
+  onOpenInGraph?: (path: string) => void;
 }) {
   const counts = useMemo(() => countByStatus(tree), [tree]);
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
 
   return (
     <aside className="flex min-h-0 flex-col border-l border-ink-100 bg-white">
@@ -44,7 +48,13 @@ export function TreePane({
         ) : (
           <ul className="flex flex-col">
             {tree.map((n) => (
-              <TreeNode key={n.path} node={n} depth={0} />
+              <TreeNode
+                key={n.path}
+                node={n}
+                depth={0}
+                onOpenInGraph={onOpenInGraph}
+                onContextMenu={(path, x, y) => setMenu({ path, x, y })}
+              />
             ))}
           </ul>
         )}
@@ -53,11 +63,91 @@ export function TreePane({
       <div className="shrink-0 border-t border-ink-100 px-5 py-4">
         <BuildSummary build={build} roots={roots} counts={counts} />
       </div>
+
+      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
     </aside>
   );
 }
 
-function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
+/**
+ * 파일 우클릭 메뉴 — 열기 · 파인더에서 보기.
+ *
+ * 둘을 나눈 이유는 **백업** 때문이다. 문서를 고치면 옆에 `.bak` 이 생기는데,
+ * 파일을 여는 것만으로는 그게 보이지 않는다. 되돌리려면 폴더를 봐야 한다.
+ */
+function ContextMenu({
+  path,
+  x,
+  y,
+  onClose,
+}: {
+  path: string;
+  x: number;
+  y: number;
+  onClose: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+
+  // 바깥을 누르거나 Esc 로 닫는다 — 메뉴가 남아 화면을 가리면 안 된다.
+  useEffect(() => {
+    const close = () => onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  async function run(action: 'openOriginal' | 'revealOriginal') {
+    try {
+      await window.codegate.shell[action](path);
+      onClose();
+    } catch (err) {
+      // 실패를 삼키고 메뉴만 닫으면 사용자는 뭘 눌렀는지 모른 채 아무 일도 안 일어난다.
+      setError(err instanceof Error ? err.message : '문서를 열지 못했습니다.');
+    }
+  }
+
+  return (
+    <div
+      // 메뉴 안의 클릭이 바깥 닫기 리스너까지 가지 않게 막는다.
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{ left: x, top: y }}
+      className="fixed z-50 min-w-[168px] overflow-hidden rounded-md border border-ink-100 bg-white py-1 shadow-lg"
+      role="menu"
+    >
+      <MenuItem onClick={() => void run('openOriginal')}>열기</MenuItem>
+      <MenuItem onClick={() => void run('revealOriginal')}>파인더에서 열기</MenuItem>
+      {error && <p className="mt-1 border-t border-ink-100 px-3 py-2 text-2xs text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className="block w-full px-3 py-1.5 text-left text-xs text-ink-700 hover:bg-ink-50"
+    >
+      {children}
+    </button>
+  );
+}
+
+function TreeNode({
+  node,
+  depth,
+  onOpenInGraph,
+  onContextMenu,
+}: {
+  node: FileNode;
+  depth: number;
+  onOpenInGraph?: (path: string) => void;
+  onContextMenu: (path: string, x: number, y: number) => void;
+}) {
   const [open, setOpen] = useState(depth < 1);
 
   if (node.isDir) {
@@ -85,7 +175,13 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
         {open && node.children && node.children.length > 0 && (
           <ul className="flex flex-col">
             {node.children.map((c) => (
-              <TreeNode key={c.path} node={c} depth={depth + 1} />
+              <TreeNode
+                key={c.path}
+                node={c}
+                depth={depth + 1}
+                onOpenInGraph={onOpenInGraph}
+                onContextMenu={onContextMenu}
+              />
             ))}
           </ul>
         )}
@@ -96,8 +192,19 @@ function TreeNode({ node, depth }: { node: FileNode; depth: number }) {
   return (
     <li>
       <button
-        onClick={() => window.codegate.shell.openOriginal(node.path)}
-        title={`원본 열기 — ${node.path}`}
+        /*
+         * 단일 클릭으로 파일을 열지 않는다.
+         *
+         * 예전에는 클릭 = 원본 열기였다. 여기에 더블클릭을 붙이면 **첫 클릭이 먼저 파일을
+         * 열어버려** 외부 앱이 뜨고 포커스를 가져간다 — 더블클릭이 사실상 불가능해진다.
+         * 그래서 여는 동작은 우클릭 메뉴로 옮겼다.
+         */
+        onDoubleClick={() => onOpenInGraph?.(node.path)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onContextMenu(node.path, e.clientX, e.clientY);
+        }}
+        title={`더블클릭: 그래프에서 보기 · 우클릭: 열기 메뉴\n${node.path}`}
         className="flex w-full items-center gap-2 rounded-sm py-1.5 pr-2 text-left hover:bg-ink-50 fold-focus"
         style={{ paddingLeft: 8 + depth * 12 + 19 }}
       >
@@ -190,6 +297,18 @@ function BuildSummary({
         <span className="truncate text-xs font-semibold text-ink-700">
           {failed ? '빌드 실패' : running ? '정리 중' : '최신 상태'}
         </span>
+        {/*
+          수동 빌드 — 실패했을 때 되돌릴 길이 있어야 한다. 예전에는 실패하면 화면에서
+          다시 시도할 방법이 없어 앱을 껐다 켜야 했다. 진행 중에는 중복 실행을 막는다.
+        */}
+        {!running && (
+          <button
+            onClick={() => void window.codegate.build.trigger()}
+            className="shrink-0 text-2xs font-semibold text-blue-600 hover:text-blue-700"
+          >
+            {failed ? '다시 빌드' : '지금 빌드'}
+          </button>
+        )}
         {running && (
           <span className="shrink-0 font-mono text-xs text-blue-600">
             {Math.round(build.progress)}%

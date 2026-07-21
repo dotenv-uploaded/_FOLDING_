@@ -77,4 +77,10 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE messages ADD COLUMN execution TEXT;
   `,
+
+  // v4 — 승인으로 손댄 문서의 경로. 답변에서 그 파일을 바로 열 수 있게 한다.
+  // 렌더러 상태로만 들고 있으면 앱을 껐다 켠 뒤 "방금 뭘 고쳤더라"를 되찾을 수 없다.
+  `
+  ALTER TABLE messages ADD COLUMN changed_path TEXT;
+  `,
 ];
