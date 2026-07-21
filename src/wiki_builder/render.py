@@ -25,13 +25,15 @@ Markdown 정본으로부터 생성된 불변·읽기 전용 위키 빌드다. Op
 - 위키 버전: `{config.wiki_version}` (빌드 후보, 릴리스되지 않음)
 - 스키마 버전: `{config.schema_version}`
 - 문서: {len(data.documents)}개
+- 입력 Markdown 조각: {sum(len(document.source_fragments) for document in data.documents)}개
 - 원문 청크: {len(data.chunks)}개
 - 승인된 enrichment: {approved}/{len(data.documents)}개
 - embedding/vector/FTS: 포함하지 않음
 
 ## 정본과 파생 데이터
 
-- 정본 입력: 서버가 지정한 `source-md` 저장소이며 이 빌드에는 복사본만 포함됨
+- 정본 입력: 서버가 지정한 `source-md` 저장소이며, 같은 `id`의 `chunk_no` 파일은
+  하나의 논리 문서와 여러 의미 청크로 결합됨
 - 정규화 문서: `docs/`
 - 검색 원문: `retrieval/chunks.jsonl`
 - 모델 생성 보조정보: `retrieval/enrichments.jsonl`
@@ -51,14 +53,18 @@ def agent_guide() -> str:
 2. `draft`는 확정 규칙으로 제시하거나 인용하지 않는다.
 3. `archived`는 과거 이력 질문에서만 사용한다.
 4. `superseded`는 현재 규칙의 근거로 사용하지 않는다.
-5. 권위는 `regulation > policy > contract > procedure > manual > guide > specification >
-   report > reference` 순서다.
-6. 같은 권위에서는 active 상태와 현재 효력일을 우선한다.
+5. `authority_level`이 있을 때 권위는 `regulation > policy > contract > procedure > manual >
+   guide > specification > report > reference` 순서다.
+6. `authority_level=null`이면 권위 미확인 문서로 취급하며 `doc_type`만 보고 권위를 추정하지
+   않는다.
+7. 같은 권위에서는 active 상태와 현재 효력일을 우선한다.
 
 ## 답변과 근거
 
 - 주요 사실마다 정규화 문서의 문서 ID, revision, 섹션 제목을 인용한다.
+- `source_chunk_no`가 있는 청크는 해당 값도 인용에 포함해 원본 조각까지 추적 가능하게 한다.
 - 인용 형식: `【REG-000002 rev.2 §제3조 권한 회수】`
+- 의미 청크 인용 형식: `【REG-000030 rev.1 chunk:test_8_pdf_003】`
 - `retrieval/enrichments.jsonl`의 요약·FAQ는 검색 보조용이며 최종 근거가 아니다.
 - 근거는 `docs/` 또는 `retrieval/chunks.jsonl`의 원문에서 다시 확인한다.
 - 위키에서 확인할 수 없으면 “위키에서 확인되지 않음”이라고 답한다.

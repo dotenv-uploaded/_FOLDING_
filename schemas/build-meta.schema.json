@@ -8,7 +8,7 @@
   "properties": {
     "schema_version": {"const": "1.0.0"},
     "wiki_version": {"type": "string"},
-    "build_format_version": {"const": "server-v1"},
+    "build_format_version": {"const": "server-v2"},
     "tenant_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"},
     "wiki_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"},
     "build_id": {"type": "string", "pattern": "^build-[0-9a-f]{20}$"},
@@ -18,9 +18,10 @@
     "model": {"type": "string"},
     "counts": {
       "type": "object", "additionalProperties": false,
-      "required": ["documents", "chunks", "aliases", "links", "enrichments"],
+      "required": ["documents", "source_fragments", "chunks", "aliases", "links", "enrichments"],
       "properties": {
         "documents": {"type": "integer", "minimum": 0},
+        "source_fragments": {"type": "integer", "minimum": 0},
         "chunks": {"type": "integer", "minimum": 0},
         "aliases": {"type": "integer", "minimum": 0},
         "links": {"type": "integer", "minimum": 0},

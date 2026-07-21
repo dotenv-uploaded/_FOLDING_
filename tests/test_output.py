@@ -27,6 +27,7 @@ def test_current_nonrelease_output_is_structurally_valid(
         output_dir=build.build_dir,
     )
     assert result["documents"] == 50
+    assert result["source_fragments"] == 50
     assert result["chunks"] == 148
     assert result["links"] == 38
     assert result["enrichments"] == 50

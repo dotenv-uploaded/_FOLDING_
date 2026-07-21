@@ -23,7 +23,7 @@ from wiki_builder.provenance import model_fingerprint
 from wiki_builder.render import render_wiki
 from wiki_builder.schemas import validate_record
 
-BUILD_FORMAT_VERSION = "server-v1"
+BUILD_FORMAT_VERSION = "server-v2"
 
 
 @dataclass(frozen=True)
@@ -149,6 +149,7 @@ def make_build_meta(
         "model": config.provider["model"],
         "counts": {
             "documents": len(data.documents),
+            "source_fragments": sum(len(document.source_fragments) for document in data.documents),
             "chunks": len(data.chunks),
             "aliases": len(data.aliases["entries"]),
             "links": len(data.links),

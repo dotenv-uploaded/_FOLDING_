@@ -6,15 +6,31 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class SourceFragment:
+    input_path: Path
+    input_relative_path: str
+    chunk_no: str | None
+    original_sha256: str
+    normalized_body: str
+
+
+@dataclass(frozen=True)
 class Section:
     section_id: str
     heading: str
     heading_path: tuple[str, ...]
     ordinal: int
     text: str
+    source_chunk_no: str | None = None
+    source_input_relative_path: str | None = None
+    source_input_sha256: str | None = None
+    pre_chunked: bool = False
+    include_heading_in_evidence: bool = True
 
     @property
     def evidence_text(self) -> str:
+        if not self.include_heading_in_evidence:
+            return self.text.rstrip()
         return f"## {self.heading}\n\n{self.text}".rstrip()
 
 
@@ -29,6 +45,8 @@ class Document:
     normalized_body: str
     sections: tuple[Section, ...]
     h1_title: str
+    source_fragments: tuple[SourceFragment, ...] = ()
+    chunking_mode: str = "sections"
 
     @property
     def doc_id(self) -> str:

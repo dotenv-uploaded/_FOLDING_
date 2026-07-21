@@ -11,6 +11,7 @@
 포함:
 
 - Markdown 입력 계약 검증과 본문 보존
+- 같은 `id`와 서로 다른 `chunk_no`를 가진 의미 청크 파일의 논리 문서 결합
 - 섹션 앵커, manifest, chunks, aliases, links 생성
 - Gemini 기반 요약·핵심사항·키워드·엔티티·FAQ·관계 분류
 - 원문 근거, 숫자, 날짜와 링크 대상 검증
@@ -30,6 +31,20 @@
 상위 변환 서비스의 입력 규칙은 `INPUT_CONTRACT.md`와
 `schemas/source-document.schema.json`에 정의한다. 서버 호출 방식과 오류·동시성 계약은
 `SERVER_INTEGRATION.md`를 따른다.
+
+## 입력 모드
+
+빌더는 두 입력 모드를 함께 지원한다.
+
+- 기존 섹션 모드: 파일 하나가 문서 하나다. `chunk_no`가 없고 파일명은 `id`와 같으며,
+  H1 하나와 H2 하나 이상이 필요하다. 긴 H2는 빌더가 다시 나눌 수 있다.
+- 의미 청크 모드: 같은 `id`를 가진 여러 파일에 서로 다른 `chunk_no`를 넣는다. 각 파일은
+  이미 의미 단위로 완성된 검색 청크이므로 빌더가 다시 나누지 않는다. 파일명은
+  `{chunk_no}.md`이고 H1/H2는 필수가 아니다.
+
+의미 청크 모드의 파일들은 `chunk_no`를 제외한 front matter가 모두 같아야 한다. 빌더는
+이를 자연 정렬해 `docs/`의 논리 문서 하나로 만들고, 각 조각의 번호·입력 경로·SHA-256을
+`manifest.jsonl`과 `chunks.jsonl`에 남긴다. 자세한 규칙은 `INPUT_CONTRACT.md`를 따른다.
 
 ## 저장 구조
 

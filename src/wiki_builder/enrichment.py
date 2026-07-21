@@ -236,6 +236,7 @@ def _request_payload(document: Document, links: list[Link]) -> dict[str, Any]:
         "sections": [
             {
                 "section_id": section.section_id,
+                "source_chunk_no": section.source_chunk_no,
                 "heading_path": list(section.heading_path),
                 "text": section.evidence_text,
             }

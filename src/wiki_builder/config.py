@@ -240,9 +240,11 @@ def _validate_config(data: dict[str, Any]) -> None:
         limits,
         {
             "max_documents",
+            "max_source_files",
             "max_markdown_file_bytes",
             "max_total_markdown_bytes",
             "max_sections_per_document",
+            "max_semantic_chunk_chars",
         },
     )
     max_chars = _positive_integer("chunking.max_chars", chunking["max_chars"])
@@ -253,9 +255,11 @@ def _validate_config(data: dict[str, Any]) -> None:
         raise ValidationError("wiki.yaml chunking.overlap_chars는 max_chars보다 작아야 합니다")
     for key in (
         "max_documents",
+        "max_source_files",
         "max_markdown_file_bytes",
         "max_total_markdown_bytes",
         "max_sections_per_document",
+        "max_semantic_chunk_chars",
     ):
         _positive_integer(f"input_limits.{key}", limits[key])
     if limits["max_total_markdown_bytes"] < limits["max_markdown_file_bytes"]:

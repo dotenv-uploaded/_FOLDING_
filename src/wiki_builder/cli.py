@@ -121,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
                     "tenant_id": scope.tenant_id,
                     "wiki_id": scope.wiki_id,
                     "documents": len(documents),
+                    "source_files": sum(len(document.source_fragments) for document in documents),
+                    "source_fragment_documents": sum(
+                        document.chunking_mode == "source-fragments" for document in documents
+                    ),
                     "sections": sum(len(document.sections) for document in documents),
                     "input_dir": str(scope.input_dir),
                     "input_modified": False,
@@ -141,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
                     "created": result.created,
                     "activated": result.activated,
                     "documents": len(result.documents),
+                    "source_fragments": sum(
+                        len(document.source_fragments) for document in result.documents
+                    ),
                     "chunks": len(result.chunks),
                     "aliases": len(result.aliases["entries"]),
                     "links": len(result.links),

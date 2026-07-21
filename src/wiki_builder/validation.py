@@ -151,6 +151,7 @@ def validate_wiki(
         "wiki_id": selected_scope.wiki_id,
         "build_id": build_meta["build_id"],
         "documents": len(manifest),
+        "source_fragments": sum(record["source_fragment_count"] for record in manifest),
         "chunks": len(chunks),
         "aliases": len(aliases["entries"]),
         "links": len(links),

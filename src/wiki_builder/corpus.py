@@ -61,10 +61,17 @@ def build_chunks(config: WikiConfig, documents: Iterable[Document]) -> list[dict
     for document in documents:
         ordinal = 0
         for section in document.sections:
-            parts = split_section_text(section.text, max_chars, overlap_chars)
+            parts = (
+                [section.text]
+                if section.pre_chunked
+                else split_section_text(section.text, max_chars, overlap_chars)
+            )
             for part_number, text in enumerate(parts, start=1):
                 ordinal += 1
-                chunk_type = "section" if len(parts) == 1 else "section-part"
+                if section.pre_chunked:
+                    chunk_type = "source-fragment"
+                else:
+                    chunk_type = "section" if len(parts) == 1 else "section-part"
                 chunk_id = (
                     f"{document.doc_id}@{document.revision}#{section.section_id}:c{part_number:03d}"
                 )
@@ -83,6 +90,9 @@ def build_chunks(config: WikiConfig, documents: Iterable[Document]) -> list[dict
                     "embedding_text": embedding_text,
                     "char_count": len(text),
                     "source_path": document.output_relative_path,
+                    "source_chunk_no": section.source_chunk_no,
+                    "source_input_path": (f"source-md/{section.source_input_relative_path}"),
+                    "source_input_sha256": section.source_input_sha256,
                     "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                     "status": document.metadata["status"],
                     "effective_from": document.metadata["effective_from"],
@@ -275,9 +285,18 @@ def build_manifest(
             "aliases": list(document.metadata["aliases"]),
             "source": dict(document.metadata["source"]),
             "ingest": {
-                "path": f"source-md/{document.input_relative_path}",
-                "sha256": document.original_sha256,
+                "aggregate_sha256": document.original_sha256,
+                "fragments": [
+                    {
+                        "chunk_no": fragment.chunk_no,
+                        "path": f"source-md/{fragment.input_relative_path}",
+                        "sha256": fragment.original_sha256,
+                    }
+                    for fragment in document.source_fragments
+                ],
             },
+            "source_fragment_count": len(document.source_fragments),
+            "chunking_mode": document.chunking_mode,
             "content_sha256": hashlib.sha256(output_bytes).hexdigest(),
             "section_count": len(document.sections),
             "chunk_count": chunk_counts[document.doc_id],

@@ -29,9 +29,11 @@ normalization:
 
 input_limits:
   max_documents: 10000
+  max_source_files: 50000
   max_markdown_file_bytes: 10485760
   max_total_markdown_bytes: 1073741824
   max_sections_per_document: 500
+  max_semantic_chunk_chars: 12000
 
 chunking:
   max_chars: 2400
