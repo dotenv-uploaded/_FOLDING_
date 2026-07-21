@@ -238,7 +238,7 @@ async function loadOwnership(inputRoot: string): Promise<OwnershipManifest> {
   if (raw === null) {
     const entries = await fs.readdir(inputRoot);
     if (entries.length > 0) {
-      throw new Error('LLMWIKI input 경로는 CODEGATE가 소유한 빈 디렉터리여야 합니다.');
+      throw new Error('LLMWIKI input 경로는 Folding이 소유한 빈 디렉터리여야 합니다.');
     }
     return { schemaVersion: 1, owner: 'codegate-local', documents: [] };
   }

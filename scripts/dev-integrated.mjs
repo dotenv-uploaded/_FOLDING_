@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceDir = path.resolve(projectDir, '..');
-const integrationEnvFile = path.join(projectDir, '.env.integration');
-if (existsSync(integrationEnvFile)) loadEnvFile(integrationEnvFile);
+// 설정 파일은 `.env` 하나뿐이다 — Electron 메인도 같은 파일을 읽는다(src/main/env.ts).
+const envFile = path.join(projectDir, '.env');
+if (existsSync(envFile)) loadEnvFile(envFile);
 const doc2mdRoot =
   process.env.CODEGATE_DOC2MD_PROJECT_ROOT ??
   path.join(workspaceDir, 'codegate-2026-api', 'services', 'doc2md');

@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, shell } from 'electron';
+import { loadDotEnv } from '@main/env';
 import { AppServices } from '@main/services';
 import { registerIpcHandlers, unregisterIpcHandlers } from '@main/ipc';
 import { logError } from '@main/util/errors';
@@ -12,6 +13,18 @@ import { logError } from '@main/util/errors';
 /** ESM/CJS 어느 형식으로 번들되든 현재 디렉터리를 얻는다. */
 const currentDir =
   typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+
+/*
+ * 설정은 `.env` 하나로 읽는다 — 어떻게 띄우든 같은 파일을 본다.
+ * 서비스 조립보다 **먼저** 불러야 한다: AppServices.create 가 process.env 를 읽는다.
+ * 설치본에서는 앱 리소스 옆의 `.env` 를 본다 (cwd 는 사용자 홈일 수 있다).
+ */
+const dotenv = loadDotEnv(app.isPackaged ? process.resourcesPath : process.cwd());
+console.info(
+  dotenv.file
+    ? `[codegate:env] ${dotenv.file} 적용 — ${dotenv.applied.length}개 (${dotenv.applied.join(', ')})`
+    : '[codegate:env] .env 없음 — 셸 환경변수만 사용합니다.',
+);
 
 let mainWindow: BrowserWindow | null = null;
 let services: AppServices | null = null;
