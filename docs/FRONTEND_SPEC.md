@@ -1,7 +1,8 @@
 # 프론트엔드 구현 스펙 v1.3
 
 - 범위: `codegate-2026-local`(우창) + `codegate-2026-agent`(성주) — **로컬 데스크톱 앱(Electron)이 프론트엔드**
-- 기준 문서: [기획안 v1.3.0](https://github.com/dotenv-uploaded/codegate-2026-backend/tree/main/docs/기획안)
+- 기준 문서: [기획안 v1.4.0](https://github.com/dotenv-uploaded/codegate-2026-backend/tree/main/docs/기획안)
+- 흐름도: [architecture.png (v1.4 · 번호 흐름 ⓪~⑦)](https://github.com/dotenv-uploaded/codegate-2026-backend/blob/main/docs/기획안/architecture.png)
 - v1.1 변경: rclone/오프라인 사본 제거 · 로그인/구독 연동 추가 · 위키 빌드는 프론트가 API로 트리거
 - v1.2 변경: **위키는 로컬에만 존재** (서버 무보관) — 검색이 로컬로 이동, L2에 산출물 회수 추가, zip 전송 프로토콜 확정
 - v1.3 변경: **UI = CLI → 데스크톱 앱(Electron)** — 메인 프로세스가 SDK·kordoc·워처 호스트, 렌더러는 React(shadcn)
