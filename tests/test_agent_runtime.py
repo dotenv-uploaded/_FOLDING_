@@ -12,6 +12,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    project_key_for_directory,
 )
 
 from codegate_api.agent.gateway import (
@@ -27,6 +28,7 @@ from codegate_api.agent.runtime import (
     create_claude_agent_client,
     enforce_tool_allowlist,
 )
+from codegate_api.agent.session_store import LocalJsonlSessionStore
 from codegate_api.config import Settings
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.knowledge.access import AccessContext
@@ -342,6 +344,15 @@ def test_claude_gateway_resumes_the_stored_sdk_session(
         )
     )
     resume_session_id = "11111111-1111-4111-8111-111111111111"
+    store = LocalJsonlSessionStore(tmp_path / "claude" / "transcripts")
+    anyio.run(
+        store.append,
+        {
+            "project_key": project_key_for_directory(Path("demo/source").resolve()),
+            "session_id": resume_session_id,
+        },
+        [{"type": "user", "uuid": "entry-1"}],
+    )
 
     result = anyio.run(
         partial(
@@ -358,6 +369,89 @@ def test_claude_gateway_resumes_the_stored_sdk_session(
     assert result.session_id == resume_session_id
     assert captured["options"].resume == resume_session_id
     assert captured["options"].session_id is None
+
+
+def test_local_session_store_round_trips_entries_with_private_permissions(tmp_path: Path) -> None:
+    store = LocalJsonlSessionStore(tmp_path / "transcripts")
+    key = {
+        "project_key": project_key_for_directory(Path("demo/source").resolve()),
+        "session_id": "22222222-2222-4222-8222-222222222222",
+    }
+    entries = [{"type": "user", "uuid": "entry-1", "message": {"content": "질문"}}]
+
+    anyio.run(store.append, key, entries)
+
+    assert anyio.run(store.load, key) == entries
+    transcript = next((tmp_path / "transcripts").rglob("*.jsonl"))
+    assert transcript.stat().st_mode & 0o777 == 0o600
+    assert transcript.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_missing_resume_session_starts_a_fresh_server_owned_session(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, options: Any) -> None:
+            captured["options"] = options
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def query(self, prompt: str) -> None:
+            del prompt
+
+        async def receive_response(self):  # type: ignore[no-untyped-def]
+            options = captured["options"]
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id=str(options.session_id),
+                structured_output={
+                    "prompt_contract_version": "2.0",
+                    "outcome": "needs_clarification",
+                    "intent": "locate",
+                    "assistant_text": "대상을 더 명확히 확인해야 합니다.",
+                    "search_query": "문서",
+                    "target_document_id": None,
+                    "source_sha256": None,
+                    "operation": None,
+                },
+            )
+
+    monkeypatch.setattr("codegate_api.agent.gateway.ClaudeSDKClient", FakeClient)
+    repository = _repository()
+    repository.load()
+    gateway = ClaudeAgentGateway(
+        Settings(
+            agent_mode="claude",
+            source_root=Path("demo/source"),
+            agent_state_root=tmp_path / "claude",
+        )
+    )
+
+    result = anyio.run(
+        partial(
+            gateway.decide,
+            message="그 문서 요약해줘",
+            selected_document_id=None,
+            conversation_id="conversation-1",
+            repository=repository,
+            access_context=AccessContext.anonymous(),
+            resume_session_id="33333333-3333-4333-8333-333333333333",
+        )
+    )
+
+    assert result.session_id == captured["options"].session_id
+    assert captured["options"].resume is None
 
 
 def test_claude_gateway_rejects_ready_decision_without_current_turn_tool_trace(

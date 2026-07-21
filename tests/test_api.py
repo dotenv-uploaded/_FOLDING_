@@ -144,8 +144,8 @@ def test_chat_locates_document_with_evidence(client: TestClient) -> None:
         "제4조 보관 기간",
     ]
     assert document["citations"] == ["[REG-000001 rev.1 §sec-004]"]
-    assert document["evidence"][0]["quote"] in payload["assistant_text"]
-    assert document["citations"][0] in payload["assistant_text"]
+    assert payload["assistant_text"] == "관련 문서와 근거를 찾았습니다."
+    assert document["citations"][0] not in payload["assistant_text"]
     assert response.headers["X-Request-ID"]
 
 

@@ -6,13 +6,14 @@ import json
 import re
 from enum import StrEnum
 from importlib.metadata import version
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeSDKClient,
     ResultMessage,
+    SessionStore,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -30,6 +31,7 @@ from codegate_api.agent.runtime import (
     SDK_CONTROL_TOOLS,
     build_claude_agent_options,
 )
+from codegate_api.agent.session_store import LocalJsonlSessionStore
 from codegate_api.agent.tools import TOOL_CONTRACT_VERSION
 from codegate_api.config import Settings
 from codegate_api.knowledge.access import AccessContext
@@ -76,10 +78,10 @@ class AgentDecision(BaseModel):
     )
     assistant_text: str = Field(
         min_length=1,
-        max_length=2_000,
+        max_length=480,
         description=(
-            "Brief non-evidentiary routing status; never a document fact, hidden reasoning, or "
-            "a claim that a write occurred."
+            "For a ready locate, a concise Korean answer grounded only in current-turn tool "
+            "evidence; otherwise a brief routing status. Never hidden reasoning or a write claim."
         ),
     )
     search_query: str = Field(
@@ -263,6 +265,9 @@ class DeterministicAgentGateway:
 class ClaudeAgentGateway:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._sessions = LocalJsonlSessionStore(
+            settings.resolved_agent_state_root() / "transcripts"
+        )
 
     @property
     def session_ttl_seconds(self) -> int:
@@ -314,8 +319,17 @@ class ClaudeAgentGateway:
         resume_session_id: str | None = None,
     ) -> AgentRunResult:
         del conversation_id
+        working_directory = self._settings.resolved_source_root()
+        effective_resume = (
+            _canonical_session_id(resume_session_id) if resume_session_id is not None else None
+        )
+        if effective_resume is not None and not await self._sessions.contains(
+            working_directory=working_directory,
+            session_id=effective_resume,
+        ):
+            effective_resume = None
         session_id = str(uuid4())
-        effective_session_id = _canonical_session_id(resume_session_id or session_id)
+        effective_session_id = effective_resume or session_id
         state_root = self._settings.resolved_agent_state_root()
         state_directory = (state_root / effective_session_id).resolve()
         if not state_directory.is_relative_to(state_root):
@@ -324,13 +338,14 @@ class ClaudeAgentGateway:
             )
         options = build_claude_agent_options(
             repository,
-            working_directory=self._settings.resolved_source_root(),
+            working_directory=working_directory,
             state_directory=state_directory,
             access_context=access_context,
             output_schema=AgentDecision.model_json_schema(),
             model=self._settings.claude_model,
-            session_id=None if resume_session_id else session_id,
-            resume=resume_session_id,
+            session_id=None if effective_resume else session_id,
+            resume=effective_resume,
+            session_store=cast(SessionStore, self._sessions),
         )
         prompt = build_turn_prompt(
             user_message=message,

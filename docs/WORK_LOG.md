@@ -231,3 +231,25 @@
   - 우창 UI의 sidecar lifecycle·diff 승인·execution polling·Undo 연결
   - 용휘 enrichment/vector 확장 adapter 연결
   - production migration·volume·deploy·restart는 별도 명시 승인 뒤 수행
+
+## 2026-07-22 — Electron 통합 Claude 안정화와 간결한 근거 응답
+
+- 목적: 실제 사용자 문서 corpus에서 Claude Agent SDK 대화가 연속 질문에도 유지되고, 검색 답변이
+  원문 표 조각이나 무관 문서를 섞지 않는 짧은 요약으로 표시되게 함
+- 변경:
+  - SDK 내부 `StructuredOutput` 제출 도구를 read-only allowlist에 포함하되 `Bash`, `Edit`, `Write`는
+    계속 차단
+  - app-owned JSONL session store를 추가하고 transcript가 없는 legacy resume ID는 새 세션으로 복구
+  - locate 결과를 한 문서, 한 근거로 제한하고 Claude structured output의 실제 답변을 최대 480자로
+    검증하며 prompt에서 2~3문장·320자·단일 대상 요약을 강제
+  - 본문 안의 중복 citation과 raw table dump를 제거하고 Electron의 기존 citation chip 계약은 유지
+- 검증:
+  - Ruff와 mypy 통과
+  - pytest 154개 통과, line coverage 84%
+  - 실제 Sonnet 호출에서 `StructuredOutput` permission denial 0건과 구조화 결과 반환 확인
+  - Electron sidecar HTTP로 `지난달 제출한 신청서 요약해줘`를 실행해 `서식 1` 한 문서와 2문장
+    금액·기간 요약 반환 확인
+- 전달 상태: 테스트 완료. GitHub branch와 PR에 함께 전달
+- 결정: Claude에는 직접 파일 도구를 열지 않고 검색·읽기와 구조화 응답만 허용하며, 최종 출처는
+  Backend가 검증한 document/evidence를 Electron citation chip으로 별도 전달
+- 남은 일: 서명된 설치본과 임의 사용자 corpus의 최초 OCR·재시작 E2E는 release 단계에서 검증

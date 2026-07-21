@@ -1,5 +1,43 @@
 # 트러블슈팅 기록
 
+## 2026-07-22 — Claude 구조화 결과 실패, stale resume, 원문 덤프 응답
+
+### 상황과 영향
+
+Electron 통합 뒤 첫 질문은 `Claude Agent SDK가 검증된 구조화 결과를 반환하지 못했습니다`로
+실패했고, 성공한 뒤 다음 질문은 `No conversation found with session ID`로 종료됐다. 이 두 문제를
+해결한 뒤에도 위치 검색 응답이 여러 문서의 긴 표와 citation 문자열을 그대로 이어 붙여 실제 질문의
+요약처럼 읽히지 않았다.
+
+### 증거와 원인
+
+- SDK 결과 subtype은 `error_max_structured_output_retries`였고 10 turn 동안 permission denial 5건이
+  발생했다. `output_format=json_schema`가 내부적으로 호출하는 무부작용 `StructuredOutput` 도구까지
+  deny-by-default hook이 막고 있었다.
+- 성공 session ID는 SQLite에 기록됐지만 SDK transcript 저장소가 없어 다음 요청의 resume 대상이
+  존재하지 않았다.
+- ChatService가 Claude의 짧은 답변을 버리고 검색된 모든 evidence quote와 citation을 본문 문자열로
+  재조립했다. 표 중심 문서와 비슷한 두 번째 검색 결과가 그대로 노출됐다.
+
+### 해결과 검증
+
+- `StructuredOutput`만 명시 allow하고 파일·shell·web 쓰기 도구 차단은 유지했다.
+- project/session별 private JSONL transcript store를 추가하고 누락된 resume은 새 UUID session으로
+  fail-safe 복구했다.
+- locate structured answer를 최대 480자로 제한하고 한 문서를 대상으로 2~3문장만 작성하게 했다.
+  Backend는 검증된 첫 evidence와 citation metadata만 별도 전달하며 본문에는 raw quote를 붙이지 않는다.
+- 실제 Sonnet 호출에서 구조화 결과와 permission denial 0건을 확인했고, 동일 사용자 질문은 `서식 1`
+  한 건의 사업비·수행기간 요약과 클릭 가능한 출처 하나를 반환했다.
+
+### 재발 방지와 남은 위험
+
+SDK upgrade 때 output-format 제출 도구와 session-store 계약을 회귀 테스트하고, 응답 schema의 길이
+상한과 단일 대상 규칙을 유지한다. 검색 자체가 잘못된 첫 문서를 선택하면 짧지만 틀린 요약이 될 수
+있으므로 향후 temporal metadata와 사용자 선택 UX를 retrieval ranking에 연결해야 한다. 면접에서는
+“deny-by-default 도구 정책에서 SDK 내부 도구를 어떻게 검증하는가”, “resume ID와 transcript의
+durability를 왜 함께 보장해야 하는가”, “생성 요약과 검증된 citation을 어떻게 분리했는가”를 설명할
+수 있다.
+
 ## 2026-07-21 — setup-uv action major tag 해석 실패
 
 ### 상황

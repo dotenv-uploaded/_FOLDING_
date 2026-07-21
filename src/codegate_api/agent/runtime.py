@@ -7,6 +7,7 @@ from claude_agent_sdk import (
     HookInput,
     HookJSONOutput,
     HookMatcher,
+    SessionStore,
 )
 
 from codegate_api.agent.instructions import build_system_prompt
@@ -54,6 +55,7 @@ def build_claude_agent_options(
     model: str | None = None,
     session_id: str | None = None,
     resume: str | None = None,
+    session_store: SessionStore | None = None,
 ) -> ClaudeAgentOptions:
     tool_server = create_codegate_tool_server(repository, access_context)
     return ClaudeAgentOptions(
@@ -84,6 +86,7 @@ def build_claude_agent_options(
         model=model,
         session_id=session_id,
         resume=resume,
+        session_store=session_store,
         max_turns=8,
         max_budget_usd=0.50,
         enable_file_checkpointing=False,
@@ -100,6 +103,7 @@ def create_claude_agent_client(
     model: str | None = None,
     session_id: str | None = None,
     resume: str | None = None,
+    session_store: SessionStore | None = None,
 ) -> ClaudeSDKClient:
     return ClaudeSDKClient(
         options=build_claude_agent_options(
@@ -111,5 +115,6 @@ def create_claude_agent_client(
             model=model,
             session_id=session_id,
             resume=resume,
+            session_store=session_store,
         )
     )

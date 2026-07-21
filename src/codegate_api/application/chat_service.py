@@ -17,6 +17,9 @@ from codegate_api.models import (
 )
 from codegate_api.state.store import StateStore
 
+MAX_LOCATION_DOCUMENTS = 1
+MAX_LOCATION_ANSWER_CHARS = 480
+
 
 class ChatService:
     def __init__(
@@ -317,18 +320,22 @@ class ChatService:
                 code="DOCUMENT_NOT_FOUND",
                 message="검색어와 일치하는 근거 청크가 없습니다.",
             )
-        del assistant_text
-        evidence_lines = [
-            f"- {evidence.quote} {document.citations[index]}"
-            for document in documents
-            for index, evidence in enumerate(document.evidence)
+        displayed_documents = [
+            document.model_copy(
+                update={
+                    "evidence": document.evidence[:1],
+                    "citations": document.citations[:1],
+                }
+            )
+            for document in documents[:MAX_LOCATION_DOCUMENTS]
+            if document.evidence and document.citations
         ]
         return ChatMessageResponse(
             conversation_id=request.conversation_id,
             message_id=message_id,
             response_type=ResponseType.LOCATION_RESULT,
-            assistant_text="검증된 원문 근거입니다.\n\n" + "\n".join(evidence_lines),
-            documents=documents,
+            assistant_text=_compact_answer(assistant_text),
+            documents=displayed_documents,
         )
 
     def _record_assistant(
@@ -419,3 +426,14 @@ def _agent_outcome_response(
         code="UNSUPPORTED_AGENT_REQUEST",
         message="요청에서 처리할 수 있는 안전한 문서 작업을 확인하지 못했습니다.",
     )
+
+
+def _compact_answer(value: str) -> str:
+    answer = " ".join(value.split())
+    if len(answer) <= MAX_LOCATION_ANSWER_CHARS:
+        return answer
+    candidate = answer[:MAX_LOCATION_ANSWER_CHARS]
+    sentence_end = max(candidate.rfind("다."), candidate.rfind("요."), candidate.rfind("."))
+    if sentence_end >= MAX_LOCATION_ANSWER_CHARS // 3:
+        return candidate[: sentence_end + 1].rstrip()
+    return candidate.rstrip() + "…"

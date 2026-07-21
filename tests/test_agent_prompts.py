@@ -147,6 +147,8 @@ def test_system_prompt_has_diverse_boundary_examples(example_id: str) -> None:
         "Only the application can recheck ACL and hashes",
         "Never convert a failed change into locate",
         "target_document_id is null unless a current-turn tool verified it",
+        "actual concise Korean answer",
+        "never mix a merely similar second document",
     ],
 )
 def test_system_prompt_preserves_security_and_grounding_invariants(
@@ -212,6 +214,7 @@ def test_structured_output_schema_requires_every_decision_field_and_describes_se
     for field in schema["required"]:
         assert schema["properties"][field]["description"]
     assert schema["additionalProperties"] is False
+    assert schema["properties"]["assistant_text"]["maxLength"] == 480
 
 
 def test_ready_locate_and_change_decisions_satisfy_cross_field_contract() -> None:
