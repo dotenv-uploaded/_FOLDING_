@@ -12,8 +12,16 @@ dependencies = [
     "pyhwp2md>=0.1.3",
     "pydantic>=2.7",
     "pyyaml>=6.0",
-    "rapidocr>=3.9",
-    "onnxruntime>=1.17",
+    # OCR + document-structure parsing: PaddleOCR PP-StructureV3. Needs the
+    # paddlex[ocr] extras (layout/table models) — without them the pipeline
+    # raises DependencyError at construction. paddlepaddle must be the CPU
+    # build; the GPU build hard-fails without a matching CUDA install.
+    # Pillow/numpy decode image bytes in memory so no image is written to disk.
+    "paddleocr>=3.3",
+    "paddlex[ocr]>=3.3",
+    "paddlepaddle>=3.2",
+    "pillow>=10.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

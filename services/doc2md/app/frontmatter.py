@@ -69,6 +69,21 @@ def _stable_id_for_sha(sha256: str, doc_type: str) -> str:
     return new_id
 
 
+_SLUG_STRIP = re.compile(r"[^0-9A-Za-z가-힣]+")
+
+
+def slugify(name: str) -> str:
+    """Filename -> identifier-safe slug, keeping Hangul readable.
+
+    ``3. 입찰안내서(송파하남선 1공구).hwpx`` -> ``3_입찰안내서_송파하남선_1공구_hwpx``.
+    Spaces, dots and brackets are hostile in graph/DB keys and URLs; Hangul is
+    not, so it is kept rather than transliterated. The extension is part of the
+    slug on purpose: a corpus routinely holds ``test (1).pdf`` next to
+    ``test (1).hwp``, and dropping it would collide their identifiers.
+    """
+    return _SLUG_STRIP.sub("_", name).strip("_") or "doc"
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -97,6 +112,12 @@ def guess_title(markdown: str, fallback: str) -> str:
     return fallback
 
 
+# Slide decks title badly from their content: slide 1's "title" placeholder is
+# routinely a section label or template leftover ("Value", "Overview") rather
+# than the deck's name, while the filename is what actually identifies it.
+_FILENAME_TITLED_EXTS = {".pptx", ".ppt"}
+
+
 def build(
     path: Path,
     markdown: str,
@@ -113,7 +134,10 @@ def build(
     sha256 = sha256_file(path)
     doc_type = overrides.doc_type or "document"
     doc_id = overrides.id or _stable_id_for_sha(sha256, doc_type)
-    title = overrides.title or title_hint or guess_title(markdown, path.stem)
+    if path.suffix.lower() in _FILENAME_TITLED_EXTS:
+        title = overrides.title or path.stem
+    else:
+        title = overrides.title or title_hint or guess_title(markdown, path.stem)
     language = overrides.language or detect_language(markdown or title)
 
     return Frontmatter(
@@ -123,6 +147,9 @@ def build(
         language=language,
         revision=str(overrides.revision) if overrides.revision is not None else "1",
         status=overrides.status or "active",
+        # Unchunked output is chunk 1 of 1; same slug + zero-padded shape the
+        # chunker uses so both paths produce identical-looking identifiers.
+        chunk_no=overrides.chunk_no or f"{slugify(path.name)}_001",
         official_number=overrides.official_number or auto.get("official_number"),
         authority_level=overrides.authority_level,
         issuing_org=overrides.issuing_org or auto.get("issuing_org"),

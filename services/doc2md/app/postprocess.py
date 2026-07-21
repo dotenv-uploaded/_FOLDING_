@@ -2,9 +2,10 @@
 wrapped with frontmatter.
 
 Only transforms that cannot corrupt correct content live here:
-  1. collapse_glyph_runs  — undo PDF layered-glyph garble (실실실…→실)
-  2. strip_empty_tables   — drop layout tables that came through fully blank
-  3. promote_title        — give the doc an H1 when it lacks one, and report the title
+  1. strip_image_refs     — drop dangling ![alt](file) image references
+  2. collapse_glyph_runs  — undo PDF layered-glyph garble (실실실…→실)
+  3. strip_empty_tables   — drop layout tables that came through fully blank
+  4. promote_title        — give the doc an H1 when it lacks one, and report the title
 
 Intentionally NOT done (too risky to guess, would make output worse):
   - re-leveling mis-assigned heading depths
@@ -33,6 +34,19 @@ def collapse_glyph_runs(text: str) -> str:
     text = _GLYPH_PUNCT.sub(r"\1", text)
     text = _SPACE_RUN.sub(" ", text)
     return text
+
+
+# markitdown emits `![alt](original_filename.jpg)` for every picture shape, but
+# we never save that image anywhere (no disk write, no base64, no cache) — the
+# reference is dangling from the moment it's written. Only OCR'd text should
+# represent what was in an image, so the raw reference is pure noise; drop it.
+_IMAGE_REF = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
+
+
+def strip_image_refs(text: str) -> str:
+    text = _IMAGE_REF.sub("", text)
+    return _EXCESS_BLANK_LINES.sub("\n\n", text)
 
 
 def _is_table_row(s: str) -> bool:
@@ -128,6 +142,7 @@ class CleanResult:
 
 
 def clean(body: str) -> CleanResult:
+    body = strip_image_refs(body)
     body = collapse_glyph_runs(body)
     body = strip_empty_tables(body)
     result = promote_title(body)
