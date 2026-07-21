@@ -1,4 +1,4 @@
-# 프론트엔드 구현 스펙 v2.0 (팀 계약 정합 개정판)
+# 프론트엔드 구현 스펙 v2.1 (팀 계약 정합 개정판)
 
 - 담당: 우창 · 레포 `codegate-2026-local`
 - **정본 문서**: 성주 레포의 [`INTEGRATION_CONTRACT.md` v0.3](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/INTEGRATION_CONTRACT.md) · [`ADR 0004`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/adr/0004-local-agent-llmwiki-and-auth-boundaries.md) · [`LOCAL_RUNTIME.md`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/LOCAL_RUNTIME.md)
@@ -9,6 +9,10 @@
 > 담당한다. 프론트는 UI와 sidecar 수명주기·인증·OS capability를 맡는다.
 > 폐기된 가정: TS 단일 런타임 · `@codegate/agent` npm 패키지 · SDK 내장 도구 사용 · kordoc 파이프라인 ·
 > 프론트의 enrichment 직접 호출.
+>
+> **v2.1**: 인증(§3)을 성주 레포의 **실제 구현 기준**으로 정정. 데스크톱 MVP는 `auth_mode=local`로
+> 동작하므로 **로그인 UI 없이 핵심 흐름이 완결**된다. Supabase/OAuth는 클라우드 계정이 필요할 때의
+> 선택 경로다. 성주 레포는 수정하지 않고 있는 그대로 소비한다.
 
 ---
 
@@ -24,23 +28,24 @@
 │              ↕ IPC                                           │
 │  메인 (Node — 얇게 유지, 비즈니스 로직 없음)                      │
 │    · sidecar 프로세스 수명주기 (spawn / health / shutdown)      │
-│    · OAuth 콜백 수신 + safeStorage                            │
 │    · 폴더 선택 다이얼로그 → workspace capability                │
 │    · 원본 파일 열기 (shell.openPath)                           │
-│              ↓ HTTP (클라이언트 2개를 분리 — ADR 0004)           │
-└──────┬──────────────────────────────┬────────────────────────┘
-       │ local sidecar client         │ cloud client (Bearer)
-       │ loopback + CORS origin       │ Supabase JWT
-       ▼                              ▼
-┌─ codegate-local (Python) 〔성주〕 ─┐   ┌─ 배포 Backend 〔성주〕 ─┐
-│  Claude Agent SDK                 │   │  GET /auth/me         │
-│    app-owned read tools           │   │  JWKS 검증            │
-│    내장 Read/Edit/Write/Bash 비활성 │   └───────────────────────┘
-│  LLMWIKI WikiBuildService 〔용휘〕 │
-│  doc2md 클라이언트 〔민규〕          │        ┌─ Supabase Auth ─┐
-│  승인·backup·atomic replace·      │        │ OAuth / 이메일   │
-│    outbox·Undo·SQLite journal     │        └─────────────────┘
-└───────────────────────────────────┘
+│    · (클라우드 전환 시) OAuth 콜백 + safeStorage                 │
+│              ↓ HTTP · local sidecar client (loopback + CORS)   │
+└──────────────┬───────────────────────────────────────────────┘
+               ▼
+┌─ codegate-local sidecar (Python) 〔성주〕 ─────────────────────┐
+│  auth_mode=local → LocalAuthenticator (로그인 불필요)           │
+│  Claude Agent SDK — app-owned read tools                      │
+│    ❌ 내장 Read/Edit/Write/Bash 비활성 + PreToolUse allowlist    │
+│  LLMWIKI WikiBuildService 〔용휘〕 in-process                   │
+│  doc2md 클라이언트 〔민규〕                                      │
+│  승인·backup·atomic replace·outbox·Undo·SQLite journal        │
+└───────────────────────────────────────────────────────────────┘
+
+    ┈┈ 클라우드 계정 도입 시에만 추가되는 경로 (선택) ┈┈
+    메인 → cloud client (Bearer) → 배포 Backend (JWKS 검증)
+    메인 → Supabase Auth (OAuth · PKCE · 시스템 브라우저)
 ```
 
 **프론트는 파일을 직접 쓰지 않는다.** 모든 원본 변경은 sidecar의 승인 경로(exact diff →
@@ -52,7 +57,7 @@
 |---|---|---|---|
 | **L1** | **렌더러 UI** | 3분할(좌 대화목록 / 중앙 채팅 / 우 문서·상태). `response_type` 4종 분기 렌더링, **인용 배지** `[document_id rev.N §section_id]` 클릭 → 원본 열기, **diff 승인 모달(plan_hash 표시)**, execution 폴링 진행 표시, **Undo 버튼** | 2.5일 |
 | **L2** | **sidecar 수명주기 (메인)** | 앱 시작 시 `codegate-local` spawn(포트 할당·`--cors-origin` 전달), `GET /api/v1/health` 준비 대기, 비정상 종료 감지·재기동, 앱 종료 시 graceful shutdown. **겹치지 않는 4개 루트 준비**: `source/` `source-md/` `llmwiki-storage/` `app-data/` | 1.5일 |
-| **L3** | **인증 (메인+렌더러)** | Supabase Auth OAuth/이메일 (§3), 토큰 `safeStorage`, 자동 갱신, **cloud client와 sidecar client 분리**(ADR 필수), `GET /auth/me` 신원·권한 표시 | 1일 |
+| **L3** | **인증 연동 (메인+렌더러)** | **MVP: `GET /auth/me` 신원·권한 표시 + `write_scope` 기반 UI 게이팅만** (로그인 UI 불필요 — sidecar가 `auth_mode=local`). 클라우드 전환 시에만 Supabase OAuth(§3.2) 추가 | **0.5일** (클라우드 전환 시 +1일) |
 | **L4** | **workspace capability (메인)** | 폴더 선택 다이얼로그 → source root 지정(OS 권한 경계), 스캔 미리보기, 원본 열기(`shell.openPath`), 4개 루트 비중첩 검증 | 0.5일 |
 
 **제거된 항목** (v1.x 잔재): kordoc 래퍼 · 로컬 빌드 오케스트레이터 · enrichment LLM 직접 호출 — 전부 sidecar 소관.
@@ -85,39 +90,62 @@ approve·undo는 `202 Accepted` + `Location` → **execution 폴링으로 전환
 
 필수 citation 5종: `document_id` · `revision` · `graph_version` · `chunk_id` · `section_id`.
 
-## 3. 인증 (Supabase Auth · 데스크톱 OAuth)
+## 3. 인증 — 성주 구현(`auth.py`) 소비
 
-ADR 0004: **로그인은 프론트가 Supabase Auth와 직접 수행**한다. Backend는 password·refresh
-token·service-role key를 받지 않고 asymmetric JWKS로 access token만 검증한다.
+Backend는 `TokenAuthenticator` Protocol로 인증자를 **모드별로 플러그인**한다. 프론트는 이를
+구현하지 않고 선택·소비만 한다. (성주 레포는 수정하지 않는다.)
 
-데스크톱 OAuth는 웹과 다르다 — 앱 내 `BrowserWindow`에 로그인 페이지를 띄우면 안 되고
-(구글이 embedded webview를 `disallowed_useragent`로 차단), **시스템 브라우저 + PKCE**가 표준이다.
-
-```
-렌더러 "Google로 로그인" ─▶ 메인: PKCE(verifier·challenge·state) 생성
-                            shell.openExternal(authUrl) ─▶ 시스템 브라우저 ─▶ Supabase/구글
-                            콜백 수신(택1) ◀────────────────── redirect(code)
-                            state 검증 → code+verifier로 토큰 교환 → safeStorage
-                            GET /auth/me ─▶ 신원·권한·codegate_provisioned 확인
-```
-
-| 콜백 방식 | 구현 | 판단 |
+| `CODEGATE_AUTH_MODE` | 인증자 | 쓰임 |
 |---|---|---|
-| **A. 루프백** (MVP 권장) | 임시 `http://127.0.0.1:<랜덤포트>/callback` 서버 → 수신 후 종료 | 프로토콜 등록 불필요, RFC 8252 권장 |
-| B. 딥링크 | `setAsDefaultProtocolClient('codegate')`, macOS `open-url` / Win·Linux `second-instance` | 복귀 UX 우수, 패키징 단계에서 추가 |
+| **`local`** | `LocalAuthenticator` | **데스크톱 sidecar 기본값.** loopback 전용 단일 사용자 capability — `provisioned=true`, `allow_all_writes=true`, `authz_source="local-workspace"` |
+| `supabase` | `SupabaseJwtAuthenticator` | 클라우드 멀티테넌트. JWKS 검증 + 커스텀 클레임(tenant·read_access·write_documents) |
+| `demo` | `DemoTokenAuthenticator` | 개발용 고정 bearer 토큰 |
 
-**필수 요건**: PKCE · `state` 검증 · embedded webview 금지 · 토큰은 `safeStorage`(평문 저장 금지) ·
-refresh 자동 갱신, 실패 시 재로그인 유도.
+### 3.1 MVP: 로그인 없이 동작
 
-**권한 경계 (ADR 0004)**: Supabase 신원과 로컬 파일 capability는 분리된다. 로그인만으로 폴더 접근
-권한이 생기지 않으며, capability는 사용자가 OS 다이얼로그로 고른 workspace 범위에서만 발생한다.
-`codegate_provisioned=true`가 아니면 쓰기를 시도하지 않는다.
+데스크톱 앱의 sidecar는 `CODEGATE_ENVIRONMENT=local` + `CODEGATE_AUTH_MODE=local`로 기동한다.
+**질문·검색·수정·승인·Undo 전 흐름에 로그인 UI가 필요 없다.** 권한은 Supabase 신원이 아니라
+사용자가 OS 다이얼로그로 고른 workspace 범위에서 생긴다 (ADR 0004의 capability 분리 원칙).
+
+프론트가 할 일은 `GET /api/v1/auth/me`로 신원·권한 snapshot을 읽어 UI에 반영하는 것뿐이다:
+
+```json
+{ "subject_id": "local-user", "tenant_id": "...", "write_scope": "workspace",
+  "provisioned": true, "authz_source": "local-workspace" }
+```
+
+`write_scope`가 `none`이면 승인 버튼을 비활성화한다.
+
+### 3.2 클라우드 계정이 필요해질 때 (선택)
+
+계정·구독·다기기 동기화가 필요해지면 `auth_mode=supabase`로 전환한다. ADR 0004에 따라
+**로그인은 프론트가 Supabase Auth와 직접** 수행하고, Backend는 password·refresh token·
+service-role key를 받지 않고 JWKS로 access token만 검증한다. Backend에 자체 OAuth 엔드포인트를
+만들지 않는다 (ADR이 secret 보관 중복을 이유로 기각한 대안).
+
+데스크톱 OAuth는 **시스템 브라우저 + PKCE**가 표준이다 — 앱 내 `BrowserWindow`에 로그인 페이지를
+띄우면 구글이 `disallowed_useragent`로 차단한다.
+
+```
+렌더러 로그인 클릭 ─▶ 메인: supabase-js(flowType:'pkce') signInWithOAuth
+                       ({ skipBrowserRedirect: true }) → authUrl
+                     shell.openExternal(authUrl) ─▶ 시스템 브라우저 ─▶ 구글/Supabase
+                     루프백 콜백(127.0.0.1:<고정후보포트>/callback)에서 code 수신
+                     exchangeCodeForSession(code) → safeStorage 저장
+                     cloud client(Bearer)로 GET /auth/me
+```
+
+**필수 요건**: PKCE · embedded webview 금지 · 토큰은 `safeStorage`(평문 저장 금지) · refresh 자동 갱신 ·
+Supabase 대시보드 Redirect URLs에 루프백 후보 포트 등록 · 앱에는 **anon key만**(service_role 금지).
+저장소 어댑터는 `localStorage`가 없는 메인 프로세스용으로 `safeStorage` 기반 커스텀 구현이 필요하다.
+
+**클라이언트 2개 분리 (ADR 0004)**: cloud Bearer client와 local sidecar client를 절대 섞지 않는다.
 
 ## 4. UX 흐름
 
 ```
-[온보딩] 로그인(OAuth/이메일 → 브라우저 왕복) → 폴더 선택(workspace)
-         → sidecar 기동 → 초기 변환·빌드 진행률
+[온보딩] 폴더 선택(workspace) → sidecar 기동(auth_mode=local) → 초기 변환·빌드 진행률
+         ※ MVP는 로그인 단계 없음. 클라우드 계정 도입 시 앞단에 추가
 
 [메인 3분할]
 ┌──────────┬────────────────────────────────┬──────────────────┐
@@ -141,8 +169,8 @@ refresh 자동 갱신, 실패 시 재로그인 유도.
 
 | M | 내용 | 완료 기준 |
 |---|---|---|
-| **M0** (D+1) | 계약 확정: sidecar 실행 인자·포트 규약·CORS origin, OAuth 콜백 방식(A/B), Electron 스캐폴딩 | 앱에서 sidecar spawn → `/health` 200 |
-| **M1** (D+2) | 읽기 경로: 로그인 + `POST /chat/messages` → `location_result` 렌더 | 질문 → **인용 배지 있는 답변** 표시 |
+| **M0** (D+1) | 계약 확정: sidecar 실행 인자·포트 규약·CORS origin·`auth_mode=local` 기동, Electron 스캐폴딩 | 앱에서 sidecar spawn → `/health` 200 → `/auth/me` 응답 |
+| **M1** (D+2) | 읽기 경로: `GET /auth/me` + `POST /chat/messages` → `location_result` 렌더 | 질문 → **인용 배지 있는 답변** 표시 |
 | **M2** (D+3) | 쓰기 경로: `change_preview` → diff·plan_hash 승인 → approve → execution 폴링 | md 파일 수정이 승인 후 실제 반영 |
 | **M3** (D+4) | Undo·retry-sync·오류 UX·문서 트리·진행률 | 수정 → Undo로 원상복구 확인 |
 | **M4** (D+5) | 패키징(sidecar 번들·LLMWIKI bundle 고정)·데모 시나리오 | 설치본에서 전 흐름 동작 |
@@ -161,7 +189,8 @@ sidecar 준비 전에는 성주 레포의 합성 fixture·`--deterministic-agent
 - **클라이언트 분리**: cloud Bearer client와 local sidecar client를 절대 섞지 않음 (ADR 0004)
 - **경로 규칙**: 4개 루트는 서로 겹칠 수 없음. 특히 source와 source-md 동일 경로 금지(자기 SHA 순환)
 - **LLMWIKI bundle**: 앱과 함께 배포·검증된 고정 bundle만 실행. 사용자가 고른 임의 폴더를 project root로 실행 금지
-- **자격증명 분리**: ① Supabase 토큰(safeStorage) ② `ANTHROPIC_API_KEY`(sidecar 환경변수)
+- **자격증명 분리**: ① `ANTHROPIC_API_KEY`(sidecar 환경변수) ② (클라우드 전환 시) Supabase 토큰(safeStorage) — 섞지 말 것
+- **성주 레포 불변**: 인증은 기존 `TokenAuthenticator` 구현을 모드 선택으로만 소비. Backend에 자체 OAuth 엔드포인트를 추가하지 않음
 - **멱등성**: `POST /chat/messages`에 `Idempotency-Key`, execution은 `event_id` 기준 재시도 안전
 
 ## 부록 — 팀에 제안할 검증 결과 (참고)
