@@ -29,8 +29,9 @@
   - Undo execution `exec_308416a4ca9e4ba19f662b09aaf1e2e5`가
     `build-465cd13e13f397a818d7`을 공개하고 원본 backup SHA와 `1년` 근거를 복구
   - Undo 뒤 `/health`는 `status=ok`, pending/failed/stale sync event 모두 0
-- 전달 상태: 로컬 branch에서 구현·실연동 검증 완료. commit, push, PR, CI 결과는 이 작업 단위의
-  후속 전달 단계에서 갱신한다. production 배포는 수행하지 않는다.
+- 전달 상태: branch `fix/llmwiki-server-v2-compat`를 push하고 PR #8을 생성했다. 구현 commit 기준
+  GitHub Actions CI가 성공했으며, 이 전달 기록 commit의 required check를 다시 확인한 뒤 squash
+  merge한다. production 배포는 수행하지 않는다.
 - 결정:
   - format 검사를 제거하지 않고 pin과 allowlist를 함께 유지
   - aggregate-only 비교를 거부하고 단일 fragment 쓰기만 기존 journal의 원자성 범위로 인정
