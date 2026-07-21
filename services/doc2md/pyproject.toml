@@ -1,0 +1,30 @@
+[project]
+name = "doc2md"
+version = "0.1.0"
+description = "Native-Python document-to-markdown conversion API (markitdown + pyhwp2md)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "markitdown[pdf,pptx,docx,xlsx]>=0.1.6",
+    "python-pptx>=1.0",
+    "pyhwp2md>=0.1.3",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "rapidocr>=3.9",
+    "onnxruntime>=1.17",
+]
+
+[project.optional-dependencies]
+agent = [
+    "claude-agent-sdk>=0.2.124",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
