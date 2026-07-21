@@ -72,4 +72,13 @@
   - polling-first로 HTTP timeout과 converter latency를 분리하고 WebSocket은 실제 UI 필요가 생길 때만 추가
   - single-volume Railway MVP는 SQLite를 유지하고 multi-replica 전에는 Postgres·외부 artifact store 전환을 필수화
   - HWP/PDF/DOCX는 parse 가능 여부와 무관하게 verified round-trip writer 전까지 read-only
-- 남은 외부 조건: 팀 Supabase project migration·hook 활성화, Railway volume과 production env 설정, Anthropic key smoke test, 민규 stable-section converter 결과, 용휘 실제 vector/Kuzu adapter
+- 남은 일:
+  - 민규의 stable `section_id`·원본 위치 mapping·파일별 read/write capability를 포함한 실제 converter 결과를 받고 adapter 교체
+  - path-only `doc2md`를 Backend와 같은 filesystem namespace에 둘지, authenticated bytes/object URI를 받는 v0.2 계약으로 바꿀지 확정
+  - 용휘의 실제 vector·Kuzu·LanceDB·enrichment/update adapter를 연결하고 immutable publish barrier까지 통합 검증
+  - 우창의 chat·diff 승인/거절·Undo UI와 local watcher를 OpenAPI 및 `source-sync-plans` 승인 흐름에 연결
+  - Anthropic server key로 Claude Agent SDK session·structured output·deny-by-default tool 정책을 실제 호출 smoke test
+  - 팀 Supabase project에 migration과 Custom Access Token Hook을 적용하고 실제 JWT·tenant ACL·권한 회수 시나리오 검증
+  - Railway persistent volume과 production 환경변수를 설정하고 single-replica 배포 후 source write·재기동 복구·health smoke test
+  - 실제 팀 산출물로 검색 근거, 승인 전 무변경, 승인 후 원본·FTS·vector·graph 동시 반영, 부분 실패 비공개, retry·Undo·stale 거부 E2E 검증
+  - 통합 결과를 draft PR에 반영하고 전체 CI·배포 smoke 통과 후 review-ready 전환, 팀 검토와 merge 진행
