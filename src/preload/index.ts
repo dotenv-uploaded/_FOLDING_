@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, IPC_EVENTS } from '@contracts';
+import type { CodegateApi } from './api';
 import type {
   AgentEventEnvelope,
   ApprovalEnvelope,
@@ -25,7 +26,7 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   return () => ipcRenderer.removeListener(channel, handler);
 }
 
-const api = {
+const api: CodegateApi = {
   auth: {
     login: (req: LoginRequest): Promise<Session> => ipcRenderer.invoke(IPC.authLogin, req),
     logout: (): Promise<void> => ipcRenderer.invoke(IPC.authLogout),
@@ -112,6 +113,6 @@ const api = {
   },
 };
 
-export type CodegateApi = typeof api;
+export type { CodegateApi } from './api';
 
 contextBridge.exposeInMainWorld('codegate', api);

@@ -36,6 +36,7 @@ export function MainScreen({
   const chat = useChat();
   const [tab, setTab] = useState<Tab>('chat');
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const webDemo = document.documentElement.dataset.runtime === 'web-demo';
 
   /** 트리에서 더블클릭 → 그래프 탭으로 옮기고 그 파일을 짚어 준다. */
   const openInGraph = useCallback((path: string) => {
@@ -49,7 +50,7 @@ export function MainScreen({
         center={<Tabs value={tab} onChange={setTab} />}
         right={
           <Badge tone={session.provisioned ? 'brand' : 'danger'}>
-            {session.provisioned ? '계정 연결됨' : '권한 확인 필요'}
+            {webDemo ? '웹 데모' : session.provisioned ? '계정 연결됨' : '권한 확인 필요'}
           </Badge>
         }
       />

@@ -1,4 +1,4 @@
-import type { CodegateApi } from './index';
+import type { CodegateApi } from './api';
 
 declare global {
   interface Window {

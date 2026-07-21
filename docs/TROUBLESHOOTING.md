@@ -1,5 +1,51 @@
 # Troubleshooting
 
+## 2026-07-22 — Electron renderer를 Railway에 올리면 첫 로딩이 끝나지 않음
+
+### 상황과 영향
+
+Railway에서 프런트 화면을 공개하려 했지만 저장소의 프런트는 일반 웹 앱이 아니라 Electron
+renderer였다. renderer 산출물만 정적 서빙하면 화면은 내려오지만 앱 초기화가 완료되지 않아
+사용자가 제품 UI에 진입할 수 없다.
+
+### 기대와 실제
+
+- 기대: Railway URL에서 로그인과 문서 화면을 확인한다.
+- 실제: `useSession`, `useWorkspace`, `useApproval`이 시작과 동시에 `window.codegate`를 호출하지만
+  브라우저에는 Electron preload가 없어 첫 로딩에서 실패한다.
+
+### 근거와 원인
+
+`src/preload/index.ts`가 `contextBridge.exposeInMainWorld`로 API를 주입하고 main process가 OS 폴더,
+SQLite, child process sidecar를 소유한다. Railway 컨테이너는 이 preload와 사용자 로컬
+파일시스템을 브라우저에 제공할 수 없다. 배포 설정 문제가 아니라 런타임 경계 불일치가 원인이다.
+
+### 검토한 대안
+
+- Electron을 headless container에서 실행하는 방식은 사용자에게 창과 로컬 파일 접근을 제공하지
+  못해 기각했다.
+- renderer 정적 파일만 서빙하는 방식은 preload 계약이 없어 기각했다.
+- 실제 API 키를 브라우저 번들에 넣는 방식은 비밀 노출 때문에 기각했다.
+
+### 해결
+
+공용 `CodegateApi` 타입을 Electron 구현에서 분리하고 웹 전용 메모리 bridge를 추가했다. 웹은
+폴더 파일명·트리·채팅 UI만 데모하며 실제 문서 분석과 수정은 하지 않는다. `vite.web.config.ts`,
+비밀 제외 `.dockerignore`, multi-stage `Dockerfile.web`, 보안 헤더를 주는 Node 정적 서버와 Railway
+healthcheck를 추가했다.
+
+### 검증과 회귀 방지
+
+웹 타입검사와 빌드, 기존 Electron 타입검사·55개 테스트·production build, Railway용 Docker build와
+컨테이너 `/health`, SPA fallback, CSP를 모두 확인했다. 앞으로 Electron API가 바뀌면 두 bridge가
+같은 `CodegateApi` 인터페이스를 구현해야 타입검사를 통과한다.
+
+### 남은 위험과 인터뷰 질문
+
+웹 데모는 새로고침 시 상태가 사라지고 실제 문서 내용을 분석하지 않는다. 실제 웹 제품 전환에는
+tenant 격리, 업로드 수명주기, 변환 worker, 서버 비밀 관리가 필요하다. 설명할 핵심 질문은
+“데스크톱 전용 기능을 웹 데모로 분리하면서 보안 경계를 어떻게 보존했는가?”다.
+
 ## 2026-07-22 — 실제 사용자 문서의 중복 H2가 sidecar 시작을 막음
 
 ### 맥락과 영향
