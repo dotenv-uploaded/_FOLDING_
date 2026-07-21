@@ -14,3 +14,11 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# kordoc(Node 라이브러리) 설치본 — 한글 쓰기 경로가 쓴다. 커밋하지 않는다.
+node_modules/
+
+# 한글 왕복 테스트용 실물 fixture. 실제 문서일 수 있어 커밋하지 않는다.
+# 로컬에 tests/fixtures/sample.hwp 를 두면 해당 테스트가 돌고, 없으면 skip 된다.
+tests/fixtures/*.hwp
+tests/fixtures/*.hwpx

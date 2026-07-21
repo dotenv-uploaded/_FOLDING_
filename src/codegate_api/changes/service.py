@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from codegate_api.changes.hashing import change_plan_hash, request_hash
+from codegate_api.changes.kordoc import KordocBridge, KordocError, is_hwp
 from codegate_api.config import Settings
 from codegate_api.files.atomic import (
     DocumentLockManager,
@@ -66,10 +67,13 @@ class ChangePlanService:
         settings: Settings,
         file_store: SafeSourceFileStore,
         state_store: StateStore,
+        # 한글 원본을 다루는 다리. 테스트에서 갈아끼울 수 있게 주입 지점을 열어 둔다.
+        kordoc: KordocBridge | None = None,
     ) -> None:
         self._settings = settings
         self._files = file_store
         self._state = state_store
+        self._kordoc = kordoc or KordocBridge()
 
     def create_plan(
         self,
@@ -111,13 +115,21 @@ class ChangePlanService:
         if manifest is None or not access_context.can_write(manifest):
             raise ChangeServiceError("DOCUMENT_NOT_FOUND", "수정 가능한 문서를 찾을 수 없습니다.")
         suffix = _source_suffix(manifest.source.uri)
-        if suffix not in {".md", ".markdown", ".txt"} or manifest.source.media_type not in {
-            "text/markdown",
-            "text/plain",
-        }:
+        # 한글(HWP/HWPX)은 바이너리라 UTF-8 텍스트 경로를 그대로 탈 수 없다.
+        # kordoc 다리가 "바이트↔마크다운"을 맡고, 앵커 검사·해시 대조·승인 게이트는
+        # 아래에서 **그대로** 돈다. 자세한 근거는 changes/kordoc.py 문서 참고.
+        hwp_source = is_hwp(manifest.source.uri)
+        if not hwp_source and (
+            suffix not in {".md", ".markdown", ".txt"}
+            or manifest.source.media_type
+            not in {
+                "text/markdown",
+                "text/plain",
+            }
+        ):
             raise ChangeServiceError(
                 "UNSUPPORTED_WRITE_FORMAT",
-                "현재 실제 쓰기는 UTF-8 Markdown/TXT만 지원합니다.",
+                "현재 실제 쓰기는 UTF-8 Markdown/TXT와 한글(HWP/HWPX)만 지원합니다.",
             )
         if not repository.supports_exact_change(document_id, operation.expected_text):
             raise ChangeServiceError(
@@ -141,12 +153,20 @@ class ChangePlanService:
                 "업로드 기준 hash와 현재 원본이 다릅니다.",
                 conflict=True,
             )
-        try:
-            current_text = snapshot.content.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ChangeServiceError(
-                "UNSUPPORTED_ENCODING", "UTF-8 문서만 수정할 수 있습니다."
-            ) from error
+        if hwp_source:
+            # 한글은 "파일의 텍스트"가 없다. kordoc 이 뽑아낸 마크다운을 그 자리에 둔다 —
+            # 이 아래의 앵커 유일성·Undo 보장 검사는 이 마크다운 위에서 그대로 돈다.
+            try:
+                current_text = self._kordoc.to_markdown(snapshot.content)
+            except KordocError as error:
+                raise ChangeServiceError(error.code, str(error)) from error
+        else:
+            try:
+                current_text = snapshot.content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ChangeServiceError(
+                    "UNSUPPORTED_ENCODING", "UTF-8 문서만 수정할 수 있습니다."
+                ) from error
         if operation.expected_text == operation.replacement_text:
             raise ChangeServiceError("NO_CHANGE", "변경 전후 텍스트가 같습니다.")
         if current_text.count(operation.expected_text) != operation.expected_occurrences:
@@ -166,7 +186,17 @@ class ChangePlanService:
             operation.replacement_text,
             1,
         )
-        proposed_content = proposed_text.encode("utf-8")
+        if hwp_source:
+            # 편집된 마크다운을 원본에 되먹인다. 서식·표·스타일은 그대로 두고 텍스트만 갈린다.
+            # 못 고친 곳이 하나라도 있으면 kordoc 다리가 실패로 올린다 (부분 반영 금지).
+            try:
+                proposed_content = self._kordoc.patch(
+                    snapshot.content, proposed_text, manifest.source.uri
+                ).content
+            except KordocError as error:
+                raise ChangeServiceError(error.code, str(error)) from error
+        else:
+            proposed_content = proposed_text.encode("utf-8")
         if expected_proposed_content is not None and proposed_content != expected_proposed_content:
             raise ChangeServiceError(
                 "SOURCE_SYNC_CONTENT_MISMATCH",
