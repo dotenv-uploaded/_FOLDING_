@@ -9,12 +9,15 @@ export function ProgressBar({
   className,
   tone = 'brand',
   height = 6,
+  active = false,
 }: {
   /** 0–100 */
   value: number;
   className?: string;
   tone?: 'brand' | 'success' | 'danger';
   height?: number;
+  /** 세부 진행률을 알 수 없는 현재 작업도 멈춘 것처럼 보이지 않게 한다. */
+  active?: boolean;
 }) {
   const pct = Math.max(0, Math.min(100, value));
   const fill =
@@ -34,7 +37,10 @@ export function ProgressBar({
       style={{ height }}
     >
       <div
-        className="h-full rounded-full transition-[width] duration-[--dur-slow] ease-[--ease-standard]"
+        className={cn(
+          'h-full rounded-full transition-[width] duration-[--dur-slow] ease-[--ease-standard]',
+          active && 'animate-pulse',
+        )}
         style={{ width: `${pct}%`, background: fill }}
       />
     </div>

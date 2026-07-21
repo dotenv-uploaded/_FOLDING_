@@ -11,6 +11,7 @@ import {
   type ChatResponse,
   type ExecutionResponse,
 } from '@main/sidecar/client';
+import { sourceUriToRelativePath } from '@main/util/vpath';
 
 export function createSidecarAgent(deps: AgentDeps): Agent {
   const client = new SidecarClient(deps.config.backendUrl);
@@ -73,7 +74,7 @@ async function* run(
 function approvalRequest(plan: ChangePlanResponse) {
   return {
     tool: 'approve_change_plan',
-    target: plan.source_uri.replace(/^source:\/\//, ''),
+    target: sourceUriToRelativePath(plan.source_uri) ?? plan.source_uri,
     diff: plan.unified_diff,
     rationale: `검증할 plan_hash: ${plan.plan_hash}`,
     changePlanId: plan.change_plan_id,
@@ -90,7 +91,7 @@ function citationsFrom(response: ChatResponse): Citation[] {
       sectionId: evidence.section_id,
       chunkId: evidence.chunk_id,
       graphVersion: document.graph_version,
-      sourcePath: document.source_uri.replace(/^source:\/\//, ''),
+      sourcePath: sourceUriToRelativePath(document.source_uri) ?? document.source_uri,
     })),
   );
 }

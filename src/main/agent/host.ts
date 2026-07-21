@@ -41,6 +41,10 @@ export class ChatService {
     this.agent = options.createAgent(options.deps);
   }
 
+  get busy(): boolean {
+    return this.aborters.size > 0;
+  }
+
   list(): Conversation[] {
     return this.options.store.listConversations();
   }

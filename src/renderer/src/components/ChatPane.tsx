@@ -20,6 +20,9 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const knowledgeBlocked = build?.buildId === 'knowledge-sync' && build.status !== 'done';
+  const buildFailed = build?.status === 'failed';
+  const building = build && build.status !== 'idle' && build.status !== 'done' && !buildFailed;
 
   // 새 내용이 붙으면 바닥으로 따라간다.
   useEffect(() => {
@@ -29,7 +32,7 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
 
   function submit() {
     const text = draft.trim();
-    if (!text || chat.streaming) return;
+    if (!text || chat.streaming || knowledgeBlocked) return;
     setDraft('');
     void chat.send(text);
     if (taRef.current) taRef.current.style.height = 'auto';
@@ -42,24 +45,37 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
     }
   }
 
-  const building = build && build.status !== 'idle' && build.status !== 'done';
-
   return (
     <main className="flex min-h-0 min-w-0 flex-col bg-white">
       <div className="h-4 shrink-0" />
 
       {/* 빌드 중에도 답할 수 있다는 걸 알린다 (스펙 v1.3 §3) */}
-      {building && (
-        <div className="mx-6 mb-3 flex items-center gap-2.5 rounded-md bg-blue-50 px-3.5 py-2.5 text-xs text-blue-700">
+      {(building || (knowledgeBlocked && buildFailed)) && (
+        <div
+          className={cn(
+            'mx-6 mb-3 flex items-center gap-2.5 rounded-md px-3.5 py-2.5 text-xs',
+            buildFailed ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700',
+          )}
+        >
+          {!buildFailed && (
           <span className="relative flex h-2 w-2 shrink-0">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
           </span>
+          )}
           <span className="font-mono font-semibold">
-            {build.phase ? BUILD_PHASE_LABEL[build.phase.name] : '정리'}{' '}
-            {Math.round(build.progress)}%
+            {buildFailed
+              ? '준비 실패'
+              : `${build.phase ? BUILD_PHASE_LABEL[build.phase.name] : '정리'} ${Math.round(build.progress)}%`}
           </span>
-          <span className="text-blue-600">— 지금까지 정리된 범위에서 답변합니다</span>
+          <span className={buildFailed ? 'text-red-600' : 'text-blue-600'}>
+            —{' '}
+            {knowledgeBlocked
+              ? buildFailed
+                ? (build.error ?? '검색 엔진을 준비하지 못했습니다.')
+                : '검색 엔진 준비가 끝나면 질문할 수 있습니다'
+              : '지금까지 정리된 범위에서 답변합니다'}
+          </span>
         </div>
       )}
 
@@ -105,9 +121,10 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
           >
             <textarea
               ref={taRef}
+              disabled={knowledgeBlocked}
               rows={1}
               value={draft}
-              placeholder="문서에 대해 물어보세요"
+              placeholder={knowledgeBlocked ? '문서 검색 엔진을 준비하는 중입니다' : '문서에 대해 물어보세요'}
               onChange={(e) => {
                 setDraft(e.target.value);
                 e.target.style.height = 'auto';
@@ -127,11 +144,11 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
             ) : (
               <button
                 onClick={submit}
-                disabled={!draft.trim()}
+                disabled={knowledgeBlocked || !draft.trim()}
                 aria-label="보내기"
                 className={cn(
                   'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-all duration-[--dur-fast] fold-focus',
-                  draft.trim()
+                  draft.trim() && !knowledgeBlocked
                     ? 'bg-blue-500 text-white shadow-brand-sm hover:bg-blue-600 active:translate-y-[0.5px] active:bg-blue-700'
                     : 'cursor-not-allowed bg-ink-100 text-ink-300',
                 )}

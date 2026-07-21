@@ -203,6 +203,7 @@ function BuildSummary({
         <ProgressBar
           value={failed ? 100 : (build?.progress ?? 0)}
           tone={failed ? 'danger' : 'brand'}
+          active={Boolean(running)}
         />
       )}
 
@@ -211,9 +212,7 @@ function BuildSummary({
           ? // 실패해도 이전 빌드는 그대로 유지된다 (스펙 v1.4 §5)
             (build?.error ?? '빌드에 실패했습니다. 이전 위키를 그대로 사용합니다.')
           : running
-            ? build.phase
-              ? `${BUILD_PHASE_LABEL[build.phase.name]} ${build.phase.done}/${build.phase.total}`
-              : build.message || '문서를 정리하는 중…'
+            ? build.message || '문서를 정리하는 중…'
             : `${roots.length}개 폴더 · 문서 ${counts.total}개`}
       </p>
 

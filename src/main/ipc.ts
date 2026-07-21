@@ -68,7 +68,7 @@ export function registerIpcHandlers(
   handle(IPC.buildTrigger, '빌드를 시작하지 못했습니다.', () => {
     void services.build.trigger();
   });
-  handle(IPC.buildState, '빌드 상태를 불러오지 못했습니다.', () => services.build.getState());
+  handle(IPC.buildState, '빌드 상태를 불러오지 못했습니다.', () => services.getBuildState());
 
   // 취소는 곧 LLM 호출 비용을 멈추는 일이다 (스펙 v1.4 §5)
   handle(IPC.buildCancel, '빌드를 중단하지 못했습니다.', () => {
@@ -83,11 +83,11 @@ export function registerIpcHandlers(
   );
 
   handle(IPC.llmKeySet, 'LLM 키를 저장하지 못했습니다.', (input: LlmKeyInput) =>
-    services.llmKeys.set(input),
+    services.setLlmKey(input),
   );
 
   handle(IPC.llmKeyClear, 'LLM 키를 삭제하지 못했습니다.', (provider: LlmProvider) =>
-    services.llmKeys.clear(provider),
+    services.clearLlmKey(provider),
   );
 
   /* ------------------------------------------------------------- L1 트리 */
@@ -102,7 +102,7 @@ export function registerIpcHandlers(
     services.chat.messages(conversationId),
   );
   handle(IPC.chatSend, '메시지를 보내지 못했습니다.', (conversationId: string, text: string) =>
-    services.chat.send(conversationId, text),
+    services.sendChat(conversationId, text),
   );
   handle(IPC.chatAbort, '응답을 중단하지 못했습니다.', (conversationId: string) => {
     services.chat.abort(conversationId);

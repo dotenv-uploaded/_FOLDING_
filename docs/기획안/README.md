@@ -1,4 +1,4 @@
-# CODEGATE 2026 — 제품 기획 개요 v2.3 (실제 구현 정합)
+# CODEGATE 2026 — 제품 기획 개요 v2.4 (실제 구현 정합)
 
 - 작성: 우창 · 위치: `codegate-2026-local/docs/기획안/`
 - 성격: **파생 문서**. 팀의 정본은 성주 레포의 계약 문서다.
@@ -20,6 +20,10 @@
 >
 > **v2.3**: 빌더 이중화를 "중복"으로 본 것을 정정 — **공존이 정상**이며 ADR 0004도 외부 빌더를
 > 상정한다(D15). 실제 과제는 저장소 루트·레이아웃 통일과 승격 규약이다.
+>
+> **v2.4**: 현재 production 경로는 Electron이 doc2md normalized input까지 만들고, sidecar의
+> `WikiBuildService`가 최초 build·승인 재빌드·Undo를 모두 publish한다. 저장소 layout이 다른 Electron
+> legacy builder는 mock·호환 경로로 제한해 native `current.json` writer를 하나로 고정했다.
 
 ---
 
@@ -49,9 +53,9 @@
 사용자 기기
 ├─ Electron 앱 〔우창 · codegate-2026-local〕
 │    렌더러(React/shadcn) — UI · 인용 칩 · diff 승인 모달 · execution 폴링 · Undo
-│    메인(Node) — auth(OAuth·PKCE·safeStorage) · build(convert→enrich→assemble)
+│    메인(Node) — auth · 원본 scan · doc2md normalized input · sidecar supervisor
 │                kordoc · watcher · SQLite · sidecar 클라이언트
-│    ★ 위키 빌드를 Electron이 소유 (문서가 자사 서버로 나가지 않음)
+│    legacy build는 mock·호환 경로
 │
 └─ codegate-local sidecar (Python) 〔성주 · codegate-2026-agent〕  ← loopback bind
      chat · change-plan · execution 위임
@@ -121,7 +125,7 @@ source와 source-md를 같은 경로로 두면 frontmatter의 source SHA가 자�
 | D12 | sidecar는 **loopback만 bind**, 명시적 CORS origin, 클라이언트 2개 분리 | cloud identity와 local capability 경계 유지 |
 | D13 | LLMWIKI bundle은 **앱과 함께 배포·검증된 고정 bundle**만 실행 | 사용자 임의 폴더를 project root로 실행 금지 (신뢰 구성요소) |
 | D14 | **"오프라인·로컬 전용"으로 표현하지 않음** | 모델 추론이 Anthropic API 호출이므로 정직한 표현 유지 |
-| D15 | **빌더는 Electron·sidecar 둘 다 존재하며 공존이 정상.** 초기·대량 빌드는 Electron(진행률·enrichment 비용 통제), 승인 편집 후 재빌드는 sidecar(쓰기 트랜잭션 원자성) | Electron `build/`는 오케스트레이터이고 코어는 `@codegate/convert`(민규)·`@codegate/wiki-builder`(용휘)를 동적 import — sidecar의 `WikiBuildService`와 **같은 코어**다. ADR 0004도 "외부 build가 CAS에서 먼저 이기는" 경우를 상정. 조건: 같은 저장소 루트 · 승격 규약 · enrichment 해시 캐시 공유 |
+| D15 | **production native build writer는 sidecar 하나로 고정.** Electron은 원본 scan과 doc2md normalized input을 담당 | 서로 다른 storage layout의 동시 writer는 split-brain 위험. 같은 layout·CAS·cache·동시성 test가 갖춰질 때만 재검토 |
 
 ## 6. MVP 범위
 
@@ -139,7 +143,7 @@ source와 source-md를 같은 경로로 두면 frontmatter의 source SHA가 자�
 | 계약서 "Next.js UI" 표기 ↔ Electron 확정 | 미해결 | 계약 v0.4에서 갱신 |
 | 바이너리 포맷 read-only 제약 | 완화안 있음 | §8 kordoc 검증 결과 제안 |
 | 데모 교차연결 빈약 | 미해결 | 데모 질문 확정 후 코퍼스 큐레이션 |
-| **빌드 저장소 정합** (Electron `~/.codegate/wiki/` ↔ sidecar `<llmwiki-storage-root>/tenants/…`) | 미해결 | 공존은 정상(D15). 루트·레이아웃 통일 + `current.json` 승격 규약을 성주와 합의 |
+| 플랫폼별 설치 artifact | 미해결 | standalone sidecar/doc2md·LLMWIKI bundle과 서명된 installer release pipeline 구축 |
 
 ## 7. 부록 — enrichment 비용 실측 (2026-07-21, M4 Pro 24GB)
 

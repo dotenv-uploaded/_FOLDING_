@@ -29,7 +29,6 @@ export function SettingsScreen({
     const path = await workspace.pickFolder();
     if (!path) return;
     await workspace.addRoot(path);
-    await workspace.triggerBuild();
   }
 
   return (

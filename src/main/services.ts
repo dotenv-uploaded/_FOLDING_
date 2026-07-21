@@ -8,6 +8,9 @@ import type {
   BuildState,
   ExecutionSummary,
   FileNode,
+  LlmKeyInput,
+  LlmKeyStatus,
+  LlmProvider,
   Root,
   ScanPreview,
   Session,
@@ -19,23 +22,25 @@ import { createConverter } from '@main/build/convert';
 import { LlmEnricher, MockEnricher } from '@main/build/enrich';
 import { createBuilderCore } from '@main/build/assemble';
 import { BuildService } from '@main/build/service';
-import { openDb, Store } from '@main/db/store';
+import { openDb, Store, type FileRow } from '@main/db/store';
 import { ApprovalBroker } from '@main/agent/approval';
 import { ChatService } from '@main/agent/host';
 import { loadCreateAgent, type AgentSource } from '@main/agent/loader';
 import { createKordoc } from '@main/kordoc';
 import { buildTree } from '@main/tree';
-import { UserFacingError, logError } from '@main/util/errors';
+import { UserFacingError, logError, toUserMessage } from '@main/util/errors';
 import { ensureDir } from '@main/util/fsx';
-import { isInside, makeRootId, splitVirtualPath } from '@main/util/vpath';
+import { isInside, makeRootId, sourceUriToRelativePath, splitVirtualPath } from '@main/util/vpath';
 import { FileWatcher, type WatchChange } from '@main/watcher';
 import { describeFile, indexRoot, scanPreview } from '@main/watcher/scan';
 import { SidecarClient } from '@main/sidecar/client';
 import {
   SidecarSupervisor,
   type SidecarRuntimePaths,
+  validateSidecarRuntimePaths,
 } from '@main/sidecar/supervisor';
 import { executionSummary } from '@main/agent/sidecar-agent';
+import { syncNormalizedInputs, type InputSyncProgress } from '@main/sidecar/input-sync';
 
 const DEFAULT_CLOUD_API_URL = 'http://127.0.0.1:8787/api/v1';
 // sidecar 주소는 더 이상 고정값이 아니다 — SidecarSupervisor 가 빈 포트를 잡아 정한다.
@@ -75,6 +80,13 @@ export class AppServices {
    * 폴더가 추가/삭제되면 **같은 배열을 제자리에서 갱신**해 최신 상태를 유지한다.
    */
   private readonly agentRoots: string[];
+  private disposed = false;
+  private rootGeneration = 0;
+  private currentBuildState: BuildState | null = null;
+  private readonly scanPreviews = new Map<string, ScanPreview>();
+  private knowledgeSyncRequested = false;
+  private knowledgeSyncRunning = false;
+  private knowledgeSyncTimer: NodeJS.Timeout | null = null;
 
   private constructor(
     private readonly options: ServicesOptions,
@@ -137,7 +149,6 @@ export class AppServices {
       onState: (state) => options.send(IPC_EVENTS.sidecarState, state),
     });
     const initialRoot = store.listRoots()[0];
-    if (initialRoot) supervisor.configure(sidecarRuntimePaths(options, initialRoot.path));
     const sidecarOrigin = await supervisor.prepare();
     const sidecarUrl = `${sidecarOrigin}/api/v1`;
     const sidecar = new SidecarClient(sidecarUrl);
@@ -179,7 +190,10 @@ export class AppServices {
       enricher,
       builder,
       llmKeys,
-      onState: (state: BuildState) => options.send(IPC_EVENTS.buildState, state),
+      onState: (state: BuildState) => {
+        if (self) self.publishBuildState(state);
+        else options.send(IPC_EVENTS.buildState, state);
+      },
       onFilesChanged: () => self?.emitTree(),
       // 구독 검사는 빌드 시작 전에 (스펙 v1.4 §5)
       ensureSubscription: async () => {
@@ -242,12 +256,13 @@ export class AppServices {
     services.syncAgentRoots();
     await watcher.sync(store.listRoots());
 
-    /*
-     * sidecar 기동은 **기다리지 않는다**. 엔진이 없거나 느려도 창은 즉시 떠야 하고,
-     * 진행 상황은 IPC_EVENTS.sidecarState 로 흘러 UI 가 "준비 중"을 보여준다.
-     * 여기서 await 하면 엔진이 없는 환경에서 앱이 30초간 하얗게 멈춘다.
-     */
-    void supervisor.start().catch((err: unknown) => logError('sidecar:start', err));
+    // 창은 먼저 띄우되, 기존 폴더가 있으면 실제 원본을 정규화한 뒤 sidecar를 시작한다.
+    // 빈 fixture가 이미 있다고 가정하면 신규 사용자의 첫 검색이 항상 빈 결과가 된다.
+    if (initialRoot) {
+      services.requestKnowledgeSync('저장된 문서를 다시 확인하는 중');
+    } else {
+      void supervisor.start().catch((err: unknown) => logError('sidecar:start', err));
+    }
 
     return services;
   }
@@ -258,50 +273,86 @@ export class AppServices {
     return this.store.listRoots();
   }
 
-  scanPreview(rootPath: string): Promise<ScanPreview> {
-    return scanPreview(rootPath);
+  async scanPreview(rootPath: string): Promise<ScanPreview> {
+    const preview = await scanPreview(rootPath);
+    this.scanPreviews.set(rootPath, preview);
+    return preview;
   }
 
   async addRoot(rootPath: string): Promise<Root> {
     const existing = this.store.listRoots();
-    if (existing.length > 0 && existing[0]?.path !== rootPath) {
-      throw new UserFacingError(
-        '현재 버전은 문서 폴더 하나만 연결할 수 있습니다. 기존 폴더를 제거한 뒤 다시 선택해 주세요.',
+    try {
+      if (existing.length > 0 && existing[0]?.path !== rootPath) {
+        throw new UserFacingError(
+          '현재 버전은 문서 폴더 하나만 연결할 수 있습니다. 기존 폴더를 제거한 뒤 다시 선택해 주세요.',
+        );
+      }
+      if (existing[0]?.path === rootPath) {
+        this.requestKnowledgeSync(
+          this.chat.busy ? '현재 답변이 끝나면 문서를 다시 확인합니다' : '문서를 다시 확인하는 중',
+        );
+        return existing[0];
+      }
+      const preview = this.scanPreviews.get(rootPath);
+      const root: Root = {
+        id: makeRootId(rootPath),
+        path: rootPath,
+        includedCount: preview?.included.length ?? 0,
+        excludedCount: preview?.excluded.length ?? 0,
+        addedAt: new Date().toISOString(),
+      };
+      const runtime = sidecarRuntimePaths(this.options, rootPath);
+      await validateSidecarRuntimePaths(runtime);
+      const pendingRows = (preview?.included ?? []).map((relativePath) =>
+        pendingFileRow(root.id, root.path, relativePath),
       );
+      await this.watcher.sync([root]);
+      this.store.replaceRootFiles(root, pendingRows);
+      this.syncAgentRoots();
+      this.emitTree();
+      this.scanPreviews.delete(rootPath);
+      this.requestKnowledgeSync('문서를 백그라운드에서 준비하는 중');
+      return root;
+    } catch (err) {
+      await this.watcher
+        .sync(existing)
+        .catch((watchError: unknown) => logError('watcher:registration-rollback', watchError));
+      this.emitKnowledgeBuildState({
+        status: 'failed',
+        progress: 0,
+        message: '문서 준비 실패',
+        error: toUserMessage(err, '문서를 준비하지 못했습니다. 실행 로그를 확인해 주세요.'),
+      });
+      throw err;
     }
-    const preview = await scanPreview(rootPath);
-    const root: Root = {
-      id: makeRootId(rootPath),
-      path: rootPath,
-      includedCount: preview.included.length,
-      excludedCount: preview.excluded.length,
-      addedAt: new Date().toISOString(),
-    };
-    this.store.upsertRoot(root);
-    this.store.upsertFiles(await indexRoot(root.id, rootPath));
-
-    this.syncAgentRoots();
-    await this.watcher.sync(this.store.listRoots());
-    this.emitTree();
-    this.supervisor.configure(sidecarRuntimePaths(this.options, rootPath));
-    void this.supervisor.restart().catch((err: unknown) => logError('sidecar:restart', err));
-    void this.build.trigger();
-    return root;
   }
 
   async removeRoot(id: string): Promise<void> {
+    this.rootGeneration += 1;
+    this.knowledgeSyncRequested = false;
+    if (this.knowledgeSyncTimer) clearTimeout(this.knowledgeSyncTimer);
+    this.knowledgeSyncTimer = null;
     this.store.removeRoot(id);
     this.syncAgentRoots();
     await this.watcher.sync(this.store.listRoots());
     this.emitTree();
     await this.supervisor.stop().catch((err: unknown) => logError('sidecar:stop', err));
     this.supervisor.clearRuntime();
+    this.emitKnowledgeBuildState({
+      status: 'idle',
+      progress: 0,
+      message: '문서 폴더를 선택해 주세요',
+    });
   }
 
   /* --------------------------------------------------------------- 트리 (L1) */
 
   getTree(): FileNode[] {
     return buildTree(this.store.listRoots(), this.store.listFiles());
+  }
+
+  getBuildState(): BuildState {
+    return this.currentBuildState ?? this.build.getState();
   }
 
   emitTree(): void {
@@ -311,7 +362,7 @@ export class AppServices {
   /** 가상 경로(`<rootId>/<상대경로>`) → 원본 절대경로. 등록 폴더 밖이면 null. */
   resolveOriginal(virtualPath: string): string | null {
     const roots = this.store.listRoots();
-    const normalized = virtualPath.replace(/^source:\/\//, '');
+    const normalized = sourceUriToRelativePath(virtualPath) ?? virtualPath;
     const { rootId, relPath } = splitVirtualPath(normalized);
     const identifiedRoot = roots.find((root) => root.id === rootId);
     if (identifiedRoot && relPath) {
@@ -336,6 +387,18 @@ export class AppServices {
     return summary;
   }
 
+  sendChat(conversationId: string, text: string): { messageId: string } {
+    const state = this.currentBuildState;
+    if (state?.buildId === 'knowledge-sync' && state.status !== 'done') {
+      throw new UserFacingError(
+        state.status === 'failed'
+          ? (state.error ?? '문서 검색 엔진을 준비하지 못했습니다.')
+          : '문서 검색 엔진을 준비하고 있습니다. 완료된 뒤 다시 질문해 주세요.',
+      );
+    }
+    return this.chat.send(conversationId, text);
+  }
+
   async undoExecution(messageId: string, executionId: string): Promise<ExecutionSummary> {
     this.requireWriteProvisioning();
     const execution = await this.sidecar.undo(executionId);
@@ -344,37 +407,214 @@ export class AppServices {
     return summary;
   }
 
+  async setLlmKey(input: LlmKeyInput): Promise<LlmKeyStatus[]> {
+    const status = await this.llmKeys.set(input);
+    if (input.provider === 'anthropic' && this.supervisor.configured) {
+      await this.supervisor.restart();
+    }
+    return status;
+  }
+
+  async clearLlmKey(provider: LlmProvider): Promise<LlmKeyStatus[]> {
+    const status = await this.llmKeys.clear(provider);
+    // 실행 중인 process가 삭제 전 키를 계속 들고 있지 않게 즉시 내린다.
+    if (provider === 'anthropic') {
+      await this.supervisor.stop();
+    }
+    return status;
+  }
+
   /* --------------------------------------------------------------- 정리 */
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    this.rootGeneration += 1;
+    this.knowledgeSyncRequested = false;
+    if (this.knowledgeSyncTimer) clearTimeout(this.knowledgeSyncTimer);
+    this.knowledgeSyncTimer = null;
     this.approval.rejectAll();
     this.chat.abortAll();
     await this.watcher.close();
     // 파이썬을 고아 프로세스로 남기지 않는다 (스펙 v2.1 §1 L2)
-    await this.supervisor.stop().catch((err: unknown) => logError('sidecar:stop', err));
+    await this.supervisor.dispose().catch((err: unknown) => logError('sidecar:stop', err));
     this.store.close();
   }
 
   private async onWatchChanges(changes: WatchChange[]): Promise<void> {
     try {
+      let knowledgeChanged = false;
       for (const change of changes) {
+        const previous = this.store.findFile(change.rootId, change.relPath);
         if (change.kind === 'unlink') {
+          if (!watchChangeNeedsKnowledgeSync(change.kind, previous, null)) continue;
           this.store.markFileDeleted(change.rootId, change.relPath);
+          knowledgeChanged = true;
           continue;
         }
         const row = await describeFile(change.rootId, change.relPath, change.absPath);
-        if (!row) continue;
         // 내용이 그대로면(단순 touch·메타데이터 변경) 재빌드 대상으로 올리지 않는다
-        const previous = this.store.findFile(change.rootId, change.relPath);
-        if (previous && !previous.dirty && previous.sha256 === row.sha256) continue;
+        if (!watchChangeNeedsKnowledgeSync(change.kind, previous, row)) continue;
+        if (!row) continue;
         this.store.upsertFiles([row]);
+        knowledgeChanged = true;
       }
+      if (!knowledgeChanged) return;
       this.emitTree();
-      // debounce 로 이미 한 번에 묶여 들어왔으므로 여기서 재빌드는 한 번만 일어난다
-      void this.build.trigger();
+      // debounce로 묶인 변경을 production normalized input과 sidecar corpus에 한 번 반영한다.
+      this.requestKnowledgeSync(
+        this.chat.busy ? '현재 답변이 끝나면 문서 변경을 반영합니다' : '문서 변경을 반영하는 중',
+      );
     } catch (err) {
       logError('watcher:apply', err);
     }
+  }
+
+  private async syncSidecarKnowledge(root: Root): Promise<void> {
+    const generation = this.rootGeneration;
+    try {
+      this.emitKnowledgeBuildState({
+        status: 'scanning',
+        progress: 2,
+        message: '문서 목록을 확인하는 중',
+      });
+      const rows = await indexRoot(root.id, root.path);
+      const preview = await scanPreview(root.path);
+      const refreshedRoot: Root = {
+        ...root,
+        includedCount: preview.included.length,
+        excludedCount: preview.excluded.length,
+      };
+      if (!this.isCurrentRootGeneration(root, generation)) return;
+      // 변환·엔진 준비를 기다리지 않고 파일 트리를 먼저 보여준다.
+      this.store.replaceRootFiles(refreshedRoot, rows);
+      this.emitTree();
+      const runtime = sidecarRuntimePaths(this.options, root.path);
+      await validateSidecarRuntimePaths(runtime);
+      await this.supervisor.stop();
+      await syncNormalizedInputs({
+        files: rows,
+        inputRoot: runtime.llmwikiInputRoot,
+        doc2mdUrl: runtime.doc2mdUrl,
+        onProgress: (progress) => this.emitInputSyncProgress(progress),
+      });
+      if (!this.isCurrentRootGeneration(root, generation)) return;
+      this.emitKnowledgeBuildState({
+        status: 'assembling',
+        progress: 78,
+        phase: { name: 'assemble', done: 0, total: 1 },
+        message: '위키 인덱스를 준비하는 중',
+      });
+      this.supervisor.configure(runtime);
+      this.emitKnowledgeBuildState({
+        status: 'assembling',
+        progress: 86,
+        phase: { name: 'assemble', done: 0, total: 1 },
+        message: '검색 엔진을 준비하는 중',
+      });
+      await this.supervisor.restart();
+      if (!this.isCurrentRootGeneration(root, generation)) return;
+      const sidecarState = this.supervisor.getState();
+      if (!['ready', 'external'].includes(sidecarState.status)) {
+        throw new UserFacingError(
+          sidecarState.error ?? '검색 엔진을 준비하지 못했습니다. 실행 로그를 확인해 주세요.',
+        );
+      }
+      this.store.replaceRootFiles(refreshedRoot, completedFileRows(rows));
+      this.emitTree();
+      this.emitKnowledgeBuildState({
+        status: 'done',
+        progress: 100,
+        message: `${rows.length}개 문서 준비 완료`,
+      });
+    } catch (err) {
+      if (this.isCurrentRootGeneration(root, generation)) {
+        await this.supervisor
+          .stop()
+          .catch((stopError: unknown) => logError('sidecar:sync-rollback', stopError));
+        this.emitKnowledgeBuildState({
+          status: 'failed',
+          progress: 0,
+          message: '문서 변경 반영 실패',
+          error: toUserMessage(err, '문서 변경을 반영하지 못했습니다. 실행 로그를 확인해 주세요.'),
+        });
+      }
+      throw err;
+    }
+  }
+
+  private requestKnowledgeSync(message: string): void {
+    if (this.disposed || this.store.listRoots().length === 0) return;
+    this.knowledgeSyncRequested = true;
+    this.emitKnowledgeBuildState({ status: 'scanning', progress: 1, message });
+    this.scheduleKnowledgeSync();
+  }
+
+  private scheduleKnowledgeSync(delayMs = 0): void {
+    if (this.disposed || this.knowledgeSyncRunning || this.knowledgeSyncTimer) return;
+    this.knowledgeSyncTimer = setTimeout(() => {
+      this.knowledgeSyncTimer = null;
+      void this.flushKnowledgeSync();
+    }, delayMs);
+    this.knowledgeSyncTimer.unref();
+  }
+
+  private async flushKnowledgeSync(): Promise<void> {
+    if (this.disposed || !this.knowledgeSyncRequested || this.knowledgeSyncRunning) return;
+    if (this.chat.busy) {
+      this.scheduleKnowledgeSync(500);
+      return;
+    }
+    const root = this.store.listRoots()[0];
+    if (!root) return;
+    this.knowledgeSyncRequested = false;
+    this.knowledgeSyncRunning = true;
+    try {
+      await this.syncSidecarKnowledge(root);
+    } catch (err) {
+      logError('sidecar:knowledge-sync', err);
+    } finally {
+      this.knowledgeSyncRunning = false;
+      if (this.knowledgeSyncRequested) this.scheduleKnowledgeSync();
+    }
+  }
+
+  private isCurrentRootGeneration(root: Root, generation: number): boolean {
+    return (
+      !this.disposed &&
+      generation === this.rootGeneration &&
+      this.store.listRoots().some((candidate) => candidate.id === root.id)
+    );
+  }
+
+  private emitInputSyncProgress(progress: InputSyncProgress): void {
+    const ratio = progress.total > 0 ? progress.done / progress.total : 1;
+    const overall = Math.round(5 + Math.min(Math.max(ratio, 0), 1) * 68);
+    const filename = progress.relativePath ? path.basename(progress.relativePath) : null;
+    const detail = filename ? ` · ${filename}` : '';
+    this.emitKnowledgeBuildState({
+      status: 'converting',
+      progress: overall,
+      phase: { name: 'convert', done: progress.done, total: progress.total },
+      message: `문서를 변환하는 중 (${progress.done}/${progress.total})${detail}`,
+    });
+  }
+
+  private emitKnowledgeBuildState(
+    patch: Pick<BuildState, 'status' | 'progress' | 'message'> &
+      Partial<Pick<BuildState, 'phase' | 'error'>>,
+  ): void {
+    this.publishBuildState({
+      buildId: 'knowledge-sync',
+      ...patch,
+      phase: patch.phase,
+      error: patch.error,
+      updatedAt: new Date().toISOString(),
+    } satisfies BuildState);
+  }
+
+  private publishBuildState(state: BuildState): void {
+    this.currentBuildState = state;
+    this.options.send(IPC_EVENTS.buildState, state);
   }
 
   /** 등록 폴더 목록을 `AgentDeps.config.roots` 배열에 제자리 반영. */
@@ -397,6 +637,16 @@ export class AppServices {
   }
 }
 
+export function watchChangeNeedsKnowledgeSync(
+  kind: WatchChange['kind'],
+  previous: FileRow | null | undefined,
+  next: FileRow | null,
+): boolean {
+  if (kind === 'unlink') return Boolean(previous && !previous.deleted);
+  if (!next) return false;
+  return !(previous && !previous.dirty && previous.sha256 === next.sha256);
+}
+
 function sidecarRuntimePaths(options: ServicesOptions, sourceRoot: string): SidecarRuntimePaths {
   const runtimeRoot = path.join(options.userDataDir, 'sidecar');
   const projectDir = options.projectDir ?? process.cwd();
@@ -416,6 +666,8 @@ function sidecarRuntimePaths(options: ServicesOptions, sourceRoot: string): Side
     doc2mdUrl: process.env.CODEGATE_DOC2MD_URL,
     deterministicAgent:
       process.env.CODEGATE_AGENT_MODE === 'deterministic' || process.env.CODEGATE_MOCK === '1',
+    claudeModel: process.env.CODEGATE_CLAUDE_MODEL ?? 'sonnet',
+    claudeTimeoutSeconds: localClaudeTimeoutSeconds(),
     tenantId: process.env.CODEGATE_LLMWIKI_TENANT_ID ?? 'local',
     wikiId: process.env.CODEGATE_LLMWIKI_WIKI_ID ?? 'workspace',
   };
@@ -435,4 +687,31 @@ function sidecarBinary(options: ServicesOptions): string {
     process.platform === 'win32' ? 'Scripts' : 'bin',
     executable,
   );
+}
+
+function completedFileRows(rows: FileRow[]): FileRow[] {
+  return rows.map((row) => ({ ...row, status: 'done', dirty: false, deleted: false }));
+}
+
+function localClaudeTimeoutSeconds(): number {
+  const configured = Number(process.env.CODEGATE_CLAUDE_TIMEOUT_SECONDS ?? 180);
+  return Number.isFinite(configured) && configured >= 1 && configured <= 300 ? configured : 180;
+}
+
+function pendingFileRow(rootId: string, rootPath: string, relativePath: string): FileRow {
+  const absPath = path.resolve(rootPath, relativePath);
+  if (!isInside(rootPath, absPath)) {
+    throw new UserFacingError(`등록 폴더 밖의 파일은 추가할 수 없습니다: ${relativePath}`);
+  }
+  return {
+    rootId,
+    relPath: relativePath,
+    absPath,
+    sha256: '',
+    size: 0,
+    mtime: '',
+    status: 'pending',
+    dirty: true,
+    deleted: false,
+  };
 }

@@ -1,17 +1,40 @@
-# 다음 세션 통합 handoff
+# 통합 상태와 실행 기준
+
+## 2026-07-22 검증 기준
+
+GitHub의 네 CODEGATE 저장소 기본 브랜치와 전체 PR을 확인했다. 열린 PR은 없고 확인된 PR은 모두
+병합 상태다. 이 브랜치가 검증한 기준은 다음과 같다.
+
+| 담당 | 저장소 | 검증 commit |
+|---|---|---|
+| 성주 | `dotenv-uploaded/codegate-2026-agent` | `b4563ea` (PR #11) |
+| 용휘 | `dotenv-uploaded/codegate-2026-backend` | `acf94f7` |
+| 민규 | `dotenv-uploaded/codegate-2026-convert` | `beb1ca8` |
+| 우창 | `dotenv-uploaded/codegate-2026-local` | base `94ba7e1` + `integration/local-sidecar-runtime` |
+
+`pnpm integrations:smoke`는 프로젝트 안에 Python venv를 만들거나 커밋하지 않는다. 기본값으로
+`uv run --isolated --python 3.12`를 사용하며, 이미 관리 중인 interpreter가 있으면
+`CODEGATE_DOC2MD_PYTHON`으로 명시할 수 있다.
 
 ## 이번 세션에서 고정한 경계
 
 - 인증 모드는 MVP에서 `local`이다. Supabase는 사용하지 않는다.
+- Claude locate 응답은 현재 turn의 검증된 한 문서만 2~3문장으로 요약하고, 원문 표와 citation은
+  본문에 중복하지 않는다. 출처는 Electron citation chip으로 별도 표시한다.
 - Electron은 문서 폴더가 선택된 뒤에만 `codegate-local`을 시작한다.
+- 폴더 등록은 원본 SHA를 고정해 doc2md로 변환하고 LLMWIKI 1.0 입력을 만든 뒤 sidecar를 시작한다.
+- 같은 source URI와 SHA의 입력은 덮어쓰지 않고, 변경된 원본만 revision을 올린다.
+- rename은 app-owned manifest로 기존 document ID를 유지하고, 예약문자는 source URI segment별로 encoding한다.
+- source/input/storage/data는 realpath 기준 비중첩이며 ownership marker 없는 기존 input 폴더에는 쓰지 않는다.
 - sidecar에는 source, LLMWIKI bundle, normalized input, native storage, app data의 서로 겹치지 않는 경로를 전달한다.
 - 개발 환경은 sibling `Backend/.venv/bin/codegate-local`과 `LLMWIKI` checkout을 자동 탐색한다.
-- 설치본은 `resources/sidecar/codegate-local`과 `resources/LLMWIKI`를 사용한다.
+- 설치본 runtime 경로 계약은 `resources/sidecar/codegate-local`과 `resources/LLMWIKI`다. 현재 저장소에는
+  플랫폼별 standalone sidecar artifact가 없으므로 설치본 publish command를 제공하지 않는다.
 
 ## 민규 산출물 연결
 
-1. doc2md v0.2를 loopback에서 실행한다.
-2. `CODEGATE_DOC2MD_URL`을 설정한다.
+1. `pnpm dev:integrated`로 doc2md v0.2와 Electron을 함께 실행한다.
+2. 별도 실행 시 인증정보 없는 loopback HTTP URL만 `CODEGATE_DOC2MD_URL`에 설정한다.
 3. Electron 변환 package가 준비되면 `CODEGATE_CONVERT_MODULE`을 설정한다.
 4. kordoc 실행 파일이 준비되면 `CODEGATE_KORDOC_BIN`을 설정한다.
 5. `pnpm integrations:check -- --strict`로 `toInputContract`, deep health, binary를 확인한다.
@@ -30,12 +53,16 @@ Backend가 소비하는 doc2md 계약은 `POST /v2/convert`, `GET /capabilities`
 
 ```bash
 pnpm integrations:check
+pnpm integrations:smoke
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-외부 산출물이 모두 준비된 뒤 `integrations:check --strict`가 통과해야 설치본 E2E를 시작한다.
+`integrations:check`는 sibling checkout과 선택적 외부 package 상태를 빠르게 확인한다.
+`integrations:smoke`는 현재 팀 산출물의 실제 Python 프로세스와 HTTP 계약을 검증하는 acceptance
+gate다. 외부 npm package와 kordoc binary까지 제공되는 배포 구성을 검증할 때는
+`integrations:check --strict`도 통과해야 한다.
 
 ## 설치본 E2E
 
@@ -52,3 +79,15 @@ pnpm build
 ```
 
 Railway는 Electron 또는 로컬 sidecar 배포 대상이 아니다. 향후 별도 cloud API가 필요할 때만 Backend의 `railway.toml`을 사용한다.
+
+현재 smoke는 정규화 Markdown fixture를 선복사하지 않고 원본을 doc2md로 변환해 최초 native build를
+만든다. 플랫폼별 standalone sidecar/doc2md와 서명된 Electron 설치본을 만드는 release pipeline은
+아직 없으므로, source 통합과 별개인 최종 패키징 gate로 남아 있다. 이 artifact 없이 installer를
+만들어 동작하는 것처럼 배포하지 않는다.
+
+## 2026-07-22 전달 상태
+
+- 원본 등록 직후 메인 화면 전환, 백그라운드 변환 진행률, 폴더 트리 파일 표시, sidecar crash 정리,
+  watcher 재동기화와 Claude sidecar 연결을 `integration/local-sidecar-runtime`에 통합했다.
+- `pnpm test` 55개 통과(실제 통합 1개 opt-in skip), `pnpm build`, `pnpm integrations:smoke` 통과.
+- 실제 사용자 질문에서 Backend PR #11과 함께 단일 신청서의 짧은 요약과 출처 한 건을 확인했다.

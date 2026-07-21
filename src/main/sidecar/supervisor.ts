@@ -42,6 +42,8 @@ export interface SidecarSupervisorOptions {
   resolveAnthropicApiKey?: () => Promise<string | null>;
   /** 테스트에서 health 확인을 갈아끼우기 위한 구멍 */
   fetchImpl?: typeof fetch;
+  /** 테스트에서 실제 process 대신 제어 가능한 child를 주입한다. */
+  spawnImpl?: typeof spawn;
 }
 
 export interface SidecarRuntimePaths {
@@ -52,6 +54,8 @@ export interface SidecarRuntimePaths {
   dataRoot: string;
   doc2mdUrl?: string;
   deterministicAgent?: boolean;
+  claudeModel?: string;
+  claudeTimeoutSeconds?: number;
   tenantId?: string;
   wikiId?: string;
 }
@@ -94,6 +98,67 @@ export function buildSidecarArgs(
   return args;
 }
 
+export function buildSidecarEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  corsOrigin: string,
+  runtime: SidecarRuntimePaths,
+  anthropicApiKey: string,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  return {
+    ...pickSafeProcessEnvironment(baseEnv),
+    ...extraEnv,
+    // codegate-local의 CLI module은 인자 파싱 전에 기본 ASGI app을 import한다.
+    // 따라서 CLI 인자와 같은 local invariant를 환경에도 먼저 제공해야 한다.
+    CODEGATE_ENVIRONMENT: 'local',
+    CODEGATE_AUTH_MODE: 'local',
+    CODEGATE_BOOTSTRAP_DEMO: 'false',
+    CODEGATE_KNOWLEDGE_MODE: 'llmwiki',
+    CODEGATE_SOURCE_ROOT: runtime.sourceRoot,
+    CODEGATE_RUNTIME_ROOT: runtime.dataRoot,
+    CODEGATE_LLMWIKI_PROJECT_ROOT: runtime.llmwikiProjectRoot,
+    CODEGATE_LLMWIKI_INPUT_ROOT: runtime.llmwikiInputRoot,
+    CODEGATE_LLMWIKI_STORAGE_ROOT: runtime.llmwikiStorageRoot,
+    CODEGATE_LLMWIKI_TENANT_ID: runtime.tenantId ?? 'local',
+    CODEGATE_LLMWIKI_WIKI_ID: runtime.wikiId ?? 'workspace',
+    CODEGATE_CORS_ORIGINS: JSON.stringify([corsOrigin]),
+    CODEGATE_AGENT_MODE: runtime.deterministicAgent ? 'deterministic' : 'claude',
+    ...(runtime.claudeModel ? { CODEGATE_CLAUDE_MODEL: runtime.claudeModel } : {}),
+    CODEGATE_CLAUDE_TIMEOUT_SECONDS: String(runtime.claudeTimeoutSeconds ?? 180),
+    ...(runtime.doc2mdUrl ? { CODEGATE_DOC2MD_BASE_URL: runtime.doc2mdUrl } : {}),
+    HOME: runtime.dataRoot,
+    USERPROFILE: runtime.dataRoot,
+    PYTHONUTF8: '1',
+    PYTHONUNBUFFERED: '1',
+    NO_PROXY: '127.0.0.1,localhost,::1',
+    // Supabase token은 넘기지 않는다. Anthropic 키만 sidecar process에 한정한다.
+    ANTHROPIC_API_KEY: anthropicApiKey,
+  };
+}
+
+function pickSafeProcessEnvironment(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const safe: NodeJS.ProcessEnv = {};
+  for (const name of [
+    'PATH',
+    'Path',
+    'PATHEXT',
+    'SystemRoot',
+    'SYSTEMROOT',
+    'WINDIR',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+    'LANG',
+    'LC_ALL',
+    'TZ',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+  ]) {
+    if (baseEnv[name] !== undefined) safe[name] = baseEnv[name];
+  }
+  return safe;
+}
+
 /** 비어 있는 loopback 포트를 하나 잡아 준다. */
 export function allocatePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -113,14 +178,23 @@ export function allocatePort(): Promise<number> {
 
 export class SidecarSupervisor {
   private child: ChildProcess | null = null;
+  private readonly managedTrees = new Set<ChildProcess>();
   private baseUrl: string | null = null;
   private stopping = false;
   private readonly fetchImpl: typeof fetch;
+  private readonly spawnImpl: typeof spawn;
+  private spawnError: Error | null = null;
   private runtime: SidecarRuntimePaths | null = null;
   private state: SidecarLifecycleState;
+  private lifecycle: Promise<void> = Promise.resolve();
+  private restartTimer: NodeJS.Timeout | null = null;
+  private generation = 0;
+  private disposed = false;
+  private readinessAbort: AbortController | null = null;
 
   constructor(private readonly options: SidecarSupervisorOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.spawnImpl = options.spawnImpl ?? spawn;
     this.state = {
       status: 'stopped',
       baseUrl: null,
@@ -180,15 +254,34 @@ export class SidecarSupervisor {
 
   /** 띄우고 준비될 때까지 기다린다. 외부 연결 모드면 health 확인만 한다. */
   async start(): Promise<void> {
+    return this.enqueue(() => this.startUnlocked());
+  }
+
+  private async startUnlocked(): Promise<void> {
+    if (this.disposed) return;
+    if (
+      this.child &&
+      this.child.exitCode === null &&
+      this.child.signalCode === null &&
+      ['starting', 'ready'].includes(this.state.status)
+    ) return;
     if (!this.baseUrl) await this.prepare();
     this.stopping = false;
 
     if (!this.managed) {
-      await this.waitForHealth().catch((err: unknown) => {
+      const readiness = new AbortController();
+      this.readinessAbort = readiness;
+      try {
+        await this.waitForHealth(readiness.signal);
+        this.setState('external', { error: undefined });
+      } catch (err) {
+        if (readiness.signal.aborted || this.disposed || this.stopping) return;
         this.setState('unhealthy', {
           error: err instanceof Error ? err.message : '외부 엔진에 연결하지 못했습니다.',
         });
-      });
+      } finally {
+        if (this.readinessAbort === readiness) this.readinessAbort = null;
+      }
       return;
     }
 
@@ -201,30 +294,47 @@ export class SidecarSupervisor {
     }
 
     this.setState('starting');
+    const readiness = new AbortController();
+    this.readinessAbort = readiness;
     try {
       await prepareRuntimePaths(this.runtime);
       const storedKey = await this.options.resolveAnthropicApiKey?.();
+      this.spawnError = null;
       this.spawnChild(storedKey ?? process.env.ANTHROPIC_API_KEY ?? '');
-      await this.waitForHealth();
+      await this.waitForHealth(readiness.signal);
+      if (
+        this.managed &&
+        (!this.child || this.child.exitCode !== null || this.child.signalCode !== null)
+      ) {
+        throw new Error('엔진 process가 health 확인 직후 종료됐습니다.');
+      }
       this.setState('ready');
     } catch (err) {
-      logError('sidecar:start', err);
+      const cancelled = readiness.signal.aborted || this.disposed || this.stopping;
+      if (!cancelled) logError('sidecar:start', err);
       await this.stopChild();
-      this.setState('crashed', {
-        error: err instanceof Error ? err.message : '엔진을 시작하지 못했습니다.',
-      });
+      if (!cancelled) {
+        this.setState('crashed', {
+          error: err instanceof Error ? err.message : '엔진을 시작하지 못했습니다.',
+        });
+      }
+    } finally {
+      if (this.readinessAbort === readiness) this.readinessAbort = null;
     }
   }
 
   /** 사용자가 "다시 시작"을 눌렀을 때 — 재시도 카운터를 되돌린다. */
   async restart(): Promise<void> {
-    if (!this.managed) {
-      await this.start();
-      return;
-    }
-    await this.stopChild();
-    this.state = { ...this.state, restarts: 0 };
-    await this.start();
+    this.stopping = true;
+    this.cancelReadinessWait();
+    this.cancelScheduledRestart();
+    this.generation += 1;
+    return this.enqueue(async () => {
+      if (this.disposed) return;
+      if (this.managed) await this.stopChild();
+      this.state = { ...this.state, restarts: 0 };
+      await this.startUnlocked();
+    });
   }
 
   private spawnChild(anthropicApiKey: string): void {
@@ -232,74 +342,109 @@ export class SidecarSupervisor {
     const runtime = this.runtime;
     if (!runtime) throw new Error('sidecar runtime paths are not configured');
 
-    const child = spawn(bin, buildSidecarArgs(this.baseUrl!, this.options.corsOrigin, runtime), {
+    const child = this.spawnImpl(bin, buildSidecarArgs(this.baseUrl!, this.options.corsOrigin, runtime), {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        // 자격증명 분리 (스펙 v2.1 §6): Anthropic 키는 sidecar 환경변수로만 간다.
-        // Supabase 토큰은 여기 절대 넣지 않는다.
-        ANTHROPIC_API_KEY: anthropicApiKey,
-        CODEGATE_ENVIRONMENT: process.env.CODEGATE_ENVIRONMENT ?? 'local',
-        CODEGATE_AUTH_MODE: process.env.CODEGATE_AUTH_MODE ?? 'local',
-        ...this.options.extraEnv,
-      },
+      detached: process.platform !== 'win32',
+      env: buildSidecarEnvironment(
+        process.env,
+        this.options.corsOrigin,
+        runtime,
+        anthropicApiKey,
+        this.options.extraEnv,
+      ),
     });
 
     child.stdout?.on('data', (b: Buffer) => console.info('[sidecar]', b.toString().trimEnd()));
     child.stderr?.on('data', (b: Buffer) => console.warn('[sidecar]', b.toString().trimEnd()));
 
     child.on('error', (err) => {
+      if (this.child !== child) return;
       logError('sidecar:spawn', err);
+      this.spawnError = new Error(
+        `엔진 실행 파일을 찾지 못했습니다 (${bin}). 설치 상태를 확인해 주세요.`,
+      );
+      this.child = null;
       this.setState('crashed', {
-        error: `엔진 실행 파일을 찾지 못했습니다 (${bin}). 설치 상태를 확인해 주세요.`,
+        error: this.spawnError.message,
       });
     });
 
     child.on('exit', (code, signal) => {
+      if (this.child !== child) return;
       if (this.stopping) return; // 우리가 내린 것
-      this.onAbnormalExit(code, signal);
+      this.onAbnormalExit(child, code, signal);
     });
 
+    this.managedTrees.add(child);
     this.child = child;
   }
 
-  private onAbnormalExit(code: number | null, signal: NodeJS.Signals | null): void {
+  private onAbnormalExit(
+    child: ChildProcess,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    if (this.child !== child) return;
     this.child = null;
     const detail = signal ? `신호 ${signal}` : `종료 코드 ${code}`;
+    const wasStarting = this.state.status === 'starting';
+    let shouldRestart = false;
 
     // startup 호출자가 health 실패를 정리한다. 여기서 별도 재기동을 예약하면
     // 두 start 흐름이 겹쳐 앱 종료 뒤에도 process가 다시 생길 수 있다.
-    if (this.state.status === 'starting') {
+    if (wasStarting) {
       this.setState('crashed', { error: `엔진 시작 중 종료됐습니다 (${detail}).` });
-      return;
-    }
-
-    if (this.state.restarts >= MAX_RESTARTS) {
+    } else if (this.state.restarts >= MAX_RESTARTS) {
       this.setState('crashed', {
         error: `엔진이 반복해서 종료됩니다 (${detail}). 설정에서 다시 시작해 주세요.`,
       });
-      return;
+    } else {
+      const restarts = this.state.restarts + 1;
+      this.setState('restarting', { restarts });
+      shouldRestart = true;
     }
 
-    const restarts = this.state.restarts + 1;
-    this.setState('restarting', { restarts });
-    // 연달아 죽을 때 즉시 재시도하면 CPU 만 태운다 — 점점 늦춘다
-    setTimeout(() => {
-      if (!this.stopping && this.runtime) void this.start();
-    }, 500 * restarts);
+    // leader가 먼저 끝나도 같은 process group의 descendant를 모두 정리한 뒤 재시작한다.
+    void this.enqueue(async () => {
+      try {
+        await this.terminateManagedTree(child);
+      } catch (error) {
+        logError('sidecar:orphan-cleanup', error);
+        if (!this.disposed) {
+          this.setState('crashed', {
+            error: '종료된 엔진의 잔여 process를 정리하지 못했습니다.',
+          });
+        }
+        return;
+      }
+      if (!shouldRestart || this.stopping || this.disposed || !this.runtime) return;
+      // 연달아 죽을 때 즉시 재시도하면 CPU 만 태운다 — 점점 늦춘다
+      const generation = this.generation;
+      const restarts = this.state.restarts;
+      this.cancelScheduledRestart();
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        if (!this.stopping && !this.disposed && this.runtime && generation === this.generation) {
+          void this.start();
+        }
+      }, 500 * restarts);
+      this.restartTimer.unref();
+    });
   }
 
   /** `/health` 가 200 을 줄 때까지 짧게 반복해 두드린다. */
-  private async waitForHealth(): Promise<void> {
+  private async waitForHealth(signal: AbortSignal): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_MS;
     let lastError = '엔진이 응답하지 않습니다.';
 
     while (Date.now() < deadline) {
+      if (signal.aborted) throw new Error('엔진 준비 확인이 취소되었습니다.');
+      if (this.spawnError) throw this.spawnError;
       if (this.managed && (!this.child || this.child.exitCode !== null || this.child.signalCode !== null)) {
         throw new Error('엔진 process가 준비되기 전에 종료됐습니다.');
       }
       try {
-        const res = await this.fetchImpl(`${this.baseUrl}/api/v1/health`);
+        const res = await this.fetchImpl(`${this.baseUrl}/api/v1/health`, { signal });
         if (res.ok) {
           const health = (await res.json()) as { status?: unknown; agent_available?: unknown };
           if (health.status === 'ok' && health.agent_available === true) return;
@@ -308,45 +453,96 @@ export class SidecarSupervisor {
           lastError = `엔진이 준비되지 않았습니다 (HTTP ${res.status}).`;
         }
       } catch {
+        if (signal.aborted) throw new Error('엔진 준비 확인이 취소되었습니다.');
         lastError = '엔진에 연결하지 못했습니다.';
       }
-      await new Promise((r) => setTimeout(r, HEALTH_INTERVAL_MS));
+      await abortableDelay(HEALTH_INTERVAL_MS, signal);
     }
     throw new Error(lastError);
   }
 
   private async stopChild(): Promise<void> {
     this.stopping = true;
-    const child = this.child;
     this.child = null;
-    if (!child || child.killed) return;
+    const trees = [...this.managedTrees];
+    for (const tree of trees) await this.terminateManagedTree(tree);
+  }
 
-    child.kill('SIGTERM');
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        // 얌전히 안 죽으면 강제로 — 고아로 남기는 것보다 낫다
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        resolve();
-      }, KILL_GRACE_MS);
-      child.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+  private async terminateManagedTree(child: ChildProcess): Promise<void> {
+    if (!processTreeRunning(child)) {
+      this.managedTrees.delete(child);
+      return;
+    }
+
+    await signalChildTree(child, 'SIGTERM');
+    if (await waitForProcessTreeExit(child, KILL_GRACE_MS)) {
+      this.managedTrees.delete(child);
+      return;
+    }
+    // 얌전히 안 죽으면 강제로 — 고아로 남기는 것보다 낫다.
+    await signalChildTree(child, 'SIGKILL');
+    if (!(await waitForProcessTreeExit(child, KILL_GRACE_MS))) {
+      throw new Error('엔진 process를 강제 종료한 뒤에도 종료를 확인하지 못했습니다.');
+    }
+    this.managedTrees.delete(child);
   }
 
   /** 앱 종료 시. 외부 연결 모드면 남의 프로세스를 건드리지 않는다. */
   async stop(): Promise<void> {
-    if (!this.managed) {
-      this.stopping = true;
-      return;
-    }
-    await this.stopChild();
-    this.setState('stopped');
+    this.stopping = true;
+    this.cancelReadinessWait();
+    this.cancelScheduledRestart();
+    this.generation += 1;
+    return this.enqueue(async () => {
+      if (!this.managed) {
+        return;
+      }
+      await this.stopChild();
+      this.setState('stopped');
+    });
+  }
+
+  /** 앱 종료 뒤에는 예약 재시작이나 key 변경이 새 process를 만들 수 없다. */
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    this.stopping = true;
+    this.cancelReadinessWait();
+    this.cancelScheduledRestart();
+    this.generation += 1;
+    return this.enqueue(async () => {
+      if (this.managed) await this.stopChild();
+      this.setState('stopped');
+    });
+  }
+
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    const next = this.lifecycle.then(operation, operation);
+    this.lifecycle = next.catch(() => undefined);
+    return next;
+  }
+
+  private cancelScheduledRestart(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+  }
+
+  private cancelReadinessWait(): void {
+    this.readinessAbort?.abort();
+    this.readinessAbort = null;
   }
 }
 
 async function prepareRuntimePaths(runtime: SidecarRuntimePaths): Promise<void> {
+  await validateSidecarRuntimePaths(runtime);
+  await Promise.all(
+    [runtime.llmwikiInputRoot, runtime.llmwikiStorageRoot, runtime.dataRoot].map((candidate) =>
+      fs.mkdir(candidate, { recursive: true }),
+    ),
+  );
+}
+
+/** 어떤 runtime 디렉터리에도 쓰기 전에 호출하는 read-only 안전성 검증. */
+export async function validateSidecarRuntimePaths(runtime: SidecarRuntimePaths): Promise<void> {
   for (const [label, candidate] of [
     ['문서 폴더', runtime.sourceRoot],
     ['LLMWIKI bundle', runtime.llmwikiProjectRoot],
@@ -355,13 +551,15 @@ async function prepareRuntimePaths(runtime: SidecarRuntimePaths): Promise<void> 
     if (!stat?.isDirectory()) throw new Error(`${label}를 찾을 수 없습니다: ${candidate}`);
   }
 
-  const roots = [
-    runtime.sourceRoot,
-    runtime.llmwikiProjectRoot,
-    runtime.llmwikiInputRoot,
-    runtime.llmwikiStorageRoot,
-    runtime.dataRoot,
-  ].map((candidate) => path.resolve(candidate));
+  const roots = await Promise.all(
+    [
+      runtime.sourceRoot,
+      runtime.llmwikiProjectRoot,
+      runtime.llmwikiInputRoot,
+      runtime.llmwikiStorageRoot,
+      runtime.dataRoot,
+    ].map(resolvePhysicalPath),
+  );
   for (const [index, left] of roots.entries()) {
     for (const right of roots.slice(index + 1)) {
       if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) {
@@ -370,9 +568,79 @@ async function prepareRuntimePaths(runtime: SidecarRuntimePaths): Promise<void> 
     }
   }
 
-  await Promise.all(
-    [runtime.llmwikiInputRoot, runtime.llmwikiStorageRoot, runtime.dataRoot].map((candidate) =>
-      fs.mkdir(candidate, { recursive: true }),
-    ),
-  );
+}
+
+async function resolvePhysicalPath(candidate: string): Promise<string> {
+  let current = path.resolve(candidate);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      const physical = await fs.realpath(current);
+      return path.join(physical, ...missing.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(candidate);
+      missing.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function waitForProcessTreeExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processTreeRunning(child)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !processTreeRunning(child);
+}
+
+function abortableDelay(timeoutMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error('엔진 준비 확인이 취소되었습니다.'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, timeoutMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('엔진 준비 확인이 취소되었습니다.'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function processTreeRunning(child: ChildProcess): boolean {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
+  }
+  return child.exitCode === null && child.signalCode === null;
+}
+
+async function signalChildTree(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
+  if (!child.pid) {
+    child.kill(signal);
+    return;
+  }
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      child.kill(signal);
+    }
+    return;
+  }
+  const args = ['/pid', String(child.pid), '/t'];
+  if (signal === 'SIGKILL') args.push('/f');
+  const succeeded = await new Promise<boolean>((resolve) => {
+    const killer = spawn('taskkill.exe', args, { stdio: 'ignore' });
+    killer.once('error', () => resolve(false));
+    killer.once('exit', (code) => resolve(code === 0));
+  });
+  if (!succeeded && child.exitCode === null && child.signalCode === null) child.kill(signal);
 }

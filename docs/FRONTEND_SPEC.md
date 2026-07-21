@@ -1,4 +1,4 @@
-# 프론트엔드 구현 스펙 v2.3 — 실제 구현 정합
+# 프론트엔드 구현 스펙 v2.4 — 실제 구현 정합
 
 - 담당: 우창 · 레포 `codegate-2026-local` (Electron + React/shadcn, pnpm 워크스페이스)
 - 이 문서는 **현재 코드베이스를 서술**한다. 코드와 다르면 코드가 우선이며 이 문서를 고친다.
@@ -13,6 +13,11 @@
 > 본 것을 정정한다 — **공존이 정상**이다(§0 하단). 같은 코어를 다른 트리거로 부르는 구조이고
 > ADR 0004도 "외부 build"를 상정한다. 실제 과제는 저장소 루트·레이아웃 통일과 승격 규약이다.
 > 다이어그램(`기획안/architecture.png`)도 실제 모듈 구조로 다시 그렸다.
+>
+> **v2.4 정정**: 실제 네 저장소 통합에서는 native `current.json`의 writer를 sidecar의
+> `WikiBuildService` 하나로 고정한다. Electron은 폴더 등록 시 doc2md 정규화 입력을 만들고 sidecar를
+> 시작한다. 기존 `main/build/`은 mock·호환 구현으로 남기며 production 첫 build를 동시에 publish하지
+> 않는다. 서로 다른 storage layout을 가진 두 writer의 공존 조건이 구현되지 않았기 때문이다.
 
 ---
 
@@ -28,7 +33,8 @@
 │              ↕ IPC (contracts의 IPC / IPC_EVENTS)             │
 │  메인 (Node)  src/main/                                       │
 │    auth/     Supabase OAuth · 루프백 · safeStorage            │
-│    build/    ① convert → ② enrich(LLM 직접) → ③ assemble      │
+│    sidecar/input-sync  원본 → doc2md → normalized input       │
+│    build/    mock·호환 파이프라인                              │
 │    kordoc/   real · mock · atomic (변환·편집)                  │
 │    watcher/  변경 감지 → 증분 재빌드                            │
 │    db/       SQLite (파일 상태·대화)                            │
@@ -49,30 +55,28 @@
 **소유 경계**: 문서는 자사 서버로 나가지 않는다. 서버에 묻는 것은 로그인·구독뿐이고 빌드 시작 전에
 한 번 확인한다. 대화·변경 승인·실행은 sidecar에 위임한다.
 
-### 빌더 2개는 공존이 정상이다
+### production native build는 sidecar가 단독 소유한다
 
-Electron `build/`는 로직 재구현이 아니라 **오케스트레이터**다 — 변환은 `@codegate/convert`(민규),
-조립은 `@codegate/wiki-builder`(용휘)를 동적 import 한다(환경변수로 교체 가능). sidecar의
-`WikiBuildService`도 같은 용휘 빌더다. **같은 코어, 다른 트리거**다.
+Electron은 폴더를 스캔하고 doc2md v0.2로 LLMWIKI 입력 계약을 만든다. sidecar가 시작되면서
+`WikiBuildService`가 최초 build와 `current.json` 활성화를 수행하고, 이후 승인 변경과 Undo까지 같은
+writer가 이어받는다. 기존 `build/` 파이프라인은 mock UX와 이전 계약 호환을 위해 보존한다.
 
 | 트리거 | 소유 | 이유 |
 |---|---|---|
-| 초기·대량 빌드 (온보딩·폴더 추가) | **Electron** | 진행률 UI, enrichment 동시성·재시도·비용 통제가 여기 있음 |
+| 최초 입력 정규화 (온보딩·폴더 추가) | **Electron** | OS 폴더 capability와 doc2md path transport를 소유 |
+| 최초·대량 native build | **sidecar** | 활성 포인터 writer와 storage layout을 하나로 유지 |
 | 승인 편집 후 재빌드 (문서 1건) | **sidecar** | backup→atomic replace→재변환→빌드→outbox/Undo가 한 트랜잭션 |
 
-ADR 0004도 이를 상정한다 — *"**외부 build가 CAS에서 먼저 이기거나** publish 뒤 process가 중단돼도
-native current를 다시 읽고 이미 반영된 event를 멱등 완료할 수 있다."* 경합은 CAS 빌드 ID +
-current 재읽기 + 멱등 완료로 흡수된다.
-
-**공존 조건 3가지**: ① 같은 저장소 루트·레이아웃 ② `current.json` 승격 규약(CAS ID 비교 후 재읽기)
-③ enrichment 해시 캐시(`PreviousBuild.reusable`) 공유 — sidecar 재빌드도 존중해야 비용 중복이 없다.
+두 production writer를 다시 허용하려면 같은 저장소 layout, CAS 승격 규약, enrichment cache 공유를
+구현하고 동시 publish recovery test를 먼저 통과해야 한다.
 
 ## 1. 모듈 현황
 
 | 모듈 | 경로 | 상태 |
 |---|---|---|
 | **인증** | `main/auth/` — `index.ts` `oauth-loopback.ts` `secret-store.ts` `llm-key.ts` | ✅ 구현 (§3) |
-| **빌드 파이프라인** | `main/build/` — `service.ts` `convert.ts` `enrich.ts` `assemble.ts` `manifest.ts` `current.ts` `cache.ts` | ✅ 구현 |
+| **입력 동기화** | `main/sidecar/input-sync.ts` — ownership manifest·stable ID·SHA·revision·LLMWIKI 1.0 adapter | ✅ production |
+| **호환 빌드 파이프라인** | `main/build/` — `service.ts` `convert.ts` `enrich.ts` `assemble.ts` | mock·호환 |
 | **kordoc** | `main/kordoc/` — `real.ts` `mock.ts` `atomic.ts` `base.ts` | ✅ 구현 |
 | **워처** | `main/watcher/` | ✅ 구현 |
 | **에이전트** | `main/agent/` — `loader.ts` `sidecar-agent.ts` `mock-agent.ts` `approval.ts` `host.ts` | ✅ 구현 |
@@ -81,11 +85,11 @@ current 재읽기 + 멱등 완료로 흡수된다.
 | **공유 계약** | `packages/contracts/src/index.ts` | ✅ 구현 |
 | **UI** | `renderer/src/screens|components|state` | ✅ 구현 |
 
-### 빌드 파이프라인 (`build/service.ts`)
+### 입력·빌드 파이프라인
 
 ```
-변경 감지 → ① 변환(kordoc/민규 모듈) → ② enrichment(LLM 직접 호출)
-         → ③ 조립(용휘 빌더 코어) → 임시 디렉터리 검증 → 원자적 승격 → current.json
+폴더 등록 → 원본 SHA 고정 → doc2md v0.2 → LLMWIKI 1.0 normalized input
+         → sidecar 시작 → WikiBuildService stage·검증 → current.json 원자적 승격
 ```
 
 `BuildPhase = 'convert' | 'enrich' | 'assemble'`, 상태는 `BuildState`로 렌더러에 스트리밍.
@@ -175,8 +179,8 @@ Supabase 미설정 시 `client=null`로 앱은 계속 동작한다.
 
 | 항목 | 내용 |
 |---|---|
-| **빌드 저장소 정합** ⚠️ | 두 빌더는 **공존이 맞다**(§0 하단). 다만 현재 저장 경로가 달라 서로 다른 위키를 만든다 — Electron `~/.codegate/wiki/{builds,current.json}` vs sidecar `<llmwiki-storage-root>/tenants/<t>/wikis/<w>/current.json`. **루트·레이아웃 통일 + 승격 규약 합의 필요** (성주) |
-| README 갱신 | 아직 "codegate-2026-web / Next.js 풀스택" — Electron 앱으로 수정 |
+| **패키징** ⚠️ | standalone sidecar/doc2md와 LLMWIKI bundle을 `resources/`에 넣는 플랫폼별 release pipeline 필요 |
+| 외부 원본 변경 | 앱 밖에서 바뀐 원본의 자동 재변환은 승인 실행과의 writer lock 연동 뒤 활성화 필요 |
 | 계약 표기 | 팀 계약 v0.3의 "우창 = Next.js UI" → Electron으로 갱신 협의 |
 | 옛 레포명 핀 | 계약·ADR이 `codegate-2026-api@360ff41` 참조 → `codegate-2026-convert` |
 | 바이너리 쓰기 | 계약상 md/txt만. HWP는 §7 검증 결과로 완화 제안 가능 |

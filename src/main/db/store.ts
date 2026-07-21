@@ -119,6 +119,52 @@ export class Store {
       });
   }
 
+  /**
+   * sidecar가 새 corpus를 준비한 뒤 폴더와 그 시점의 파일 snapshot을 한 번에 확정한다.
+   * 중간 파일 insert가 실패하면 root까지 rollback되어 반쪽 등록 상태를 남기지 않는다.
+   */
+  replaceRootFiles(root: Root, rows: FileRow[]): void {
+    const upsertRoot = this.db.prepare(
+      `INSERT INTO roots (id, path, included_count, excluded_count, added_at)
+       VALUES (@id, @path, @included, @excluded, @addedAt)
+       ON CONFLICT(id) DO UPDATE SET
+         path = excluded.path,
+         included_count = excluded.included_count,
+         excluded_count = excluded.excluded_count`,
+    );
+    const insertFile = this.db.prepare(
+      `INSERT INTO files (root_id, rel_path, abs_path, sha256, size, mtime, status, dirty, deleted)
+       VALUES (@rootId, @relPath, @absPath, @sha256, @size, @mtime, @status, @dirty, @deleted)`,
+    );
+    const tx = this.db.transaction((nextRoot: Root, files: FileRow[]) => {
+      upsertRoot.run({
+        id: nextRoot.id,
+        path: nextRoot.path,
+        included: nextRoot.includedCount,
+        excluded: nextRoot.excludedCount,
+        addedAt: nextRoot.addedAt,
+      });
+      this.db.prepare(`DELETE FROM files WHERE root_id = ?`).run(nextRoot.id);
+      for (const row of files) {
+        if (row.rootId !== nextRoot.id) {
+          throw new Error('root snapshot에 다른 rootId의 파일을 저장할 수 없습니다.');
+        }
+        insertFile.run({
+          rootId: row.rootId,
+          relPath: row.relPath,
+          absPath: row.absPath,
+          sha256: row.sha256,
+          size: row.size,
+          mtime: row.mtime,
+          status: row.status,
+          dirty: row.dirty ? 1 : 0,
+          deleted: row.deleted ? 1 : 0,
+        });
+      }
+    });
+    tx(root, rows);
+  }
+
   removeRoot(id: string): void {
     const tx = this.db.transaction((rootId: string) => {
       this.db.prepare(`DELETE FROM files WHERE root_id = ?`).run(rootId);

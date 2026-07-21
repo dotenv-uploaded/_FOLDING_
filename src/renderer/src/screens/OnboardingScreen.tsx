@@ -8,6 +8,7 @@ import { Card } from '@/ui/Card';
 import { Badge } from '@/ui/Badge';
 import { TitleBar } from '@/ui/TitleBar';
 import { Spinner } from '@/ui/Spinner';
+import { ProgressBar } from '@/ui/ProgressBar';
 import { LlmKeyForm } from '@/components/LlmKeyForm';
 
 type Workspace = ReturnType<typeof useWorkspace>;
@@ -113,8 +114,8 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
     setError(null);
     try {
       await workspace.addRoot(preview.root);
-      await workspace.triggerBuild();
-      // 등록되는 순간 App 이 메인 화면으로 넘긴다. 진행률은 우측 패널이 이어받는다.
+      // 폴더만 등록되면 App이 즉시 메인 화면으로 넘긴다.
+      // 정규화·위키 조립·검색 엔진 준비는 메인 화면에서 백그라운드로 이어진다.
     } catch (e) {
       setSubmitting(false);
       setError(e instanceof Error ? e.message : '빌드를 시작하지 못했습니다.');
@@ -225,13 +226,34 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
       )}
 
       {preview && (
-        <div className="mt-6 flex items-center gap-3">
-          <Button size="lg" onClick={confirm} loading={submitting}>
-            {submitting ? '빌드를 시작하는 중…' : `${preview.included.length}개 문서로 시작하기`}
-          </Button>
-          <span className="text-xs text-ink-400">
-            변환 ▸ 분석 ▸ 조립 순서로 이 컴퓨터에서 처리합니다.
-          </span>
+        <div className="mt-6 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <Button size="lg" onClick={confirm} loading={submitting}>
+              {submitting
+                ? workspace.build?.phase?.name === 'convert'
+                  ? `문서 변환 중 ${workspace.build.phase.done}/${workspace.build.phase.total}`
+                  : (workspace.build?.message ?? '문서를 준비하는 중…')
+                : `${preview.included.length}개 문서로 시작하기`}
+            </Button>
+            <span className="text-xs text-ink-400">
+              변환 ▸ 분석 ▸ 조립 순서로 이 컴퓨터에서 처리합니다.
+            </span>
+          </div>
+          {submitting && (
+            <div className="flex flex-col gap-1.5" aria-live="polite">
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <ProgressBar value={workspace.build?.progress ?? 0} tone="brand" active />
+                </div>
+                <span className="w-10 shrink-0 text-right font-mono text-xs text-blue-600">
+                  {Math.round(workspace.build?.progress ?? 0)}%
+                </span>
+              </div>
+              <span className="truncate text-xs text-ink-400">
+                {workspace.build?.message ?? '문서를 준비하는 중…'}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </>

@@ -6,7 +6,13 @@ import { describe, expect, it } from 'vitest';
 import type { Root } from '@contracts';
 import type { FileRow } from '@main/db/store';
 import { buildTree } from '@main/tree';
-import { isInside, makeRootId, splitVirtualPath, toVirtualPath } from '@main/util/vpath';
+import {
+  isInside,
+  makeRootId,
+  sourceUriToRelativePath,
+  splitVirtualPath,
+  toVirtualPath,
+} from '@main/util/vpath';
 import { classifyFile } from '@main/watcher/rules';
 
 function root(dirPath: string): Root {
@@ -47,6 +53,15 @@ describe('가상 경로', () => {
   it('등록 폴더 밖 경로를 걸러낸다', () => {
     expect(isInside('/Users/demo/문서', '/Users/demo/문서/a.hwpx')).toBe(true);
     expect(isInside('/Users/demo/문서', path.join('/Users/demo/문서', '../비밀.hwpx'))).toBe(false);
+  });
+
+  it('canonical source URI를 Unicode·예약문자 원본 경로로 되돌린다', () => {
+    expect(
+      sourceUriToRelativePath(
+        'source://%EA%B7%9C%EC%A0%95/100%25%20%231%3F.md',
+      ),
+    ).toBe('규정/100% #1?.md');
+    expect(sourceUriToRelativePath('source://docs/%2E%2E/secret.md')).toBeNull();
   });
 });
 
