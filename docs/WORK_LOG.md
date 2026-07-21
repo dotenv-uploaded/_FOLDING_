@@ -16,13 +16,15 @@
   - Claude Agent SDK dependency, deny-by-default client options, read-only MCP tools와 `PreToolUse` hook 추가
   - 역할·통합 계약·기술 결정·CI·CODEOWNERS 추가
   - 원본 `source://` 참조, 증분 변환 뒤 병렬 index fan-out, 검증 barrier와 graph version 원자적 공개를 ADR로 확정
+  - setup-uv action tag 해석 실패 원인과 수정·검증을 트러블슈팅 기록으로 남김
 - 검증:
   - Ruff format/check 통과
   - mypy strict 통과
   - pytest 18개 통과, line coverage 91%
   - Claude Agent SDK가 포함된 Python 3.12 Docker image build와 container import 통과
   - 컨테이너 health와 `개인정보 보관 기간 문서 어디 있어?` 검색 HTTP 요청 성공
-- 전달 상태: `agent/backend-foundation` branch에 게시 예정. 배포는 수행하지 않음
+  - draft PR #1의 GitHub Actions 성공
+- 전달 상태: `agent/backend-foundation` branch push, https://github.com/dotenv-uploaded/Backend/pull/1 draft PR 생성. merge·배포는 수행하지 않음
 - 결정:
   - Python-heavy agent/KG/file workflow이므로 FastAPI를 별도 backend로 유지
   - `llm-wiki`를 검색 source of truth로 사용하고 pgvector 중복 적재는 보류
