@@ -1,8 +1,9 @@
-# 프론트엔드 구현 스펙 v1.1
+# 프론트엔드 구현 스펙 v1.2
 
 - 범위: `codegate-2026-local`(우창) + `codegate-2026-agent`(성주) — 웹 UI 없음, **CLI가 프론트엔드**
-- 기준 문서: [기획안 v1.2.0](https://github.com/dotenv-uploaded/codegate-2026-backend/tree/main/docs/기획안)
+- 기준 문서: [기획안 v1.3.0](https://github.com/dotenv-uploaded/codegate-2026-backend/tree/main/docs/기획안)
 - v1.1 변경: rclone/오프라인 사본 제거 · 로그인/구독 연동 추가 · 위키 빌드는 프론트가 API로 트리거
+- v1.2 변경: **위키는 로컬에만 존재** (서버 무보관) — 검색이 로컬로 이동, L2에 산출물 회수 추가, zip 전송 프로토콜 확정
 
 ---
 
@@ -26,7 +27,7 @@ codegate-2026-local   → CLI 앱 — @codegate/agent 의존
 | # | 컴포넌트 | 내용 | 규모 |
 |---|---|---|---|
 | L1 | **CLI REPL** | 채팅 입력/스트리밍 출력, 승인 프롬프트, 빌드 진행률 표시 | 1일 |
-| L2 | **데몬 + 빌드 API 클라이언트** | `chokidar` 폴더 감시 → 변경 원본 업로드 → **위키 빌드 API 호출 → 상태 폴링**(진행률을 L1에 전달). 상태는 SQLite | 1일 |
+| L2 | **데몬 + 빌드 클라이언트** | `chokidar` 감시 → **zip 업로드(changed/+prev_build/+files.json, multipart)** → 빌드 폴링 → **산출물 zip 회수·검증(sha256)·`builds/` 전개·current.json 갱신 → ACK**. 상태는 SQLite | 1.5일 |
 | L3 | **kordoc 래퍼** | `parse/patch/generate/render(--reflow)` 함수화. 패치 전 `.bak` 백업 → 임시파일 → rename(원자적). exit 2(미적용 편집) 처리 | 0.5일 |
 | L4 | **온보딩·인증** | `codegate login`(백엔드 로그인 → 토큰 keychain 저장, **구독 상태 확인·표시**), `codegate init`(폴더 등록, 스캔 미리보기 → 업로드+빌드 트리거) | 0.5일 |
 
@@ -35,18 +36,19 @@ codegate-2026-local   → CLI 앱 — @codegate/agent 의존
 | # | 컴포넌트 | 내용 | 규모 |
 |---|---|---|---|
 | A1 | **SDK 세션** | `query()` 래핑, 시스템 프롬프트(위키 AGENT_GUIDE 규칙: enrichment 근거 금지·인용 형식·"위키에서 확인되지 않음") | 1일 |
-| A2 | **커스텀 도구 6종** | `wiki_search`(검색 API, **토큰 필수**) · `read_original` · `render_page` · `patch_document` · `create_from_template` · `create_document`. 문서 조작 3종은 L3 주입받아 호출 | 1.5일 |
+| A2 | **커스텀 도구 6종** | `wiki_search`(**로컬 위키 검색** — manifest 필터 + chunks/aliases, MVP는 SDK Grep/Read로 충분) · `read_original` · `render_page` · `patch_document` · `create_from_template` · `create_document`. 문서 조작 3종은 L3 주입 | 1.5일 |
 | A3 | **승인 게이트** | `can_use_tool`: 읽기 허용 / patch·create → `approvalHandler` / 등록 폴더 밖 경로·파괴적 입력 거부 | 0.5일 |
 
-> 위키 접근은 검색 API가 유일한 경로다 (로컬 사본·오프라인 모드 없음 — 기획안 D7).
-> 401/402(미인증/구독 만료) 응답은 도구가 에러로 삼키지 말고 CLI까지 올려 사용자에게 안내한다.
+> **위키는 로컬에만 존재한다** (기획안 D7 v1.3) — 검색·질의는 서버 없이 동작하고,
+> 서버는 빌드할 때만 필요하다. 401/402(미인증/구독 만료)는 빌드 요청 시에만 발생하며,
+> 도구가 에러로 삼키지 말고 CLI까지 올려 사용자에게 안내한다.
 
 ## 2. 레포 간 인터페이스 계약 (M0에서 확정)
 
 ```typescript
 // @codegate/agent 공개 인터페이스
 export interface AgentDeps {
-  config: { roots: string[]; backendUrl: string };
+  config: { roots: string[]; backendUrl: string; wikiDir: string };  // 로컬 위키 경로 (L2가 관리)
   auth: { getToken(): Promise<string> };              // L4 (keychain, 갱신 포함)
   kordoc: KordocApi;                                  // L3
   approvalHandler: (req: ApprovalRequest) => Promise<boolean>;  // L1
@@ -77,10 +79,11 @@ export interface KordocApi {                          // L3 시그니처
 
 | API | 사용처 | 합의 당사자 |
 |---|---|---|
-| 로그인 (토큰 발급·갱신) + 구독 상태 | L4 | 우창 ↔ 용휘 |
-| 원본 업로드 | L2 | 우창 ↔ 민규 |
-| **위키 빌드 트리거 + 빌드 상태(진행률)** | L2 | 우창 ↔ 용휘 |
-| 검색 | A2 | 성주 ↔ 용휘 |
+| `POST /auth/login` · `GET /me/subscription` | L4 | 우창 ↔ 용휘 |
+| `POST /builds` (multipart zip: changed/+prev_build/+files.json) | L2 | 우창 ↔ 민규·용휘 |
+| `GET /builds/{id}` (status·progress) · `GET /builds/{id}/artifact` · `POST /builds/{id}/ack` | L2 | 우창 ↔ 용휘 |
+
+> 검색 API는 없다 — 검색은 로컬 위키에서 A2가 직접 수행.
 
 ## 3. CLI UX 흐름
 
@@ -91,7 +94,8 @@ $ codegate login                      ← L4
 $ codegate init                       ← L4 → L2
   📁 폴더: ~/Documents/사업 [등록]
   스캔: 261개 포함 · 163개 제외 → 확인? [Y/n]
-  업로드 → 위키 빌드 요청... ▓▓▓░░ 62% (폴링)
+  zip 업로드 → 빌드 요청... ▓▓▓░░ 62% (폴링)
+  ✓ 산출물 회수 → ~/.codegate/wiki/builds/build-a1b2 전개 → ACK(서버 삭제)
 
 $ codegate chat                       ← L1
   ● 빌드 62% — 아는 범위에서 답변합니다
@@ -105,7 +109,7 @@ $ codegate chat                       ← L1
   │ - 수혜기업 ㅇㅇㅇ(이하 "계약자")
   │ + 수혜기업 ㈜하드사이언스(이하 "계약자")
   └ 승인? [y/N]
-  ✓ 생성됨 → 재업로드 + 빌드 재호출 (루프 폐쇄)
+  ✓ 생성됨 → 증분 재빌드(변경분+이전빌드 zip) → 새 산출물 회수 (루프 폐쇄)
 ```
 
 ## 4. 마일스톤
@@ -114,11 +118,11 @@ $ codegate chat                       ← L1
 |---|---|---|---|
 | **M0** (D+1) | 인터페이스 계약 + 백엔드 API 스키마 4종 합의, 레포 스캐폴딩 | 전원 | 계약 TS 파일이 두 레포에 커밋 |
 | **M1** (D+2) | Hello Agent: CLI ↔ SDK 왕복 | 성주 A1 + 우창 L1 | `codegate chat` 질문→스트리밍 답변 |
-| **M2** (D+3) | 읽기 경로: 로그인+빌드 트리거+검색 | 우창 L2·L4 + 성주 A2 + 용휘 API | 실빌드에 질문 → **인용 있는 답변** |
+| **M2** (D+3) | 읽기 경로: 로그인+빌드 왕복(업로드→산출물 회수)+로컬 검색 | 우창 L2·L4 + 성주 A2 + 용휘 API | 실빌드 회수 후 질문 → **인용 있는 답변** (검색은 오프라인) |
 | **M3** (D+4) | 쓰기 경로: kordoc 편집+승인 게이트 | 우창 L3 + 성주 A2·A3 | 계약서 양식 채우기가 승인 거쳐 동작 |
 | **M4** (D+5) | 워처+루프 폐쇄+데모 시나리오 | 우창 L2 | 파일 수정 → 자동 재빌드 → 재질문 반영 |
 
-M0 이후 mock(`KordocApi` 목·검색 API 목)으로 병렬 진행, M2·M3에서 실물 연결.
+M0 이후 mock(`KordocApi` 목·빌드 API 목·픽스처 위키)으로 병렬 진행, M2·M3에서 실물 연결.
 
 ## 5. 리스크·규칙
 
@@ -127,3 +131,5 @@ M0 이후 mock(`KordocApi` 목·검색 API 목)으로 병렬 진행, M2·M3에�
 - **승인 우회 금지**: A3 화이트리스트로 강제, `approvalHandler` 없이 쓰기 도구 실행 불가
 - **원본 안전**: L3 백업→원자쓰기 규칙을 테스트로 고정 (패치 중 프로세스 킬 시나리오 포함)
 - **401/402 UX**: 어떤 흐름에서든 로그인 만료·구독 만료가 사용자 문장으로 표시될 것 (silent fail 금지)
+- **위키 전개는 원자적으로**: 새 빌드는 임시 디렉터리에 전개 후 검증(sha256) 통과 시에만 `current.json` 갱신 — 실패 시 이전 빌드 유지
+- **ACK는 검증 후에만**: 산출물 무결성 확인 전 ACK 전송 금지 (서버가 삭제해버리면 복구 불가)
