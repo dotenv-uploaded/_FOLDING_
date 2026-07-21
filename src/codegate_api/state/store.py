@@ -71,7 +71,7 @@ class WriteJournal:
     state: str
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StateStore:
@@ -95,10 +95,22 @@ class StateStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(executions)").fetchall()
+            }
+            if "error_retryable" not in columns:
+                connection.execute(
+                    "ALTER TABLE executions ADD COLUMN error_retryable INTEGER NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "UPDATE executions SET error_retryable = 1 WHERE sync_status = 'failed'"
+                )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, _now_text()),
             )
+            connection.commit()
 
     def record_message(
         self,
@@ -890,7 +902,7 @@ class StateStore:
             connection.execute(
                 """
                 UPDATE executions SET status = ?, file_status = ?, sync_status = ?,
-                    error_code = NULL, error_message = NULL, updated_at = ?
+                    error_code = NULL, error_message = NULL, error_retryable = 0, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -941,7 +953,8 @@ class StateStore:
             connection.execute(
                 """
                 UPDATE executions SET status = ?, file_status = ?, sync_status = ?,
-                    error_code = ?, error_message = ?, updated_at = ? WHERE id = ?
+                    error_code = ?, error_message = ?, error_retryable = 1,
+                    updated_at = ? WHERE id = ?
                 """,
                 (
                     ExecutionStatus.FAILED.value,
@@ -960,7 +973,8 @@ class StateStore:
             connection.execute(
                 """
                 UPDATE executions SET status = ?, file_status = ?, sync_status = ?,
-                    error_code = ?, error_message = ?, updated_at = ? WHERE id = ?
+                    error_code = ?, error_message = ?, error_retryable = 0,
+                    updated_at = ? WHERE id = ?
                 """,
                 (
                     ExecutionStatus.CONFLICT.value,
@@ -1183,7 +1197,7 @@ class StateStore:
             connection.execute(
                 f"""
                 UPDATE executions SET status = ?, sync_status = ?, graph_version_after = ?,
-                    error_code = NULL, error_message = NULL, updated_at = ?
+                    error_code = NULL, error_message = NULL, error_retryable = 0, updated_at = ?
                 WHERE id IN (
                     SELECT aggregate_id FROM outbox_events WHERE id IN ({placeholders})
                 )
@@ -1217,7 +1231,14 @@ class StateStore:
                     (event_id, now),
                 )
 
-    def fail_event_batch(self, event_ids: list[str], *, code: str, message: str) -> None:
+    def fail_event_batch(
+        self,
+        event_ids: list[str],
+        *,
+        code: str,
+        message: str,
+        retryable: bool = True,
+    ) -> None:
         if not event_ids:
             return
         placeholders = ",".join("?" for _ in event_ids)
@@ -1233,7 +1254,7 @@ class StateStore:
             connection.execute(
                 f"""
                 UPDATE executions SET status = ?, sync_status = ?, error_code = ?,
-                    error_message = ?, updated_at = ?
+                    error_message = ?, error_retryable = ?, updated_at = ?
                 WHERE id IN (
                     SELECT aggregate_id FROM outbox_events WHERE id IN ({placeholders})
                 )
@@ -1243,6 +1264,7 @@ class StateStore:
                     SyncStatus.FAILED.value,
                     code,
                     message,
+                    int(retryable),
                     now,
                     *event_ids,
                 ),
@@ -1254,7 +1276,10 @@ class StateStore:
             target = connection.execute(
                 """
                 SELECT 1 FROM outbox_events
-                WHERE aggregate_id = ? AND status = 'failed'
+                JOIN executions ON executions.id = outbox_events.aggregate_id
+                WHERE outbox_events.aggregate_id = ?
+                  AND outbox_events.status = 'failed'
+                  AND executions.error_retryable = 1
                 """,
                 (execution_id,),
             ).fetchone()
@@ -1266,14 +1291,16 @@ class StateStore:
             connection.execute(
                 """
                 UPDATE outbox_events SET status = 'pending', last_error = NULL, updated_at = ?
-                WHERE status = 'failed'
+                WHERE status = 'failed' AND aggregate_id IN (
+                    SELECT id FROM executions WHERE error_retryable = 1
+                )
                 """,
                 (now,),
             )
             connection.execute(
                 """
                 UPDATE executions SET status = ?, sync_status = ?, error_code = NULL,
-                    error_message = NULL, updated_at = ?
+                    error_message = NULL, error_retryable = 0, updated_at = ?
                 WHERE id IN (
                     SELECT aggregate_id FROM outbox_events WHERE status = 'pending'
                 ) AND sync_status = ?
@@ -1546,7 +1573,7 @@ def _execution_view(row: sqlite3.Row) -> ExecutionView:
         error = ApiError(
             code=row["error_code"],
             message=row["error_message"] or "",
-            retryable=SyncStatus(row["sync_status"]) is SyncStatus.FAILED,
+            retryable=bool(row["error_retryable"]),
         )
     return ExecutionView(
         execution_id=row["id"],
@@ -1678,6 +1705,7 @@ CREATE TABLE IF NOT EXISTS executions (
     graph_version_after TEXT,
     error_code TEXT,
     error_message TEXT,
+    error_retryable INTEGER NOT NULL DEFAULT 0 CHECK(error_retryable IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(change_plan_id),

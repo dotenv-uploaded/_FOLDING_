@@ -109,7 +109,7 @@ class ExecutionView(StrictModel):
         if self.sync_status is SyncStatus.RUNNING:
             return "sync_running"
         if self.sync_status is SyncStatus.FAILED:
-            return "sync_retryable"
+            return "sync_retryable" if self.error and self.error.retryable else "sync_failed"
         return "published"
 
     @computed_field  # type: ignore[prop-decorator]

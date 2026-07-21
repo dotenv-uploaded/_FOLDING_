@@ -12,8 +12,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from codegate_api.files.atomic import SafeSourceFileStore
-from codegate_api.integrations.doc2md import Doc2MdClient, Doc2MdError
+from codegate_api.integrations.doc2md import ConversionSection, Doc2MdClient, Doc2MdError
 from codegate_api.knowledge.catalog import KnowledgeCatalog, KnowledgeCatalogError
+from codegate_api.knowledge.evidence import build_section_index
 from codegate_api.knowledge.repository import KnowledgePackageError
 from codegate_api.knowledge.schemas import ManifestEntry
 from codegate_api.models import ReplaceExactOperation
@@ -21,9 +22,10 @@ from codegate_api.state.store import PendingEvent, StateStore
 
 
 class SyncPipelineError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, retryable: bool = True) -> None:
         super().__init__(message)
         self.code = code
+        self.retryable = retryable
 
 
 class ContentChangedPayload(BaseModel):
@@ -63,6 +65,9 @@ class LocalKnowledgePipeline:
         async with self._lock:
             current_batch: list[PendingEvent] = []
             candidate: Path | None = None
+            failure_code = "KNOWLEDGE_SYNC_FAILED"
+            failure_message = "지식 동기화가 완료되지 않았습니다. 재시도할 수 있습니다."
+            failure_retryable = True
             try:
                 for _ in range(8):
                     current_batch = self._state.pending_events()
@@ -133,15 +138,21 @@ class LocalKnowledgePipeline:
                     "PUBLISH_CAS_EXHAUSTED",
                     "지식 버전 공개 충돌을 제한 횟수 안에 재조정하지 못했습니다.",
                 )
-            except (
-                Doc2MdError,
-                KnowledgeCatalogError,
-                KnowledgePackageError,
-                OSError,
-                ValueError,
-            ) as error:
-                raise SyncPipelineError("KNOWLEDGE_SYNC_FAILED", str(error)) from error
-            except SyncPipelineError:
+            except Doc2MdError as error:
+                failure_code = error.code
+                failure_message = str(error)
+                failure_retryable = error.retryable
+                raise SyncPipelineError(
+                    error.code,
+                    str(error),
+                    retryable=error.retryable,
+                ) from error
+            except (KnowledgeCatalogError, KnowledgePackageError, OSError, ValueError) as error:
+                raise SyncPipelineError(failure_code, str(error)) from error
+            except SyncPipelineError as error:
+                failure_code = error.code
+                failure_message = str(error)
+                failure_retryable = error.retryable
                 raise
             finally:
                 if candidate is not None:
@@ -153,8 +164,9 @@ class LocalKnowledgePipeline:
                     if failed_ids:
                         self._state.fail_event_batch(
                             failed_ids,
-                            code="KNOWLEDGE_SYNC_FAILED",
-                            message="지식 동기화가 완료되지 않았습니다. 재시도할 수 있습니다.",
+                            code=failure_code,
+                            message=failure_message,
+                            retryable=failure_retryable,
                         )
 
     async def _build_candidate(
@@ -344,17 +356,27 @@ class LocalKnowledgePipeline:
             if source.sha256 != payload.after_sha256:
                 raise ValueError(f"live source changed during conversion: {document_id}")
             converter_name = "local-markdown-adapter"
+            conversion_version = "1.0.0"
             if self._doc2md is not None:
                 converted = self._doc2md.convert(
                     ManifestEntry.model_validate(manifest),
                     expected_source_sha256=payload.after_sha256,
                 )
                 canonical_path = candidate / manifest["canonical_path"]
-                canonical_path.write_text(converted.canonical_markdown, encoding="utf-8")
+                canonical_path.write_text(
+                    _restore_section_anchors(
+                        converted.body,
+                        document_id=document_id,
+                        chunks=chunks,
+                        converted_sections=converted.sections,
+                    ),
+                    encoding="utf-8",
+                )
                 converter_name = converted.converter
+                conversion_version = converted.converter_version or "unknown"
             manifest["conversion"] = {
                 "converter": converter_name,
-                "conversion_version": "1.0.0",
+                "conversion_version": conversion_version,
                 "converted_at": datetime.now(UTC).isoformat(),
                 "status": "succeeded",
             }
@@ -504,3 +526,83 @@ def _chunk_id(document_id: str, revision: str, section_id: str, ordinal: int) ->
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _restore_section_anchors(
+    body: str,
+    *,
+    document_id: str,
+    chunks: list[dict[str, Any]],
+    converted_sections: tuple[ConversionSection, ...],
+) -> str:
+    section_id_by_path: dict[tuple[str, ...], str] = {}
+    section_path_by_id: dict[str, tuple[str, ...]] = {}
+    for chunk in chunks:
+        if chunk["document_id"] != document_id:
+            continue
+        heading_path = tuple(str(item) for item in chunk["heading_path"])
+        section_id = str(chunk["section_id"])
+        existing = section_id_by_path.setdefault(heading_path, section_id)
+        if existing != section_id:
+            raise ValueError(f"duplicate heading path has different section IDs: {document_id}")
+        existing_path = section_path_by_id.setdefault(section_id, heading_path)
+        if existing_path != heading_path:
+            raise ValueError(f"duplicate section ID has different heading paths: {document_id}")
+
+    converted_by_path: dict[tuple[str, ...], ConversionSection] = {}
+    converted_evidence_sections: list[ConversionSection] = []
+    for section in converted_sections:
+        if len(section.heading_path) < 2:
+            continue
+        if section.heading_path in converted_by_path:
+            raise ValueError(f"doc2md returned duplicate heading path: {document_id}")
+        converted_by_path[section.heading_path] = section
+        converted_evidence_sections.append(section)
+
+    mapped_sections: list[tuple[str, ConversionSection]] = []
+    unmatched_existing: list[tuple[tuple[str, ...], str]] = []
+    used_converted_paths: set[tuple[str, ...]] = set()
+    for heading_path, section_id in section_id_by_path.items():
+        converted_section = converted_by_path.get(heading_path)
+        if converted_section is None:
+            unmatched_existing.append((heading_path, section_id))
+            continue
+        mapped_sections.append((section_id, converted_section))
+        used_converted_paths.add(heading_path)
+
+    unmatched_converted = [
+        section
+        for section in converted_evidence_sections
+        if section.heading_path not in used_converted_paths
+    ]
+    if len(unmatched_existing) != len(unmatched_converted):
+        raise ValueError(f"doc2md omitted an existing evidence section: {document_id}")
+    mapped_sections.extend(
+        (section_id, converted_section)
+        for (_, section_id), converted_section in zip(
+            unmatched_existing, unmatched_converted, strict=True
+        )
+    )
+
+    rendered = body
+    existing_lines = set(body.splitlines())
+    insertions = sorted(
+        (
+            converted_section.char_start,
+            f'<a id="{section_id}"></a>\n',
+        )
+        for section_id, converted_section in mapped_sections
+        if f'<a id="{section_id}"></a>' not in existing_lines
+    )
+    for offset, anchor in reversed(insertions):
+        rendered = rendered[:offset] + anchor + rendered[offset:]
+
+    indexed = build_section_index(rendered)
+    for section_id, converted_section in mapped_sections:
+        indexed_section = indexed.get(section_id)
+        if (
+            indexed_section is None
+            or indexed_section.heading_path != converted_section.heading_path
+        ):
+            raise ValueError(f"doc2md evidence section mapping is invalid: {document_id}")
+    return rendered

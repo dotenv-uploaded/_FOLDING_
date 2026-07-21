@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     sync_stale_after_seconds: int = Field(default=30, ge=1, le=3_600)
     doc2md_base_url: str | None = None
     doc2md_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
+    doc2md_source_kind: Literal["path", "bytes"] = "path"
+    doc2md_api_token: SecretStr | None = Field(default=None, min_length=16)
+    doc2md_max_source_bytes: int = Field(default=33_554_432, ge=1, le=33_554_432)
 
     knowledge_mode: Literal["codegate", "llmwiki"] = "codegate"
     llmwiki_project_root: Path | None = None
@@ -142,6 +145,8 @@ class Settings(BaseSettings):
                 raise ValueError("production requires CODEGATE_AGENT_MODE=claude")
             if not self.doc2md_base_url:
                 raise ValueError("production requires CODEGATE_DOC2MD_BASE_URL")
+            if not self.doc2md_api_token:
+                raise ValueError("production requires CODEGATE_DOC2MD_API_TOKEN")
             if self.bootstrap_demo:
                 raise ValueError("production requires CODEGATE_BOOTSTRAP_DEMO=false")
             if mount is None:
