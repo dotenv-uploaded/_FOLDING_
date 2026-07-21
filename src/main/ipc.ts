@@ -78,8 +78,10 @@ export function registerIpcHandlers(
   /* ------------------------------------------------------------- L2 빌드 */
 
   // 빌드는 오래 걸리므로 즉시 반환하고, 진행 상황은 IPC_EVENTS.buildState 로 흘린다.
+  // 실제로 답변에 쓰이는 위키를 만드는 쪽(sidecar 파이프라인)을 돌린다 — 근거는
+  // AppServices.requestManualBuild 주석 참고.
   handle(IPC.buildTrigger, '빌드를 시작하지 못했습니다.', () => {
-    void services.build.trigger();
+    services.requestManualBuild();
   });
   handle(IPC.buildState, '빌드 상태를 불러오지 못했습니다.', () => services.getBuildState());
 

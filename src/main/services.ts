@@ -596,6 +596,24 @@ export class AppServices {
     }
   }
 
+  /**
+   * 수동 빌드 — 트리 하단의 `지금 빌드` 버튼이 부른다.
+   *
+   * 예전에는 로컬 BuildService(kordoc → enrich → assemble)를 불렀다. 그런데 그 경로는
+   * kordoc 실물이 없으면 **모든 문서가 변환에 실패**하고, 누를 때마다 "변환에 성공한
+   * 문서가 하나도 없습니다"만 띄웠다. 정작 답변에 쓰이는 위키는 sidecar 파이프라인
+   * (doc2md → LLMWIKI)이 만들고 있었으므로, 버튼은 **실제로 도는 쪽**을 눌러야 한다.
+   *
+   * 폴더가 없으면 조용히 아무 일도 안 하지 않고 이유를 말한다 — 버튼을 눌렀는데
+   * 아무 반응이 없으면 고장으로 보인다.
+   */
+  requestManualBuild(): void {
+    if (this.store.listRoots().length === 0) {
+      throw new UserFacingError('등록된 폴더가 없습니다. 폴더를 먼저 추가해 주세요.');
+    }
+    this.requestKnowledgeSync('문서를 다시 확인하는 중');
+  }
+
   private requestKnowledgeSync(message: string): void {
     if (this.disposed || this.store.listRoots().length === 0) return;
     this.knowledgeSyncRequested = true;
