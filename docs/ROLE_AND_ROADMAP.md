@@ -29,6 +29,9 @@
 - `setting_sources=[]`, `skills=[]`, `plugins=[]`로 서버 runtime 격리
 - `CLAUDE_CONFIG_DIR` 격리, auto memory·prompt history 비활성화
 - checksum 포함을 강제한 `llm-wiki/AGENT_GUIDE.md`의 제한된 frontmatter만 검증·정규화해 모든 session 시작 지침에 주입
+- versioned prompt contract, current-turn evidence, 구조화 outcome·source hash와 cross-field validator
+- prompt/model/tool/graph/authorization fingerprint와 TTL이 일치하는 session만 resume
+- routing·exact change·prompt injection 고정 eval corpus와 model-pinned read-only canary
 - locate/change 의도 판단과 대상 선택
 - model/tool 사용량과 비용 상한, session ID 추적에서 본문·secret 제외
 

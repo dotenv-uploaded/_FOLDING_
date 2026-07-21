@@ -14,6 +14,7 @@ def _production_settings(volume: Path, **overrides: object) -> Settings:
         "environment": "production",
         "auth_mode": "supabase",
         "agent_mode": "claude",
+        "claude_model": "claude-pinned-test-model",
         "doc2md_base_url": "http://doc2md.internal",
         "doc2md_api_token": "production-doc2md-token",
         "bootstrap_demo": False,
@@ -98,6 +99,7 @@ def test_railway_volume_maps_every_mutable_runtime_path(tmp_path: Path) -> None:
         ({"auth_mode": "disabled"}, "AUTH_MODE=supabase"),
         ({"supabase_url": None}, "Supabase issuer and JWKS"),
         ({"agent_mode": "deterministic"}, "AGENT_MODE=claude"),
+        ({"claude_model": None}, "CLAUDE_MODEL"),
         ({"doc2md_base_url": None}, "DOC2MD_BASE_URL"),
         ({"doc2md_api_token": None}, "DOC2MD_API_TOKEN"),
         ({"bootstrap_demo": True}, "BOOTSTRAP_DEMO=false"),
@@ -169,5 +171,6 @@ def test_supabase_and_railway_contract_files_are_fail_closed() -> None:
     assert "if access_row.user_id is null then" in migration
     assert "SUPABASE_SERVICE_ROLE_KEY" not in env_example
     assert "CODEGATE_SUPABASE_URL" in env_example
+    assert "CODEGATE_CLAUDE_MODEL" in env_example
     assert "multiRegionConfig" not in railway
     assert "--workers" not in railway

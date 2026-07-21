@@ -1,5 +1,45 @@
 # 작업 로그
 
+## 2026-07-22 — Claude Agent SDK prompt contract와 근거 검증 강화
+
+- 목적: Claude Agent SDK의 문서 routing·exact change prompt를 현재 turn의 실제 도구 근거와 결박하고,
+  prompt injection·stale session·모호한 실패가 변경 preview 경계까지 통과하지 못하게 강화
+- 변경:
+  - 역할, instruction hierarchy, trust, current-turn evidence, tool workflow, failure, 경계 예시와
+    structured output을 분리한 prompt contract 2.0 도입
+  - `ready`, `needs_clarification`, `not_found`, `tool_error`, `unsupported` outcome과 source SHA-256,
+    cross-field Pydantic validator 추가
+  - MCP 도구 설명·input schema·read-only annotation과 versioned untrusted provenance envelope 보강
+  - SDK가 반환한 `UserMessage` tool result만 수집하고 query, 검색 결과 target, `document_get`, source read,
+    graph version, source kind·hash·payload를 구조화 결정과 대조
+  - assistant-authored tool result, 근거 없는 `not_found`·`tool_error`, selected/verified target 불일치,
+    사용자 요청에 없는 replacement, stale source hash를 preview 전에 거부
+  - prompt/model/SDK/tool/output schema/AgentGuide/graph/authorization fingerprint와 TTL이 같고 최신 run이
+    성공한 session만 resume하도록 SQLite schema v5와 자동 migration 추가
+  - 고정 7-case corpus, model-pinned read-only canary runner, production model ID 필수 설정과 ADR 추가
+- 영향 범위: agent prompt·gateway·MCP tool server, chat application boundary, session state, production config,
+  prompt eval·테스트·배포 문서
+- 검증:
+  - Ruff format/check 통과
+  - mypy strict 46개 source file 통과
+  - pytest 206개 통과, line coverage 85%
+  - prompt corpus 7개를 API 호출 없이 load·list하고 wheel·sdist build 성공
+  - v4 agent run schema의 session 보존 v5 migration, failed/running session rotation, tool trace/result 위조·순서·
+    provenance·빈 검색·source hash 회귀 테스트 통과
+  - 독립 최종 diff review에서 blocker/high finding 없음
+- 전달 상태: `feat/claude-prompt-hardening` 격리 worktree에서 구현·검증했다. 공유 `main` checkout은
+  수정하지 않았으며 commit·draft PR 전달을 진행한다. Production migration·배포는 수행하지 않는다.
+- 결정:
+  - prompt 문구만 신뢰하지 않고 구조화 schema, current-turn tool trace, application hash·approval 경계로
+    같은 계약을 중복 검증
+  - SDK 내부 `StructuredOutput`만 별도 control tool로 허용하고 네 개 read-only CODEGATE 도구 외 built-in
+    file·shell·web 도구는 계속 차단
+  - session 연속성보다 prompt·권한·graph snapshot 일치와 실패 뒤 회전을 우선
+- 남은 일:
+  - 현재 환경에 Anthropic API key와 고정 model ID가 없어 live canary는 미실행. credential이 준비되면
+    고정 corpus를 지정 model로 실행하고 latency·cost·tool sequence 결과를 기록
+  - SDK transcript 물리 삭제와 보존 기간은 사용자 동의가 필요한 별도 lifecycle 정책으로 결정
+
 ## 2026-07-22 — 최신 민규 converter·성주 Backend·용휘 LLMWIKI 실제 연결
 
 - 목적: 팀 GitHub와 로컬 checkout을 전부 대조하고 민규의 최신 변환기와 용휘의 최신

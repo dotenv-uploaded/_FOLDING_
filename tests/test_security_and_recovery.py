@@ -91,6 +91,60 @@ def test_state_store_migrates_retryable_sync_error_column(tmp_path: Path) -> Non
     assert retryable == (1,)
 
 
+def test_state_store_migrates_agent_runtime_fingerprint_without_losing_session(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy-agent.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE agent_runs (
+                id TEXT PRIMARY KEY,
+                conversation_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                session_id TEXT,
+                error_code TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO agent_runs(
+                id, conversation_key, status, provider, session_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "run-legacy",
+                "conversation-key",
+                "succeeded",
+                "claude-agent-sdk",
+                "11111111-1111-4111-8111-111111111111",
+                "2026-07-21T00:00:00+00:00",
+                "2026-07-21T00:00:00+00:00",
+            ),
+        )
+
+    StateStore(database).initialize()
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_runs)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(agent_runs)")}
+        row = connection.execute(
+            "SELECT session_id, runtime_fingerprint FROM agent_runs WHERE id = 'run-legacy'"
+        ).fetchone()
+        migration = connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 5"
+        ).fetchone()
+
+    assert "runtime_fingerprint" in columns
+    assert "idx_agent_runs_session_resume" in indexes
+    assert row == ("11111111-1111-4111-8111-111111111111", None)
+    assert migration == (1,)
+
+
 def test_state_store_rejects_changed_validated_llmwiki_digest(tmp_path: Path) -> None:
     state = StateStore(tmp_path / "state.sqlite3")
     state.initialize()
