@@ -1,4 +1,4 @@
-# 프론트엔드 구현 스펙 v1.4
+# 프론트엔드 구현 스펙 v1.5
 
 - 범위: `codegate-2026-local`(우창) + `codegate-2026-agent`(성주) — **로컬 데스크톱 앱(Electron)이 프론트엔드**
 - 기준 문서: [기획안 v1.5.0](https://github.com/dotenv-uploaded/codegate-2026-backend/tree/main/docs/기획안)
@@ -7,6 +7,7 @@
 - v1.2 변경: **위키는 로컬에만 존재** (서버 무보관) — 검색이 로컬로 이동, L2에 산출물 회수 추가, zip 전송 프로토콜 확정
 - v1.3 변경: **UI = CLI → 데스크톱 앱(Electron)** — 메인 프로세스가 SDK·kordoc·워처 호스트, 렌더러는 React(shadcn)
 - v1.4 변경: **서버 = 로그인·구독만** — 변환·enrichment·빌드 전부 로컬 실행, 파일 전송 프로토콜 삭제
+- v1.5 변경: **OAuth 로그인 플로우 명세** (§3) — 시스템 브라우저 + PKCE + 딥링크/루프백 콜백
 
 ---
 
@@ -43,7 +44,7 @@ codegate-2026-local   → Electron 앱 — 메인에서 @codegate/agent 임베�
 | L1 | **데스크톱 UI (렌더러)** | 3분할 레이아웃 — 좌: 채팅 목록 / 중앙: 채팅(스트리밍·인용 클릭 시 원본 열기) / 우: 디렉터리 트리(파일별 상태 아이콘: 대기·변환중·완료)+전체 진행률. **승인 diff 모달**. shadcn 컴포넌트 | 2일 |
 | L2 | **로컬 빌드 오케스트레이터 (메인 프로세스)** | `chokidar` 감시 → 변경 문서만: **변환(민규 모듈) → enrichment(LLM API 호출, 동시성·재시도) → 빌더 코어(용휘 라이브러리) 실행** → `builds/` + `current.json` 원자 갱신. 진행률을 IPC로 렌더러에. 상태는 SQLite | 1.5일 |
 | L3 | **kordoc 래퍼** | `parse/patch/generate/render(--reflow)` 함수화. 패치 전 `.bak` 백업 → 임시파일 → rename(원자적). exit 2(미적용 편집) 처리 | 0.5일 |
-| L4 | **온보딩·인증 화면** | 로그인(토큰 safeStorage·구독 상태 표시 — **서버와의 유일한 통신**), 폴더 등록 + 스캔 미리보기 → 로컬 빌드 시작. **LLM API 키 설정 화면** (MVP: BYOK/팀 키) | 0.5일 |
+| L4 | **온보딩·인증** | **OAuth 로그인 (§3)** — 시스템 브라우저 + PKCE + 콜백 수신 + 토큰 safeStorage + 자동 갱신, 구독 상태 표시. 폴더 등록 + 스캔 미리보기 → 로컬 빌드 시작. **LLM API 키 설정 화면** (MVP: BYOK/팀 키) | 1일 |
 
 ### 성주 — `codegate-2026-agent`
 
@@ -68,7 +69,7 @@ codegate-2026-local   → Electron 앱 — 메인에서 @codegate/agent 임베�
 // @codegate/agent 공개 인터페이스
 export interface AgentDeps {
   config: { roots: string[]; backendUrl: string; wikiDir: string };  // 로컬 위키 경로 (L2가 관리)
-  auth: { getToken(): Promise<string> };              // L4 (keychain, 갱신 포함)
+  auth: { getToken(): Promise<string> };              // L4 (safeStorage, 만료 시 자동 갱신)
   kordoc: KordocApi;                                  // L3
   approvalHandler: (req: ApprovalRequest) => Promise<boolean>;  // L1
 }
@@ -105,10 +106,53 @@ export interface KordocApi {                          // L3 시그니처
 
 > 검색·빌드 API는 없다 — 전부 로컬. 서버 API는 위 2개가 전부다.
 
-## 3. 데스크톱 앱 UX (화면 4개)
+## 3. 인증 플로우 (데스크톱 OAuth)
+
+Supabase Auth 기준. **데스크톱 OAuth는 웹과 다르다** — 앱 내 `BrowserWindow`에 로그인 페이지를 띄우면
+안 되고(구글이 embedded webview를 `disallowed_useragent`로 차단, 자격증명 탈취 위험),
+**시스템 브라우저 + PKCE**가 표준이다.
 
 ```
-[온보딩]  로그인(플랜·만료 표시) → LLM API 키 설정 → 폴더 등록 → 스캔 미리보기
+[Electron 렌더러]        [메인 프로세스]           [시스템 브라우저]        [Supabase]
+ "Google로 로그인" 클릭 ─▶ PKCE 생성
+                          (code_verifier,
+                           code_challenge, state)
+                          shell.openExternal(url) ──▶ 구글 로그인·동의 ──▶ 인증
+                                                  ◀── redirect ──────────  code 발급
+                          콜백 수신 (아래 택1)
+                          state 검증 (CSRF)
+                          code + verifier ────────────────────────────────▶ 토큰 교환
+                                                                       ◀── access + refresh
+                          safeStorage 저장
+ 로그인 완료 ◀── IPC ────  GET /me/subscription ─────────────────────────▶ 플랜 확인
+```
+
+**콜백 수신 방식 — 택1 (M0에서 확정)**
+
+| 방식 | 구현 | 장단점 |
+|---|---|---|
+| **A. 루프백 서버** (MVP 추천) | 메인에서 임시 `http://127.0.0.1:<랜덤포트>/callback` 서버 기동 → code 수신 후 즉시 종료 | 프로토콜 등록·서명 불필요, 개발 중 바로 동작. RFC 8252 권장 방식 |
+| B. 커스텀 프로토콜 (딥링크) | `app.setAsDefaultProtocolClient('codegate')` → `codegate://auth/callback`. macOS는 `open-url` 이벤트, Win/Linux는 `second-instance`의 argv 파싱 | 브라우저→앱 복귀가 자연스러움. 단 OS별 분기·개발 중 등록 이슈 |
+
+> 배포 시에는 B(딥링크)가 UX가 좋지만, **MVP는 A(루프백)로 시작**하고 패키징 단계에서 B를 추가하는 것을 권장.
+> 둘 다 `redirectTo`를 Supabase 대시보드의 허용 목록에 등록해야 한다.
+
+**필수 보안 요건**
+
+- **PKCE 필수** — 데스크톱 앱은 public client라 client_secret을 보관할 수 없음. Supabase JS는 `flowType: 'pkce'`
+- **state 파라미터 검증** — CSRF 및 콜백 하이재킹 방지
+- **embedded webview 금지** — 반드시 `shell.openExternal`
+- **토큰 저장은 `safeStorage`** — macOS Keychain / Windows DPAPI / Linux libsecret에 위임. 평문 파일 저장 금지
+- **refresh 토큰 자동 갱신** — `auth.getToken()`이 만료를 감지해 갱신하고, 실패 시 `auth_error` 이벤트로 재로그인 유도
+
+**이메일/비밀번호 로그인**도 Supabase가 동시 지원하므로, OAuth 프로바이더 설정 전이라도
+개발·데모용으로 병행 제공한다 (같은 `getToken()` 인터페이스 뒤에 숨김).
+
+## 4. 데스크톱 앱 UX (화면 4개)
+
+```
+[온보딩]  로그인(Google OAuth / 이메일 → 브라우저 왕복 → 플랜·만료 표시)
+          → LLM API 키 설정 → 폴더 등록 → 스캔 미리보기
           → 로컬 빌드: 변환 ▸ enrichment(LLM 호출) ▸ 조립 — 단계별 진행률
 
 [메인 — 3분할]
@@ -126,21 +170,22 @@ export interface KordocApi {                          // L3 시그니처
 [설정]  구독 상태 · 등록 폴더 관리 · Anthropic 자격증명
 ```
 
-## 4. 마일스톤
+## 5. 마일스톤
 
 | 마일스톤 | 내용 | 담당 | 완료 기준 (DoD) |
 |---|---|---|---|
-| **M0** (D+1) | 인터페이스 계약 + 서버 API 2종 + **빌더 코어 실행 방식 결정(사이드카/포팅)** | 전원 | 계약 TS 파일 커밋 + 빌더 실행 PoC |
+| **M0** (D+1) | 인터페이스 계약 + 서버 API 2종 + **빌더 코어 실행 방식(사이드카/포팅)** + **OAuth 콜백 방식(루프백/딥링크) 결정** | 전원 | 계약 TS 파일 커밋 + 빌더 실행 PoC + Supabase 프로바이더·redirectTo 등록 |
 | **M1** (D+2) | Hello Agent: Electron 골격 + IPC + SDK 왕복 | 성주 A1 + 우창 L1 | 앱 채팅창에서 질문→스트리밍 답변 |
-| **M2** (D+3) | 읽기 경로: 로그인 + **로컬 빌드 파이프라인**(변환→enrichment→조립) + 로컬 검색 | 우창 L2·L4 + 민규 변환 + 용휘 빌더·API | 로컬 빌드 완료 후 질문 → **인용 있는 답변** |
+| **M2** (D+3) | 읽기 경로: **OAuth 로그인** + **로컬 빌드 파이프라인**(변환→enrichment→조립) + 로컬 검색 | 우창 L2·L4 + 민규 변환 + 용휘 빌더·API | 로컬 빌드 완료 후 질문 → **인용 있는 답변** |
 | **M3** (D+4) | 쓰기 경로: kordoc 편집+승인 diff 모달 | 우창 L3·L1 + 성주 A2·A3 | 계약서 양식 채우기가 모달 승인 거쳐 동작 |
 | **M4** (D+5) | 워처+루프 폐쇄+데모 시나리오 | 우창 L2 | 파일 수정 → 자동 재빌드 → 재질문 반영 |
 
 M0 이후 mock(`KordocApi` 목·enrichment 목·픽스처 위키)으로 병렬 진행, M2·M3에서 실물 연결.
 
-## 5. 리스크·규칙
+## 6. 리스크·규칙
 
-- **자격증명 3종 구분**: ① 백엔드 토큰(로그인) — safeStorage, ② enrichment LLM 키(Gemini 등) — 설정 화면에서 입력·safeStorage, ③ Anthropic 자격증명(SDK 추론). 섞지 말 것
+- **자격증명 3종 구분**: ① 백엔드 토큰(OAuth access/refresh) — safeStorage, ② enrichment LLM 키(Gemini 등) — 설정 화면 입력·safeStorage, ③ Anthropic 자격증명(SDK 추론). 섞지 말 것
+- **OAuth 보안 (§3)**: PKCE·state 필수, embedded webview 금지, 토큰 평문 저장 금지 — 리뷰 체크리스트로 고정
 - **kordoc 제약** (기획안 §8): `fill` 사용 금지(오탐) → patch+명시 치환. `.hwp` render 불가 → md 표 구조로 판단. patch exit 2 = 부분 실패로 사용자에게 표시
 - **승인 우회 금지**: A3 화이트리스트로 강제, `approvalHandler` 없이 쓰기 도구 실행 불가
 - **원본 안전**: L3 백업→원자쓰기 규칙을 테스트로 고정 (패치 중 프로세스 킬 시나리오 포함)
