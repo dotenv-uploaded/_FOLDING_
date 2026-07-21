@@ -1,202 +1,184 @@
-# 프론트엔드 구현 스펙 v2.1 (팀 계약 정합 개정판)
+# 프론트엔드 구현 스펙 v2.2 — 실제 구현 정합
 
-- 담당: 우창 · 레포 `codegate-2026-local`
-- **정본 문서**: 성주 레포의 [`INTEGRATION_CONTRACT.md` v0.3](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/INTEGRATION_CONTRACT.md) · [`ADR 0004`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/adr/0004-local-agent-llmwiki-and-auth-boundaries.md) · [`LOCAL_RUNTIME.md`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/LOCAL_RUNTIME.md)
-- 이 문서와 위 계약이 다르면 **계약과 실행 중인 Backend `/openapi.json`이 우선**한다.
+- 담당: 우창 · 레포 `codegate-2026-local` (Electron + React/shadcn, pnpm 워크스페이스)
+- 이 문서는 **현재 코드베이스를 서술**한다. 코드와 다르면 코드가 우선이며 이 문서를 고친다.
+- 팀 계약(성주 레포): [`INTEGRATION_CONTRACT.md`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/INTEGRATION_CONTRACT.md) · [`ADR 0004`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/adr/0004-local-agent-llmwiki-and-auth-boundaries.md) · [`LOCAL_RUNTIME.md`](https://github.com/dotenv-uploaded/codegate-2026-agent/blob/main/docs/LOCAL_RUNTIME.md)
 
-> **v2.0 전면 개정 사유**: v1.x는 "Electron 메인(Node)이 Claude Agent SDK와 kordoc을 직접 호스트"한다고
-> 가정했으나, 팀 실제 구현은 **Python sidecar(`codegate-local`)** 가 Agent SDK·LLMWIKI·doc2md를
-> 담당한다. 프론트는 UI와 sidecar 수명주기·인증·OS capability를 맡는다.
-> 폐기된 가정: TS 단일 런타임 · `@codegate/agent` npm 패키지 · SDK 내장 도구 사용 · kordoc 파이프라인 ·
-> 프론트의 enrichment 직접 호출.
->
-> **v2.1**: 인증(§3)을 성주 레포의 **실제 구현 기준**으로 정정. 데스크톱 MVP는 `auth_mode=local`로
-> 동작하므로 **로그인 UI 없이 핵심 흐름이 완결**된다. Supabase/OAuth는 클라우드 계정이 필요할 때의
-> 선택 경로다. 성주 레포는 수정하지 않고 있는 그대로 소비한다.
+> **v2.2 정정 공지**: v2.0/v2.1은 팀 계약만 보고 kordoc·로컬 빌드 파이프라인·enrichment 직접 호출을
+> "폐기"로 표기했으나 **과잉 수정이었다.** 이들은 v1.4/v1.5 스펙대로 실제 구현돼 동작 중이다
+> (`src/main/kordoc/`, `src/main/build/`). v2.2는 실제 구현인 **하이브리드**를 서술한다:
+> Electron이 변환·빌드·인증·워처를 소유하고, 대화·승인·실행은 Python sidecar에 위임한다.
 
 ---
 
-## 0. 구조
-
-**UI = Electron 데스크톱 앱. 두뇌 = 로컬 Python sidecar.**
+## 0. 구조 (실제)
 
 ```
-┌─ Electron 앱 〔우창〕 ─────────────────────────────────────────┐
+┌─ Electron 앱 〔codegate-2026-local〕 ──────────────────────────┐
 │                                                              │
-│  렌더러 (React + shadcn/Tailwind)                             │
-│    3분할 UI · 근거 인용 · diff 승인 · execution 폴링 · Undo      │
-│              ↕ IPC                                           │
-│  메인 (Node — 얇게 유지, 비즈니스 로직 없음)                      │
-│    · sidecar 프로세스 수명주기 (spawn / health / shutdown)      │
-│    · 폴더 선택 다이얼로그 → workspace capability                │
-│    · 원본 파일 열기 (shell.openPath)                           │
-│    · (클라우드 전환 시) OAuth 콜백 + safeStorage                 │
-│              ↓ HTTP · local sidecar client (loopback + CORS)   │
-└──────────────┬───────────────────────────────────────────────┘
-               ▼
-┌─ codegate-local sidecar (Python) 〔성주〕 ─────────────────────┐
-│  auth_mode=local → LocalAuthenticator (로그인 불필요)           │
-│  Claude Agent SDK — app-owned read tools                      │
-│    ❌ 내장 Read/Edit/Write/Bash 비활성 + PreToolUse allowlist    │
-│  LLMWIKI WikiBuildService 〔용휘〕 in-process                   │
-│  doc2md 클라이언트 〔민규〕                                      │
-│  승인·backup·atomic replace·outbox·Undo·SQLite journal        │
-└───────────────────────────────────────────────────────────────┘
-
-    ┈┈ 클라우드 계정 도입 시에만 추가되는 경로 (선택) ┈┈
-    메인 → cloud client (Bearer) → 배포 Backend (JWKS 검증)
-    메인 → Supabase Auth (OAuth · PKCE · 시스템 브라우저)
+│  렌더러 (React + shadcn)  src/renderer/                       │
+│    screens: Login · Onboarding · Main · Settings             │
+│    components: ChatList · MessageBubble · CitationChip        │
+│                ApprovalModal                                 │
+│              ↕ IPC (contracts의 IPC / IPC_EVENTS)             │
+│  메인 (Node)  src/main/                                       │
+│    auth/     Supabase OAuth · 루프백 · safeStorage            │
+│    build/    ① convert → ② enrich(LLM 직접) → ③ assemble      │
+│    kordoc/   real · mock · atomic (변환·편집)                  │
+│    watcher/  변경 감지 → 증분 재빌드                            │
+│    db/       SQLite (파일 상태·대화)                            │
+│    agent/    loader → sidecar-agent | mock-agent              │
+│    sidecar/  Python 백엔드 HTTP 클라이언트                      │
+│    tree.ts · net/ · util/                                     │
+└───────┬───────────────────────────────┬──────────────────────┘
+        │ sidecar client (loopback)     │ cloud client (Bearer)
+        ▼                               ▼
+┌─ codegate-local (Python) 〔성주〕 ─┐   ┌─ 로그인·구독 〔Supabase/성주〕 ─┐
+│  chat · change-plan · execution   │   │  Supabase Auth · /auth/me     │
+│  Claude Agent SDK · 승인 · Undo    │   └───────────────────────────────┘
+└───────────────────────────────────┘
+                                        Anthropic API — 모델 추론
+                                        LLM 제공자 — enrichment
 ```
 
-**프론트는 파일을 직접 쓰지 않는다.** 모든 원본 변경은 sidecar의 승인 경로(exact diff →
-`plan_hash` → approve → backup → atomic replace → outbox → Undo)를 통과한다.
+**소유 경계**: 위키 빌드(변환·enrichment·조립)는 **Electron이 소유**한다. 문서는 자사 서버로 나가지
+않으며, 서버에 묻는 것은 로그인·구독뿐이고 빌드 시작 전에 한 번 확인한다. 대화·변경 승인·실행은
+sidecar에 위임한다.
 
-## 1. 우창 컴포넌트
+## 1. 모듈 현황
 
-| # | 컴포넌트 | 내용 | 규모 |
-|---|---|---|---|
-| **L1** | **렌더러 UI** | 3분할(좌 대화목록 / 중앙 채팅 / 우 문서·상태). `response_type` 4종 분기 렌더링, **인용 배지** `[document_id rev.N §section_id]` 클릭 → 원본 열기, **diff 승인 모달(plan_hash 표시)**, execution 폴링 진행 표시, **Undo 버튼** | 2.5일 |
-| **L2** | **sidecar 수명주기 (메인)** | 앱 시작 시 `codegate-local` spawn(포트 할당·`--cors-origin` 전달), `GET /api/v1/health` 준비 대기, 비정상 종료 감지·재기동, 앱 종료 시 graceful shutdown. **겹치지 않는 4개 루트 준비**: `source/` `source-md/` `llmwiki-storage/` `app-data/` | 1.5일 |
-| **L3** | **인증 연동 (메인+렌더러)** | **MVP: `GET /auth/me` 신원·권한 표시 + `write_scope` 기반 UI 게이팅만** (로그인 UI 불필요 — sidecar가 `auth_mode=local`). 클라우드 전환 시에만 Supabase OAuth(§3.2) 추가 | **0.5일** (클라우드 전환 시 +1일) |
-| **L4** | **workspace capability (메인)** | 폴더 선택 다이얼로그 → source root 지정(OS 권한 경계), 스캔 미리보기, 원본 열기(`shell.openPath`), 4개 루트 비중첩 검증 | 0.5일 |
-
-**제거된 항목** (v1.x 잔재): kordoc 래퍼 · 로컬 빌드 오케스트레이터 · enrichment LLM 직접 호출 — 전부 sidecar 소관.
-
-## 2. sidecar API 계약 (프론트가 소비)
-
-Base: `http://127.0.0.1:<port>/api/v1` — 정본은 실행 중인 `/openapi.json`.
-
-| 엔드포인트 | 프론트 사용처 |
-|---|---|
-| `GET /health` | L2 준비 대기·헬스체크 |
-| `GET /auth/me` | L3 신원·권한 snapshot (`no-store`) |
-| `POST /chat/messages` | L1 질문·변경 요청 (`Idempotency-Key` 필수) |
-| `GET /documents/{document_id}` | L1 문서 상세 |
-| `POST /documents/{id}/source-sync-plans` | 원본 동기화 계획 |
-| `POST /change-plans/{id}/approve` \| `/reject` | L1 승인 모달 — **화면에 보인 exact `plan_hash`를 그대로 전송** |
-| `GET /executions/{execution_id}` | L1 폴링 (`recommended_poll_after_ms` 사용, `terminal`까지) |
-| `POST /executions/{id}/retry-sync` \| `/undo` | L1 재시도·Undo |
-
-**Chat `response_type` 4종 → UI 분기**
-
-| 타입 | 렌더링 |
-|---|---|
-| `location_result` | 근거 답변 — canonical quote 그대로 + 인용 배지. **quote 임의 요약·변형 금지** |
-| `target_selection` | 대상 문서 후보 선택 UI |
-| `change_preview` | **diff + `plan_hash` 승인 모달** |
-| `error` | 오류 문장 (silent fail 금지) |
-
-approve·undo는 `202 Accepted` + `Location` → **execution 폴링으로 전환**. 실행 상태는 chat 응답에 없다.
-
-필수 citation 5종: `document_id` · `revision` · `graph_version` · `chunk_id` · `section_id`.
-
-## 3. 인증 — 성주 구현(`auth.py`) 소비
-
-Backend는 `TokenAuthenticator` Protocol로 인증자를 **모드별로 플러그인**한다. 프론트는 이를
-구현하지 않고 선택·소비만 한다. (성주 레포는 수정하지 않는다.)
-
-| `CODEGATE_AUTH_MODE` | 인증자 | 쓰임 |
+| 모듈 | 경로 | 상태 |
 |---|---|---|
-| **`local`** | `LocalAuthenticator` | **데스크톱 sidecar 기본값.** loopback 전용 단일 사용자 capability — `provisioned=true`, `allow_all_writes=true`, `authz_source="local-workspace"` |
-| `supabase` | `SupabaseJwtAuthenticator` | 클라우드 멀티테넌트. JWKS 검증 + 커스텀 클레임(tenant·read_access·write_documents) |
-| `demo` | `DemoTokenAuthenticator` | 개발용 고정 bearer 토큰 |
+| **인증** | `main/auth/` — `index.ts` `oauth-loopback.ts` `secret-store.ts` `llm-key.ts` | ✅ 구현 (§3) |
+| **빌드 파이프라인** | `main/build/` — `service.ts` `convert.ts` `enrich.ts` `assemble.ts` `manifest.ts` `current.ts` `cache.ts` | ✅ 구현 |
+| **kordoc** | `main/kordoc/` — `real.ts` `mock.ts` `atomic.ts` `base.ts` | ✅ 구현 |
+| **워처** | `main/watcher/` | ✅ 구현 |
+| **에이전트** | `main/agent/` — `loader.ts` `sidecar-agent.ts` `mock-agent.ts` `approval.ts` `host.ts` | ✅ 구현 |
+| **sidecar 클라이언트** | `main/sidecar/client.ts` | ✅ 구현 |
+| **상태 저장** | `main/db/` — `schema.ts` `store.ts` (SQLite) | ✅ 구현 |
+| **공유 계약** | `packages/contracts/src/index.ts` | ✅ 구현 |
+| **UI** | `renderer/src/screens|components|state` | ✅ 구현 |
 
-### 3.1 MVP: 로그인 없이 동작
-
-데스크톱 앱의 sidecar는 `CODEGATE_ENVIRONMENT=local` + `CODEGATE_AUTH_MODE=local`로 기동한다.
-**질문·검색·수정·승인·Undo 전 흐름에 로그인 UI가 필요 없다.** 권한은 Supabase 신원이 아니라
-사용자가 OS 다이얼로그로 고른 workspace 범위에서 생긴다 (ADR 0004의 capability 분리 원칙).
-
-프론트가 할 일은 `GET /api/v1/auth/me`로 신원·권한 snapshot을 읽어 UI에 반영하는 것뿐이다:
-
-```json
-{ "subject_id": "local-user", "tenant_id": "...", "write_scope": "workspace",
-  "provisioned": true, "authz_source": "local-workspace" }
-```
-
-`write_scope`가 `none`이면 승인 버튼을 비활성화한다.
-
-### 3.2 클라우드 계정이 필요해질 때 (선택)
-
-계정·구독·다기기 동기화가 필요해지면 `auth_mode=supabase`로 전환한다. ADR 0004에 따라
-**로그인은 프론트가 Supabase Auth와 직접** 수행하고, Backend는 password·refresh token·
-service-role key를 받지 않고 JWKS로 access token만 검증한다. Backend에 자체 OAuth 엔드포인트를
-만들지 않는다 (ADR이 secret 보관 중복을 이유로 기각한 대안).
-
-데스크톱 OAuth는 **시스템 브라우저 + PKCE**가 표준이다 — 앱 내 `BrowserWindow`에 로그인 페이지를
-띄우면 구글이 `disallowed_useragent`로 차단한다.
+### 빌드 파이프라인 (`build/service.ts`)
 
 ```
-렌더러 로그인 클릭 ─▶ 메인: supabase-js(flowType:'pkce') signInWithOAuth
-                       ({ skipBrowserRedirect: true }) → authUrl
-                     shell.openExternal(authUrl) ─▶ 시스템 브라우저 ─▶ 구글/Supabase
-                     루프백 콜백(127.0.0.1:<고정후보포트>/callback)에서 code 수신
-                     exchangeCodeForSession(code) → safeStorage 저장
-                     cloud client(Bearer)로 GET /auth/me
+변경 감지 → ① 변환(kordoc/민규 모듈) → ② enrichment(LLM 직접 호출)
+         → ③ 조립(용휘 빌더 코어) → 임시 디렉터리 검증 → 원자적 승격 → current.json
 ```
 
-**필수 요건**: PKCE · embedded webview 금지 · 토큰은 `safeStorage`(평문 저장 금지) · refresh 자동 갱신 ·
-Supabase 대시보드 Redirect URLs에 루프백 후보 포트 등록 · 앱에는 **anon key만**(service_role 금지).
-저장소 어댑터는 `localStorage`가 없는 메인 프로세스용으로 `safeStorage` 기반 커스텀 구현이 필요하다.
+`BuildPhase = 'convert' | 'enrich' | 'assemble'`, 상태는 `BuildState`로 렌더러에 스트리밍.
+**enrichment가 파이프라인에서 유일하게 비용이 발생하는 지점**이라 `enrich.ts`에 3중 안전장치가 있다:
+동시성 제한(기본 4, `CODEGATE_ENRICH_CONCURRENCY`) · 429/5xx/네트워크만 지수 백오프 재시도 ·
+부분 실패 격리(해당 문서만 deferred). **해시가 같은 문서는 호출하지 않는다**(`PreviousBuild.reusable`).
 
-**클라이언트 2개 분리 (ADR 0004)**: cloud Bearer client와 local sidecar client를 절대 섞지 않는다.
+### 에이전트 선택 (`agent/loader.ts`)
 
-## 4. UX 흐름
+`CODEGATE_MOCK=1` → 내장 목 에이전트, 그 외 → `createSidecarAgent`. **조용한 폴백 금지** — 어느 쪽이
+선택됐는지 로그로 남긴다.
+
+`sidecar-agent.ts`는 sidecar 응답을 `AgentEvent` 스트림으로 변환한다:
+`tool_start` → `text_delta` → (`change_preview`면) `approval_request` → `done{citations}`.
+쓰기 전 `deps.auth.canWrite()`를 확인하고 아니면 `auth_error{kind:'not_provisioned'}`.
+
+## 2. 계약 (`packages/contracts`)
+
+렌더러·메인이 공유하는 타입. 주요 항목:
+
+```ts
+Citation · PatchResult · KordocApi · ApprovalRequest · AgentDeps · AgentEvent · CreateAgent
+Root · ScanPreview · FileStatus · FileNode
+BuildPhase · BUILD_PHASE_LABEL · BuildStatus · BuildState
+Session · Subscription · SubscriptionResponse · OAuthProvider · LoginRequest
+Conversation · ChatMessage · ExecutionSummary
+IPC · IPC_EVENTS · AgentEventEnvelope · ApprovalEnvelope
+```
+
+`AgentEvent`는 IPC로 렌더러에 중계된다(`AgentEventEnvelope`). 렌더러는 타입별로 UI를 그린다 —
+`approval_request`→ApprovalModal, `tool_start`→상태 배지, `text_delta`→스트리밍, `done`→CitationChip.
+
+## 3. 인증 (구현 완료)
+
+**Supabase Auth + 시스템 브라우저 + PKCE + 루프백 콜백.** ADR 0004대로 로그인은 프론트가 직접
+수행하고, 백엔드는 JWKS로 검증만 한다(자체 OAuth 엔드포인트 없음).
+
+```ts
+// main/auth/index.ts
+createClient(supabaseUrl, supabasePublishableKey, {
+  auth: { flowType: 'pkce', autoRefreshToken: true, persistSession: true,
+          detectSessionInUrl: false, storage: safeStorageBackedStore },
+});
+// login()
+const receiver = await createOAuthLoopbackReceiver();
+await client.auth.signInWithOAuth({ provider,
+  options: { redirectTo: receiver.redirectTo, skipBrowserRedirect: true } });
+await shell.openExternal(data.url);
+```
+
+**루프백 수신기** (`oauth-loopback.ts`) — state를 콜백 **경로에 박아** CSRF를 라우팅으로 차단:
+
+```ts
+const state = randomBytes(32).toString('base64url');
+// http://127.0.0.1:<임의포트>/oauth/callback/<state>
+if (req.method !== 'GET' || url.pathname !== `/oauth/callback/${state}`) → 404
+```
+
+3분 타임아웃 · `server.unref()`/`timer.unref()`(앱 종료 비차단) · `no-store`·`nosniff` ·
+`error_description` 처리 · 완료 안내 HTML 응답.
+
+**토큰 저장** (`secret-store.ts`) — `SafeStorageAuthStorage`가 PKCE verifier와 세션을 OS 키체인
+(`safeStorage`)으로 암호화해 `auth.bin`에 원자적으로 쓴다. 테스트용 `MemoryAuthStorage` 병행.
+Supabase 미설정 시 `client=null`로 앱은 계속 동작한다.
+
+`restore()`가 앱 시작 시 세션을 복원하고 `/auth/me`로 신원·권한을 갱신한다.
+`write_scope`가 `none`이면 승인 UI를 막는다.
+
+**자격증명 3종 분리** (`llm-key.ts`가 ②를 별도 보관):
+① Supabase 토큰 ② enrichment LLM 키 ③ Anthropic 자격증명(sidecar).
+
+## 4. UX
 
 ```
-[온보딩] 폴더 선택(workspace) → sidecar 기동(auth_mode=local) → 초기 변환·빌드 진행률
-         ※ MVP는 로그인 단계 없음. 클라우드 계정 도입 시 앞단에 추가
+[온보딩] 로그인(Google OAuth → 시스템 브라우저) → 폴더 선택 → 스캔 미리보기
+         → 빌드: 변환 ▸ enrichment ▸ 조립 (단계별 진행률)
 
-[메인 3분할]
-┌──────────┬────────────────────────────────┬──────────────────┐
-│ 대화 목록  │ 채팅                            │ 문서·상태          │
-│          │ Q: 개인정보 보관 기간 어디 있어?    │ 📁 source/       │
-│ + 새 대화 │ A: "…5년간 보관한다"             │  ├ ✓ REG-000001  │
-│          │    [REG-000001 rev.3 §sec-004]  │  └ ⟳ MAN-000002  │
-│          │    ↑ 클릭 → 원본 열기             │ graph_version    │
-│          │                                │ 빌드 ▓▓▓░ 78%    │
-└──────────┴────────────────────────────────┴──────────────────┘
+[메인 3분할] 좌 대화목록 │ 중앙 채팅(인용 칩·클릭 시 원본) │ 우 트리(파일 상태)+빌드 진행률
 
-[승인 모달]  change_preview 수신 시
-  대상 · exact diff · plan_hash(표시) · 근거 인용
-  [거부] [원본 보기] [승인] → 202 → execution 폴링 → 완료/실패 → [Undo]
+[승인 모달] change_preview → 대상·exact diff·plan_hash·근거 → [거부][원본][승인]
+            → execution 폴링 → 완료/실패 → Undo
 ```
 
-**표기 주의**: 모델 추론은 Anthropic API 호출이므로 UI·홍보 문구에서 "완전 오프라인"·"로컬 전용"으로
-표현하지 않는다 (ADR 0004).
+실패는 **한국어 문장**으로 `BuildState.error`에 담는다 (silent fail 금지).
 
-## 5. 마일스톤
+## 5. 남은 작업 · 미해결
 
-| M | 내용 | 완료 기준 |
-|---|---|---|
-| **M0** (D+1) | 계약 확정: sidecar 실행 인자·포트 규약·CORS origin·`auth_mode=local` 기동, Electron 스캐폴딩 | 앱에서 sidecar spawn → `/health` 200 → `/auth/me` 응답 |
-| **M1** (D+2) | 읽기 경로: `GET /auth/me` + `POST /chat/messages` → `location_result` 렌더 | 질문 → **인용 배지 있는 답변** 표시 |
-| **M2** (D+3) | 쓰기 경로: `change_preview` → diff·plan_hash 승인 → approve → execution 폴링 | md 파일 수정이 승인 후 실제 반영 |
-| **M3** (D+4) | Undo·retry-sync·오류 UX·문서 트리·진행률 | 수정 → Undo로 원상복구 확인 |
-| **M4** (D+5) | 패키징(sidecar 번들·LLMWIKI bundle 고정)·데모 시나리오 | 설치본에서 전 흐름 동작 |
+| 항목 | 내용 |
+|---|---|
+| **빌드 이중화** ⚠️ | Electron `build/`가 위키를 만들고, sidecar도 LLMWIKI `WikiBuildService`를 in-process로 돈다. **어느 쪽이 정본 빌더인지 성주와 확정 필요** — 중복이면 한쪽 제거 |
+| README 갱신 | 아직 "codegate-2026-web / Next.js 풀스택" — Electron 앱으로 수정 |
+| 계약 표기 | 팀 계약 v0.3의 "우창 = Next.js UI" → Electron으로 갱신 협의 |
+| 옛 레포명 핀 | 계약·ADR이 `codegate-2026-api@360ff41` 참조 → `codegate-2026-convert` |
+| 바이너리 쓰기 | 계약상 md/txt만. HWP는 §7 검증 결과로 완화 제안 가능 |
 
-sidecar 준비 전에는 성주 레포의 합성 fixture·`--deterministic-agent` 모드로 UI를 병렬 개발한다.
+## 6. 규칙
 
-## 6. 리스크·규칙
+- **승인 무결성**: 화면에 보인 exact `plan_hash`만 전송
+- **인용 원문성**: canonical quote 그대로 렌더 — 요약·말줄임 금지. `embedding_text`는 quote로 노출 안 함
+- **enrichment 비근거**: 근거는 canonical section의 exact quote만
+- **클라이언트 분리**: cloud Bearer client와 local sidecar client를 섞지 않음 (ADR 0004)
+- **경로 규칙**: `source/` `source-md/` `llmwiki-storage/` `app-data/` 비중첩. source=source-md 금지
+- **원자성**: kordoc 패치는 `.bak` → 임시파일 → rename. 빌드는 임시 디렉터리 검증 후 `current.json` 승격
+- **표현**: 모델 추론이 API 호출이므로 "완전 오프라인"으로 표현하지 않음
+- **성주 레포 불변**: 인증·에이전트 백엔드는 기존 구현을 소비만 한다
 
-- **쓰기 범위 제한**: 실제 write는 **UTF-8 Markdown/TXT만**. PDF·DOCX·HWP는 verified round-trip
-  writer 전까지 read-only — UI에서 편집 불가를 명확히 표시
-- **승인 무결성**: 화면에 보인 exact `plan_hash`만 전송. 사용자가 본 diff와 다른 계획이 승인되면 안 됨
-- **인용 원문성**: `location_result`의 quote는 canonical 원문 그대로 렌더 — 요약·말줄임 금지.
-  `embedding_text`는 검색 전용이라 quote로 노출하지 않음
-- **enrichment 비근거**: 근거는 canonical section에 연결된 exact quote만. enrichment는 후보 확장용이며
-  현재 Backend 검색 adapter가 로드하지 않으므로 근거로 표시하지 않음
-- **클라이언트 분리**: cloud Bearer client와 local sidecar client를 절대 섞지 않음 (ADR 0004)
-- **경로 규칙**: 4개 루트는 서로 겹칠 수 없음. 특히 source와 source-md 동일 경로 금지(자기 SHA 순환)
-- **LLMWIKI bundle**: 앱과 함께 배포·검증된 고정 bundle만 실행. 사용자가 고른 임의 폴더를 project root로 실행 금지
-- **자격증명 분리**: ① `ANTHROPIC_API_KEY`(sidecar 환경변수) ② (클라우드 전환 시) Supabase 토큰(safeStorage) — 섞지 말 것
-- **성주 레포 불변**: 인증은 기존 `TokenAuthenticator` 구현을 모드 선택으로만 소비. Backend에 자체 OAuth 엔드포인트를 추가하지 않음
-- **멱등성**: `POST /chat/messages`에 `Idempotency-Key`, execution은 `event_id` 기준 재시도 안전
+## 7. 부록 — HWP 왕복 검증 (2026-07-21, kordoc 4.2.4, M4 Pro)
 
-## 부록 — 팀에 제안할 검증 결과 (참고)
+실제 프로젝트 hwp 3종 검증: 파싱 0.25초 · **서식 보존 패치 0.3초에 2.5MB 파일 바이트 동일**
+(2,636,288) · 패치 후 재파싱 자기검증 통과(미적용 시 exit 2) · md→hwpx 생성 구조 검증 통과 ·
+`render --reflow` SVG 렌더 가능 · `fill`은 오탐 있어 명시적 find/replace 권장.
+→ 계약의 "verified round-trip writer" 후보로 제안 가치 있음 (성주·민규 협의).
 
-계약상 HWP는 read-only이나, **kordoc 4.2.4로 실제 hwp 3종 왕복 검증**을 수행했다
-(2026-07-21, M4 Pro): 파싱 0.25초, **서식 보존 패치 0.3초에 2.5MB 파일 바이트 크기 동일**,
-패치 후 자동 재파싱 자기검증 통과(미적용 편집 시 exit 2). "verified round-trip writer" 후보로
-검토할 가치가 있으며, `render --reflow`는 양식·레이아웃 확인용 비전 경로로 쓸 수 있다.
-채택 여부는 성주·민규와 협의 사항.
+## 8. 부록 — enrichment 비용 실측 (2026-07-21, M4 Pro 24GB)
+
+코퍼스 424파일/508MB = **10.75M 토큰**. gemma3:4b decode 66 tok/s가 병목이라 로컬 LLM 전량 추출은
+**59~102시간**(병렬 무효 — 메모리 대역폭). GLiNER(전용 NER)는 **1.42 청크/s → 전량 1.9시간**, CPU 거의
+미사용. → enrichment 비용 최적화 시 엔티티 추출만 GLiNER로 분리하면 비용 1/20.
