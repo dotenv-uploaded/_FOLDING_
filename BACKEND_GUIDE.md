@@ -16,20 +16,24 @@ CODEGATE AI 스타트업 해커톤 본선용 백엔드 세팅 결과와, 이 위
 
 Python 요구 버전은 템플릿 기본값(3.14)에서 로컬 환경에 맞춰 `>=3.11`로 낮춰뒀다.
 
+**팀이 Supabase로 서버 호스팅을 정한 뒤 추가로 리팩터링한 것** — 자세한 내용은 8장 참고:
+- 인증을 템플릿의 자체 JWT 발급/비밀번호 해시(`pwdlib`)에서 **Supabase Auth 토큰 검증**으로 전면 교체 (`/login/*` 라우트 삭제, `core/security.py`가 이제 Supabase JWT를 검증만 함).
+- `User` 테이블에서 `hashed_password` 제거, `id`는 Supabase `auth.users.id`를 그대로 사용. 첫 인증 요청 시 로컬 프로필 행을 자동 생성(`crud.get_or_create_user`).
+- DB 연결을 Supabase managed Postgres(SSL)로 전환, `docker-compose.yml`에서 로컬 `db` 서비스 제거.
+- Alembic 마이그레이션 5개를 새 스키마에 맞춰 1개로 스쿼시(`0001_initial_schema.py`) — 아직 어떤 환경에도 배포된 적 없는 프로젝트라 안전하게 정리.
+
 ## 2. 로컬 실행
 
 ```bash
-# DB + 백엔드 동시 실행
-docker compose up -d
-
-# 또는 백엔드만 직접 (Postgres는 별도로 떠 있어야 함, .env의 POSTGRES_SERVER를 localhost로)
 cd backend
 uv sync
 uv run alembic upgrade head
 uv run fastapi dev app/main.py   # http://localhost:8000/docs
 ```
 
-루트 `.env`는 이미 생성됨 (`SECRET_KEY`, `POSTGRES_PASSWORD`, `FIRST_SUPERUSER_PASSWORD`를 랜덤 값으로 채워둠). **이 파일은 커밋하지 말 것** — `.gitignore`에 이미 걸려 있음. 팀원과 공유할 때는 `.env.example`을 기준으로 각자 생성.
+또는 `docker compose up -d` (백엔드 컨테이너만 뜬다 — DB는 Supabase가 호스팅).
+
+루트 `.env`는 `.env.example`을 복사해서 만들어져 있지만 `SUPABASE_URL`/`SUPABASE_JWT_SECRET`/`POSTGRES_*`는 아직 플레이스홀더다 — **8장을 따라 실제 Supabase 프로젝트 값으로 채워야 백엔드가 뜬다.** `.env`는 커밋하지 말 것(이미 `.gitignore` 처리). 팀원과 공유할 때는 `.env.example`을 기준으로 각자 생성.
 
 보안 스캔:
 ```bash
@@ -50,8 +54,8 @@ app/
     deps.py         # 인증/세션 등 공용 의존성
   core/
     config.py       # 환경변수 기반 Settings (pydantic-settings)
-    security.py      # JWT, 비밀번호 해시
-    db.py           # SQLModel 엔진/세션
+    security.py      # Supabase JWT 검증 (토큰을 발급하지 않고 검증만 함)
+    db.py           # SQLModel 엔진/세션 (Supabase Postgres, SSL)
   models.py         # DB 테이블 + API 스키마 (SQLModel)
   crud.py           # DB 접근 함수
 ```
@@ -80,7 +84,7 @@ app/
 
 | 리스크 | 참고 시트 | 이 프로젝트에서 확인할 것 |
 |---|---|---|
-| 인증/세션 | `Authentication_Cheat_Sheet.md`, `Session_Management_Cheat_Sheet.md` | JWT 만료시간(`security.py`), 비밀번호는 `pwdlib`(argon2)로 해시 — 이미 템플릿에 구현됨 |
+| 인증/세션 | `Authentication_Cheat_Sheet.md`, `Session_Management_Cheat_Sheet.md` | 비밀번호 저장/해시는 Supabase Auth 책임 — 이 백엔드는 절대 비밀번호를 다루지 않는다. `SUPABASE_JWT_SECRET`이 유출되면 토큰 위조가 가능하므로 `.env`와 동급으로 취급 |
 | 인가(IDOR) | `Authorization_Cheat_Sheet.md` | `crud.py`에서 `owner_id`로 리소스 소유자 검증하는지 (템플릿의 `items` 라우트가 예시) — 새 도메인 추가할 때마다 빠뜨리기 쉬움 |
 | 입력 검증/인젝션 | `Input_Validation_Cheat_Sheet.md`, `SQL_Injection_Prevention_Cheat_Sheet.md` | SQLModel/SQLAlchemy ORM만 쓰고 raw SQL 문자열 조합 금지 |
 | 시크릿 관리 | `Secrets_Management_Cheat_Sheet.md` | `.env`는 절대 커밋 금지(이미 `.gitignore` 처리), 배포 시 `SECRET_KEY`를 임의값으로 재생성 |
@@ -93,7 +97,7 @@ app/
 ## 6. MVP 개발 순서 (제안)
 
 1. **도메인 모델 정의** — 서비스 핵심 엔티티를 `models.py`(또는 도메인별 파일)에 SQLModel로 추가, `alembic revision --autogenerate` → `alembic upgrade head`.
-2. **인증은 템플릿 그대로 사용** — 새로 안 만들어도 됨. `FIRST_SUPERUSER`로 관리자 계정 시딩(`initial_data.py`)까지 이미 구현돼 있음.
+2. **인증은 프론트가 Supabase Auth로 직접 처리** — 백엔드는 아무 로그인/회원가입 라우트도 만들 필요 없음(8장 참고). 프론트에서 `supabase-js`로 로그인한 뒤 받은 `access_token`을 `Authorization: Bearer <token>`으로 이 백엔드에 보내면 끝.
 3. **핵심 API 1개를 엔드투엔드로** — 프론트가 붙을 수 있는 가장 중요한 기능 하나를 먼저 완성 (인증 → 요청 → LLM/DB 처리 → 응답)해서 데모 가능한 뼈대부터 확보.
 4. **AI 서비스 레이어 추가** — 위 4장 원칙대로 `app/services/llm.py` 분리, 스트리밍/재시도 붙이기.
 5. **나머지 기능 확장** — 우선순위 낮은 기능은 목데이터로 먼저 프론트와 계약(스키마)만 맞추고 이후 구현.
@@ -104,3 +108,43 @@ app/
 - 템플릿 자체 문서: `backend/README.md`
 - OWASP 전체 인덱스: `security/Index.md`
 - FastAPI 실전 패턴 요약(외부 링크, 설치 안 함): https://github.com/zhanymkanov/fastapi-best-practices
+
+## 8. Supabase 통합 (Postgres + Auth)
+
+팀 결정: **Supabase = 호스팅 Postgres + 인증(Auth)**, 비즈니스 로직/API는 계속 이 FastAPI 백엔드가 담당한다. 즉 프론트가 로그인·회원가입·비밀번호 재설정을 Supabase에 직접 요청하고, 이 백엔드는 프론트가 들고 온 Supabase 토큰을 검증만 한다.
+
+### 8.1 Supabase 프로젝트에서 값 가져오기
+
+1. [supabase.com](https://supabase.com)에서 프로젝트 생성.
+2. **Project Settings → API**: `Project URL` → `.env`의 `SUPABASE_URL`. **JWT Settings → JWT Secret** → `SUPABASE_JWT_SECRET` (이 값이 이 백엔드가 토큰을 검증하는 유일한 비밀 — 유출되면 누구나 임의 사용자로 위조 토큰을 만들 수 있으니 `.env`와 동급으로 취급).
+3. **Project Settings → Database**: Connection string에서 host/port/password를 꺼내 `POSTGRES_SERVER`/`POSTGRES_PORT`/`POSTGRES_PASSWORD`에 채운다. **Connection pooling(포트 6543, transaction mode)** 을 기본으로 쓴다 — FastAPI처럼 요청마다 짧게 연결하는 앱에 맞고, Supabase 무료 플랜의 direct connection 개수 제한을 피할 수 있다. Alembic 마이그레이션처럼 세션이 오래 유지돼야 하는 작업만 direct connection(5432)을 임시로 쓴다.
+4. `uv run alembic upgrade head`로 스키마 적용.
+
+### 8.2 인증 흐름
+
+```
+[프론트] --supabase-js login/signup--> [Supabase Auth]
+[프론트] <--------- access_token(JWT) -----------
+[프론트] --Authorization: Bearer <token>--> [이 FastAPI 백엔드]
+[백엔드] --SUPABASE_JWT_SECRET으로 서명 검증(app/core/security.py)--
+[백엔드] --sub(uuid)/email로 로컬 User 행 조회, 없으면 자동 생성(app/crud.get_or_create_user)--
+```
+
+- 백엔드는 `/login`, `/signup`, `/reset-password` 라우트를 갖지 않는다 — 전부 프론트에서 `supabase-js`로 Supabase Auth API를 직접 호출한다.
+- `User.id`는 항상 Supabase `auth.users.id`와 같은 값이다. 로컬 `User` 테이블은 앱 전용 필드(`is_superuser`, `full_name` 등)만 들고, 계정 자체(이메일 인증, 비밀번호, OAuth)는 전부 Supabase가 책임진다.
+- 관리자 권한 부여: 해당 사용자가 한 번이라도 로그인해 로컬 프로필 행이 생긴 뒤, 기존 superuser가 `PATCH /api/v1/users/{id}` (`is_superuser: true`)로 승격한다. 최초 1명은 Supabase Dashboard → SQL Editor에서 `UPDATE "user" SET is_superuser = true WHERE email = '...'`로 직접 올린다.
+- 로컬 테스트/시딩용으로 `POST /api/v1/private/users/`(ENVIRONMENT=local에서만 mount)가 Supabase 없이 로컬 프로필 행만 직접 만들어준다.
+
+### 8.3 프론트엔드 쪽 (참고)
+
+```ts
+// supabase-js 로그인 후
+const { data: { session } } = await supabase.auth.getSession()
+fetch(`${API_URL}/api/v1/users/me`, {
+  headers: { Authorization: `Bearer ${session?.access_token}` },
+})
+```
+
+### 8.4 테스트에서 인증 흉내내기
+
+실제 Supabase 없이도 백엔드 테스트가 인증을 통과할 수 있다 — `SUPABASE_JWT_SECRET`만 같으면 서명이 유효하기 때문. `tests/utils/utils.py`의 `mint_supabase_token(user_id, email)`이 Supabase가 발급하는 것과 같은 모양의 JWT를 로컬에서 만들어준다. 단, DB 자체는 여전히 `.env`의 Supabase Postgres에 실제로 붙는다(로컬 SQLite/인메모리로 안 바꿔놨음) — `pytest`를 돌리려면 8.1을 먼저 마쳐야 한다.

@@ -1,21 +1,21 @@
+import uuid
 from collections.abc import Generator
 from typing import Annotated
 
 import jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jwt.exceptions import InvalidTokenError
-from pydantic import ValidationError
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
-from app.core import security
-from app.core.config import settings
+from app import crud
 from app.core.db import engine
-from app.models import TokenPayload, User
+from app.core.security import decode_supabase_token
+from app.models import User
 
-reusable_oauth2 = OAuth2PasswordBearer(
-    tokenUrl=f"{settings.API_V1_STR}/login/access-token"
-)
+# Tokens are issued by Supabase Auth (supabase-js on the frontend), not by
+# this backend — it only verifies them. Swagger's "Authorize" button accepts
+# a raw Supabase access token here.
+reusable_bearer = HTTPBearer(auto_error=False)
 
 
 def get_db() -> Generator[Session]:
@@ -24,23 +24,34 @@ def get_db() -> Generator[Session]:
 
 
 SessionDep = Annotated[Session, Depends(get_db)]
-TokenDep = Annotated[str, Depends(reusable_oauth2)]
+TokenDep = Annotated[
+    HTTPAuthorizationCredentials | None, Depends(reusable_bearer)
+]
 
 
 def get_current_user(session: SessionDep, token: TokenDep) -> User:
-    try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
-        token_data = TokenPayload(**payload)
-    except (InvalidTokenError, ValidationError):
+    try:
+        payload = decode_supabase_token(token.credentials)
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Could not validate credentials",
         )
-    user = session.get(User, token_data.sub)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    email = payload.get("email")
+    try:
+        user_id = uuid.UUID(payload.get("sub", ""))
+    except ValueError:
+        user_id = None
+    if not user_id or not email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate credentials",
+        )
+    user = crud.get_or_create_user(session=session, user_id=user_id, email=email)
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     return user

@@ -20,24 +20,12 @@ class UserBase(SQLModel):
     full_name: str | None = Field(default=None, max_length=255)
 
 
-# Properties to receive via API on creation
-class UserCreate(UserBase):
-    password: str = Field(min_length=8, max_length=128)
-
-
-class UserRegister(SQLModel):
-    email: EmailStr = Field(max_length=255)
-    password: str = Field(min_length=8, max_length=128)
-    full_name: str | None = Field(default=None, max_length=255)
-
-
 # Properties to receive via API on update, all are optional
 class UserUpdate(SQLModel):
     email: EmailStr | None = Field(default=None, max_length=255)
     is_active: bool | None = None
     is_superuser: bool | None = None
     full_name: str | None = Field(default=None, max_length=255)
-    password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class UserUpdateMe(SQLModel):
@@ -45,15 +33,13 @@ class UserUpdateMe(SQLModel):
     email: EmailStr | None = Field(default=None, max_length=255)
 
 
-class UpdatePassword(SQLModel):
-    current_password: str = Field(min_length=8, max_length=128)
-    new_password: str = Field(min_length=8, max_length=128)
-
-
-# Database model, database table inferred from class name
+# Database model, database table inferred from class name.
+# `id` mirrors the Supabase `auth.users.id` (uuid) for the same account —
+# it is never generated locally, only assigned from a verified Supabase JWT
+# `sub` claim the first time that user is seen (see app.crud.get_or_create_user).
+# There is no password/hash here: Supabase Auth owns credentials entirely.
 class User(UserBase, table=True):
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    hashed_password: str
+    id: uuid.UUID = Field(primary_key=True)
     created_at: datetime | None = Field(
         default_factory=get_datetime_utc,
         sa_type=DateTime(timezone=True),  # type: ignore
@@ -117,19 +103,3 @@ class ItemsPublic(SQLModel):
 # Generic message
 class Message(SQLModel):
     message: str
-
-
-# JSON payload containing access token
-class Token(SQLModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
-# Contents of JWT token
-class TokenPayload(SQLModel):
-    sub: str | None = None
-
-
-class NewPassword(SQLModel):
-    token: str
-    new_password: str = Field(min_length=8, max_length=128)
