@@ -41,3 +41,18 @@ smoke는 원본 fixture의 doc2md 변환, sidecar와 LLMWIKI 초기 build, 근�
 상세 실행·패키징 경계는 [통합 상태](docs/NEXT_INTEGRATION.md), 현재 구현은
 [프론트엔드 스펙](docs/FRONTEND_SPEC.md), 실제 장애 기록은
 [troubleshooting](docs/TROUBLESHOOTING.md)을 참고한다.
+
+## Railway 웹 데모
+
+Railway에는 Electron 프로세스가 아니라 renderer UI를 브라우저용으로 빌드한 웹 데모를 배포한다.
+데스크톱 앱의 preload API는 웹 전용 메모리 어댑터로 대체되며, 지원 브라우저에서는 사용자가
+선택한 폴더의 파일명만 브라우저 메모리에서 정리한다. 문서 내용과 API 키는 Railway로 전송하지
+않고 실제 변환·Claude 질의·원본 작업은 데스크톱 앱에서만 수행한다.
+
+```bash
+pnpm build:web
+pnpm start:web
+```
+
+Railway는 [`Dockerfile.web`](Dockerfile.web), [`railway.toml`](railway.toml), `/health`를 사용한다.
+상세 경계와 선택 근거는 [웹 배포 결정 기록](docs/WEB_DEPLOYMENT.md)에 정리했다.

@@ -12,6 +12,7 @@ import { Logo, MarkWithText } from '@/ui/Wordmark';
 export function LoginScreen({ onLogin }: { onLogin: () => Promise<Session> }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const webDemo = document.documentElement.dataset.runtime === 'web-demo';
 
   async function login() {
     if (busy) return;
@@ -77,8 +78,9 @@ export function LoginScreen({ onLogin }: { onLogin: () => Promise<Session> }) {
 
           <h2 className="text-h3 font-bold tracking-tight text-ink-950">로그인</h2>
           <p className="mt-2 text-sm leading-relaxed text-ink-500">
-            시스템 브라우저에서 Google 계정으로 인증합니다. 비밀번호는 CODEGATE 앱이나
-            백엔드로 전달되지 않습니다.
+            {webDemo
+              ? 'Railway 웹 데모를 시작합니다. 실제 계정이나 API 키는 입력하지 않습니다.'
+              : '시스템 브라우저에서 Google 계정으로 인증합니다. 비밀번호는 CODEGATE 앱이나 백엔드로 전달되지 않습니다.'}
           </p>
 
           {error && (
@@ -104,13 +106,23 @@ export function LoginScreen({ onLogin }: { onLogin: () => Promise<Session> }) {
             iconLeft={<GoogleGlyph />}
             onClick={() => void login()}
           >
-            {busy ? '브라우저 인증을 기다리는 중…' : 'Google로 로그인'}
+            {busy ? '준비하는 중…' : webDemo ? '웹 데모 시작' : 'Google로 로그인'}
           </Button>
 
           <p className="mt-5 text-center text-xs leading-relaxed text-ink-400">
-            로그인 창은 기본 브라우저에서 열립니다.
-            <br />
-            이미 만들어진 위키는 오프라인에서도 검색·질의할 수 있어요.
+            {webDemo ? (
+              <>
+                선택한 폴더의 파일명은 브라우저 메모리에서만 사용됩니다.
+                <br />
+                실제 문서 분석과 원본 작업은 데스크톱 앱에서만 수행합니다.
+              </>
+            ) : (
+              <>
+                로그인 창은 기본 브라우저에서 열립니다.
+                <br />
+                이미 만들어진 위키는 오프라인에서도 검색·질의할 수 있어요.
+              </>
+            )}
           </p>
         </div>
       </main>

@@ -93,6 +93,7 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showExcluded, setShowExcluded] = useState(false);
+  const webDemo = document.documentElement.dataset.runtime === 'web-demo';
 
   async function pick() {
     setError(null);
@@ -129,9 +130,19 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
         어떤 폴더를 정리할까요?
       </h1>
       <p className="mt-2.5 text-base leading-relaxed text-ink-500">
-        선택한 폴더의 문서를 읽어 위키로 만듭니다. 위키는 이 컴퓨터에만 저장돼요.
-        <br />
-        나중에 언제든 폴더를 추가하거나 해제할 수 있어요.
+        {webDemo ? (
+          <>
+            선택한 폴더의 지원 파일명을 브라우저에서 정리합니다.
+            <br />
+            폴더를 지원하지 않는 브라우저에서는 안전한 샘플 문서를 사용합니다.
+          </>
+        ) : (
+          <>
+            선택한 폴더의 문서를 읽어 위키로 만듭니다. 위키는 이 컴퓨터에만 저장돼요.
+            <br />
+            나중에 언제든 폴더를 추가하거나 해제할 수 있어요.
+          </>
+        )}
       </p>
 
       {!preview ? (
@@ -236,7 +247,9 @@ function FolderStep({ workspace }: { workspace: Workspace }) {
                 : `${preview.included.length}개 문서로 시작하기`}
             </Button>
             <span className="text-xs text-ink-400">
-              변환 ▸ 분석 ▸ 조립 순서로 이 컴퓨터에서 처리합니다.
+              {webDemo
+                ? '웹 데모에서는 파일 내용이나 API 키를 서버로 전송하지 않습니다.'
+                : '변환 ▸ 분석 ▸ 조립 순서로 이 컴퓨터에서 처리합니다.'}
             </span>
           </div>
           {submitting && (

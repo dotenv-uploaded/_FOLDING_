@@ -29,12 +29,13 @@ export function MainScreen({
   onOpenSettings: () => void;
 }) {
   const chat = useChat();
+  const webDemo = document.documentElement.dataset.runtime === 'web-demo';
   return (
     <div className="flex h-full flex-col overflow-hidden bg-ink-50">
       <TitleBar
         right={
           <Badge tone={session.provisioned ? 'brand' : 'danger'}>
-            {session.provisioned ? '계정 연결됨' : '권한 확인 필요'}
+            {webDemo ? '웹 데모' : session.provisioned ? '계정 연결됨' : '권한 확인 필요'}
           </Badge>
         }
       />
