@@ -221,3 +221,69 @@ LLMWIKI는 `build-99801fba8b94ffc5f1a2`를 정상 stage했지만 Backend startup
 최종 package가 준비되면 실제 corpus로 source hash, source fragment, 승인 write, 재build, Undo까지 다시
 검증해야 한다. 면접에서는 “schema 검증 뒤에도 왜 format allowlist가 필요한가”, “upstream pin 변경을
 어떤 executable contract test로 막는가”를 설명할 수 있다.
+
+## 2026-07-22 — 최신 converter→Backend→LLMWIKI 재발행이 checksum과 H1에서 연속 실패
+
+### 상황, 기대와 영향
+
+`codegate-2026-convert@30e6814`, Backend, `LLMWIKI@acf94f7`을 실제 process로 띄우고 한 문서의
+`1년`을 `3년`으로 승인 변경했다. 기대는 원본 atomic write 뒤 doc2md 변환, native candidate 검증,
+`current.json` 공개와 새 근거 검색이 한 execution으로 완료되는 것이었다.
+
+실제로 원본은 적용됐지만 첫 동기화는 `LLMWIKI ingest checksum is invalid`로 끝났다. 호환 parser를
+보완한 뒤 같은 시나리오는 `H1 제목과 front matter title이 다릅니다`에서 다시 실패했다. 두 경우 모두
+execution은 `sync_retryable`이었고 이전 `build-99801fba8b94ffc5f1a2`가 계속 검색에 제공돼 잘못된
+candidate가 공개되지는 않았지만, 사용자는 파일과 검색 결과가 다른 action-required 상태에 놓였다.
+
+### 재현과 증거
+
+- 최신 native manifest는 legacy `ingest.path/sha256` 대신
+  `ingest.aggregate_sha256/fragments[]`, `chunking_mode`, `source_fragment_count`를 기록했다.
+- 한 문서 `sections` build는 fragment 1개, `chunk_no=null`, aggregate와 fragment SHA가 같았다.
+- Backend는 format 이름만 `server-v2`로 허용하고 baseline과 candidate에서 여전히 legacy 필드를
+  읽고 있었다.
+- 실제 doc2md `/v2/convert`는 metadata title override를 보존했지만 Markdown body에는 원본 H1
+  `# local source`를 남겼다. LLMWIKI input validator는 이 H1과 frontmatter title 불일치를 거부했다.
+- 첫 실패 execution은 `exec_a8951817ac764effa0732c1fc6ee011d`였고 source write와 immutable
+  backup은 정상 기록됐다.
+
+### 원인과 검토한 대안
+
+첫 원인은 build format allowlist와 실제 ingest shape 해석을 하나의 계약으로 검증하지 않은 얕은
+회귀 테스트였다. 둘째 원인은 stable metadata title을 강제하면서 변환 body H1도 같은 값인지 재발행
+전에 정규화하지 않은 adapter 경계였다.
+
+Schema 검사를 느슨하게 하거나 aggregate만 승인 증거로 쓰는 방법은 path·fragment topology 변조를
+놓치므로 제외했다. 여러 source fragment 중 첫 파일만 쓰는 방법은 부분 write와 불완전 Undo를 만들 수
+있어 제외했다. doc2md 저장소나 LLMWIKI validator를 Backend 요구에 맞게 직접 바꾸는 방법은 담당 경계를
+깨므로 사용하지 않았다.
+
+### 해결과 복구 검증
+
+- Legacy와 v2 ingest를 strict parser로 분리하고 mode, count, 정렬된 chunk number, path, fragment SHA와
+  aggregate를 교차 검증했다.
+- 변경 candidate에는 active와 같은 단일 input path와 Backend state에 미리 기록한 exact bytes SHA를
+  요구하고, 관련 없는 문서는 전체 fragment descriptor가 같아야 한다.
+- `source-fragments` 문서는 read-only로 내리고 직접 sync event도 input write 전에 차단했다.
+- doc2md body는 fenced code 밖의 실제 선행 H1이 정확히 하나인지 검사하고 그 제목만 active manifest
+  title로 바꾼다. H1 누락·중복은 이전 current를 유지한 채 실패한다.
+- 실패 execution의 `retry-sync`가 완료돼 `build-4147f2b0ed2a29246605`를 공개했고 `3년` 근거가
+  검색됐다. 새 source write나 새 change plan은 만들지 않았다.
+- 이어서 Undo가 `build-465cd13e13f397a818d7`을 공개했다. 원본 SHA가 immutable backup SHA
+  `581af8e24b0ab17d7a104a36434fc26ef8bb520d02d596828a15befe2c2a33bd`와 같았고 `1년`
+  근거가 복구됐으며 health의 pending/failed/stale event는 모두 0이었다.
+- 실제 v2 fixture를 포함한 focused Backend pytest 33개, converter pytest 104개, LLMWIKI
+  wiki-builder 39개와 local-runtime 14개가 통과했다.
+
+### 재발 방지와 남은 위험
+
+현재 integration pin, build format과 실제 ingest shape를 함께 fixture로 고정한다. Aggregate가 path를
+포함하지 않는다는 사실을 ADR 0005에 기록했고, multi-fragment write는 fragment-set durable snapshot과
+원자 rollback이 생길 때까지 열지 않는다. LLMWIKI의 `/convert/async` watcher와 Backend의 동기
+`/v2/convert` outbox writer는 같은 input에 동시에 쓰지 않도록 desktop에서 직렬화해야 한다.
+
+현재 모델은 검토·고정한 LLMWIKI bundle과 app-owned storage를 신뢰한다. Candidate 내부 schema digest를
+pinned bundle과 직접 결박하고 normalized input을 dirfd 기반 immutable snapshot으로 builder에 넘기는
+작업은 추가 hardening으로 남는다. 면접에서는 “aggregate hash만으로 승인 경계를 만들 수 없는 이유”,
+“원본 write 뒤 파생 build 실패를 어떻게 retry와 Undo로 수렴시키는가”, “다중 파일 논리 문서를 왜 먼저
+read-only로 출시했는가”를 설명할 수 있다.

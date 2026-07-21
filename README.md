@@ -2,7 +2,7 @@
 
 성주가 담당하는 지식 그래프 기반 문서 검색·수정 에이전트의 FastAPI 백엔드다. Claude Agent SDK가 질문과 변경 의도를 구조화하고, 애플리케이션이 ACL·원문 근거·승인·파일 쓰기·Undo·지식 버전 공개를 결정적으로 통제한다.
 
-합성 fixture와 협업자의 실제 `LLMWIKI@fb0f8c7` checkout 기준으로 다음 수직 흐름이 동작한다.
+합성 fixture와 협업자의 실제 `LLMWIKI@acf94f7` checkout 기준으로 다음 수직 흐름이 동작한다.
 
 ```text
 질문 또는 변경 요청
@@ -80,9 +80,9 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
 
 ## 팀 통합
 
-`codegate-2026-convert/services/doc2md@fa88f15`의 v0.2 `POST /v2/convert`를 내부 adapter로 호출한다. stable document ID와 `source://` URI override를 강제하고 source/canonical SHA, converter provenance, stable section mapping과 구조화 diagnostic을 검증한다. 같은 filesystem namespace에서는 `source.kind=path`, 별도 service에서는 최대 32 MiB의 `source.kind=bytes`와 Bearer 인증을 사용한다. `LLMWIKI@fb0f8c7`은 `WikiBuildService`를 in-process로 호출하며 native tenant/wiki `current.json`을 유일한 활성 포인터로 유지한다. Backend용 artifact는 native build ID에 결박된 checksum 포함 read cache다.
+`codegate-2026-convert/services/doc2md@30e6814`의 v0.2 `POST /v2/convert`를 내부 adapter로 호출한다. stable document ID와 `source://` URI override를 강제하고 source/canonical SHA, converter provenance, stable section mapping과 구조화 diagnostic을 검증한다. Backend 재발행 경로는 doc2md 청킹을 끄고, 같은 filesystem namespace에서는 `source.kind=path`, 별도 service에서는 최대 32 MiB의 `source.kind=bytes`와 Bearer 인증을 사용한다. `LLMWIKI@acf94f7`의 `WikiBuildService`를 in-process로 호출하며 native tenant/wiki `current.json`을 유일한 활성 포인터로 유지한다. Backend용 artifact는 native build ID에 결박된 checksum 포함 read cache다.
 
-로컬 변경은 원본 파일과 정규화 Markdown의 본문·source SHA·revision을 갱신한 뒤 새 native build를 공개한다. 실제 LLMWIKI checkout으로 명령, 승인, 원본 write, 새 current 공개와 변경된 근거 재검색까지 smoke 검증했다. 실행과 디렉터리 계약은 [로컬 runtime](docs/LOCAL_RUNTIME.md), 결정 근거는 [ADR 0004](docs/adr/0004-local-agent-llmwiki-and-auth-boundaries.md)에 있다.
+로컬 변경은 원본 파일과 정규화 Markdown의 본문·source SHA·revision을 갱신한 뒤 새 native build를 공개한다. `server-v2`의 단일 `sections` fragment만 원자 수정 대상으로 허용하고, 여러 `source-fragments`를 합친 문서는 전체 fragment snapshot과 원자 rollback 계약이 생길 때까지 검색 전용이다. 최신 converter·Backend·LLMWIKI 실제 process로 승인 변경, 실패 뒤 재시도, 새 근거 검색과 Undo까지 smoke 검증했다. 실행과 디렉터리 계약은 [로컬 runtime](docs/LOCAL_RUNTIME.md), 경계 결정은 [ADR 0004](docs/adr/0004-local-agent-llmwiki-and-auth-boundaries.md)와 [ADR 0005](docs/adr/0005-llmwiki-server-v2-write-compatibility.md)에 있다.
 
 로컬 watcher가 외부 편집을 감지하면 현재 파일 본문, 활성 source hash, 단일 exact operation을 `source-sync-plans`에 보낸다. Backend는 파일을 바로 덮어쓰지 않고 idempotent diff 계획을 반환한다. 클라이언트가 그 `plan_hash`를 표준 approve API에 다시 제출한 뒤에만 안전한 원본 교체와 동일 outbox fan-out이 시작된다. 협조하지 않는 외부 writer와의 완전한 POSIX CAS는 보장할 수 없으므로 실제 원본 writer는 이 프로토콜과 문서 lock을 함께 사용해야 한다.
 
