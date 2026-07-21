@@ -3,7 +3,15 @@
  * better-sqlite3 는 동기 API 라서 메인 프로세스에서 그대로 쓴다 (트랜잭션이 단순해진다).
  */
 import Database from 'better-sqlite3';
-import type { ChatMessage, ChatRole, Citation, Conversation, FileStatus, Root } from '@contracts';
+import type {
+  ChatMessage,
+  ChatRole,
+  Citation,
+  Conversation,
+  ExecutionSummary,
+  FileStatus,
+  Root,
+} from '@contracts';
 import { MIGRATIONS } from './schema';
 
 export type Db = Database.Database;
@@ -300,7 +308,7 @@ export class Store {
   listMessages(conversationId: string): ChatMessage[] {
     const rows = this.db
       .prepare(
-        `SELECT id, conversation_id, role, text, citations, tools, streaming, created_at
+        `SELECT id, conversation_id, role, text, citations, tools, execution, streaming, created_at
          FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid`,
       )
       .all(conversationId) as {
@@ -310,6 +318,7 @@ export class Store {
       text: string;
       citations: string | null;
       tools: string | null;
+      execution: string | null;
       streaming: number;
       created_at: string;
     }[];
@@ -320,6 +329,7 @@ export class Store {
       text: r.text,
       citations: parseJson<Citation[]>(r.citations) ?? undefined,
       tools: parseJson<{ name: string; summary: string }[]>(r.tools) ?? undefined,
+      execution: parseJson<ExecutionSummary>(r.execution) ?? undefined,
       createdAt: r.created_at,
       streaming: r.streaming === 1 ? true : undefined,
     }));
@@ -328,8 +338,11 @@ export class Store {
   insertMessage(message: ChatMessage): void {
     this.db
       .prepare(
-        `INSERT INTO messages (id, conversation_id, role, text, citations, tools, streaming, created_at)
-         VALUES (@id, @conversationId, @role, @text, @citations, @tools, @streaming, @createdAt)`,
+        `INSERT INTO messages (
+           id, conversation_id, role, text, citations, tools, execution, streaming, created_at
+         ) VALUES (
+           @id, @conversationId, @role, @text, @citations, @tools, @execution, @streaming, @createdAt
+         )`,
       )
       .run({
         id: message.id,
@@ -338,6 +351,7 @@ export class Store {
         text: message.text,
         citations: message.citations ? JSON.stringify(message.citations) : null,
         tools: message.tools ? JSON.stringify(message.tools) : null,
+        execution: message.execution ? JSON.stringify(message.execution) : null,
         streaming: message.streaming ? 1 : 0,
         createdAt: message.createdAt,
       });
@@ -350,6 +364,7 @@ export class Store {
       text?: string;
       citations?: Citation[];
       tools?: { name: string; summary: string }[];
+      execution?: ExecutionSummary;
       streaming?: boolean;
     },
   ): void {
@@ -366,6 +381,10 @@ export class Store {
     if (patch.tools !== undefined) {
       sets.push('tools = @tools');
       params.tools = JSON.stringify(patch.tools);
+    }
+    if (patch.execution !== undefined) {
+      sets.push('execution = @execution');
+      params.execution = JSON.stringify(patch.execution);
     }
     if (patch.streaming !== undefined) {
       sets.push('streaming = @streaming');

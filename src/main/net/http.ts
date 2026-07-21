@@ -39,9 +39,12 @@ export async function httpRequest(url: string, options: HttpOptions): Promise<Re
   }
 
   if (!response.ok) {
+    const serverMessage = await responseMessage(response);
     const kind = authErrorKindFromStatus(response.status);
-    if (kind) throw new AuthError(kind, AUTH_ERROR_MESSAGE[kind]);
-    throw new UserFacingError(`${options.failureMessage} (서버 응답 ${response.status})`);
+    if (kind) throw new AuthError(kind, serverMessage ?? AUTH_ERROR_MESSAGE[kind]);
+    throw new UserFacingError(
+      serverMessage ?? `${options.failureMessage} (서버 응답 ${response.status})`,
+    );
   }
   return response;
 }
@@ -60,4 +63,20 @@ export async function httpJson<T>(url: string, options: HttpOptions): Promise<T>
 /** 끝의 `/` 를 정리해 URL 을 잇는다. */
 export function joinUrl(baseUrl: string, pathname: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/${pathname.replace(/^\/+/, '')}`;
+}
+
+async function responseMessage(response: Response): Promise<string | null> {
+  try {
+    const value = (await response.clone().json()) as {
+      detail?: { message?: unknown } | string;
+      message?: unknown;
+    };
+    if (typeof value.detail === 'object' && typeof value.detail?.message === 'string') {
+      return value.detail.message;
+    }
+    if (typeof value.detail === 'string') return value.detail;
+    return typeof value.message === 'string' ? value.message : null;
+  } catch {
+    return null;
+  }
 }

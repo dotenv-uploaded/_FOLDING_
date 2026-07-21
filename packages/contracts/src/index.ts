@@ -19,9 +19,13 @@ export interface Citation {
   /** 위키 문서 ID (예: `PMC10300442`) */
   docId: string;
   /** 빌드 리비전 — 같은 문서라도 재빌드되면 증가한다 */
-  rev: number;
+  rev: string | number;
   /** 섹션 라벨 (예: `Results 2`) */
   section: string;
+  /** Backend snapshot and evidence identifiers. */
+  graphVersion?: string;
+  chunkId?: string;
+  sectionId?: string;
   /**
    * 원본 파일의 등록 폴더 기준 상대 경로.
    * 렌더러에서 인용을 클릭하면 이 경로로 원본을 연다 (스펙 v1.3 §1 L1).
@@ -71,6 +75,9 @@ export interface ApprovalRequest {
   diff: string;
   /** 에이전트가 밝힌 근거 (모달의 "근거" 영역) */
   rationale?: string;
+  /** Backend approval integrity fields. */
+  changePlanId?: string;
+  planHash?: string;
 }
 
 /** local이 agent에 주입하는 의존성 묶음. */
@@ -83,7 +90,7 @@ export interface AgentDeps {
     wikiDir: string;
   };
   /** L4 — keychain(safeStorage) 기반, 갱신 포함 */
-  auth: { getToken(): Promise<string> };
+  auth: { getToken(): Promise<string>; canWrite(): boolean };
   /** L3 */
   kordoc: KordocApi;
   /** L1 — 승인 모달. false 반환 시 도구 실행이 취소된다. */
@@ -94,15 +101,20 @@ export interface AgentDeps {
  * 에이전트가 스트리밍하는 이벤트.
  * 메인 프로세스가 그대로 IPC(`agent:event`)로 렌더러에 중계한다.
  */
+export interface AgentSendOptions {
+  conversationId: string;
+  signal?: AbortSignal;
+}
+
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'tool_start'; name: string; summary: string }
   | { type: 'approval_request'; diff: string; target: string }
-  | { type: 'auth_error'; kind: 'unauthenticated' | 'subscription_expired' }
-  | { type: 'done'; citations: Citation[] };
+  | { type: 'auth_error'; kind: AuthErrorKind }
+  | { type: 'done'; citations: Citation[]; execution?: ExecutionSummary };
 
 export interface Agent {
-  send(userText: string): AsyncIterable<AgentEvent>;
+  send(userText: string, options: AgentSendOptions): AsyncIterable<AgentEvent>;
 }
 
 export type CreateAgent = (deps: AgentDeps) => Agent;
@@ -194,7 +206,13 @@ export interface Subscription {
 export interface Session {
   authenticated: boolean;
   email?: string;
-  subscription?: Subscription;
+  subjectId?: string;
+  tenantId?: string;
+  readAccess?: string[];
+  writeScope?: 'none' | 'documents' | 'workspace';
+  writableDocumentIds?: string[];
+  provisioned?: boolean;
+  authzSource?: string;
 }
 
 /** 좌측 채팅 목록의 한 줄. */
@@ -218,6 +236,18 @@ export interface ChatMessage {
   createdAt: string;
   /** 스트리밍이 아직 진행 중인지 */
   streaming?: boolean;
+  execution?: ExecutionSummary;
+}
+
+export interface ExecutionSummary {
+  executionId: string;
+  documentId: string;
+  status: string;
+  stage: string;
+  terminal: boolean;
+  error?: { code: string; message: string; retryable: boolean };
+  canRetry: boolean;
+  canUndo: boolean;
 }
 
 /* ============================================================================
@@ -258,6 +288,9 @@ export const IPC = {
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
 
+  executionRetry: 'execution:retry',
+  executionUndo: 'execution:undo',
+
   // L1 — 승인 모달 응답
   approvalRespond: 'approval:respond',
 
@@ -295,14 +328,10 @@ export interface ApprovalEnvelope {
  * v1.4 에서 서버의 역할은 **로그인·구독 확인뿐**이다. 아래 둘이 서버 API의 전부다.
  * ========================================================================== */
 
-/** `POST /auth/login` */
+export type OAuthProvider = 'google';
+
 export interface LoginRequest {
-  email: string;
-  password: string;
-}
-export interface LoginResponse {
-  token: string;
-  email: string;
+  provider: OAuthProvider;
 }
 
 /** `GET /me/subscription` */
@@ -361,7 +390,7 @@ export const LLM_KEY_MISSING_MESSAGE =
 /** 인증/구독 오류 — 로그인·구독 확인 시 발생한다 (스펙 v1.4 §1 각주). */
 export class AuthError extends Error {
   constructor(
-    public kind: 'unauthenticated' | 'subscription_expired',
+    public kind: AuthErrorKind,
     message: string,
   ) {
     super(message);
@@ -372,16 +401,20 @@ export class AuthError extends Error {
 /** HTTP 상태코드 → AgentEvent 의 auth_error kind 매핑. */
 export function authErrorKindFromStatus(
   status: number,
-): 'unauthenticated' | 'subscription_expired' | null {
+): AuthErrorKind | null {
   if (status === 401) return 'unauthenticated';
   if (status === 402) return 'subscription_expired';
+  if (status === 403) return 'not_provisioned';
   return null;
 }
 
 /** 401/402 를 사용자 문장으로 — silent fail 금지 (스펙 v1.3 §5). */
-export const AUTH_ERROR_MESSAGE: Record<'unauthenticated' | 'subscription_expired', string> = {
+export type AuthErrorKind = 'unauthenticated' | 'subscription_expired' | 'not_provisioned';
+
+export const AUTH_ERROR_MESSAGE: Record<AuthErrorKind, string> = {
   unauthenticated: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
   subscription_expired: '구독이 만료되었습니다. 구독을 갱신하면 빌드를 이어갈 수 있어요.',
+  not_provisioned: '계정에 CODEGATE 작업 권한이 아직 연결되지 않았습니다.',
 };
 
 /** 위키에서 근거를 찾지 못했을 때 에이전트가 쓰는 고정 문구 (AGENT_GUIDE 규칙). */
@@ -389,5 +422,5 @@ export const NOT_FOUND_IN_WIKI = '위키에서 확인되지 않음';
 
 /** 인용 렌더 형식 — `【DOC-ID rev.N §섹션】` */
 export function formatCitation(c: Citation): string {
-  return `【${c.docId} rev.${c.rev} §${c.section}】`;
+  return `【${c.docId} rev.${c.rev} §${c.sectionId ?? c.section}】`;
 }

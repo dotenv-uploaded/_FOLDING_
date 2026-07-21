@@ -6,7 +6,6 @@ import { ChatPane } from '@/components/ChatPane';
 import { TreePane } from '@/components/TreePane';
 import { TitleBar } from '@/ui/TitleBar';
 import { Badge } from '@/ui/Badge';
-import { formatDate } from '@/lib/format';
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -30,19 +29,13 @@ export function MainScreen({
   onOpenSettings: () => void;
 }) {
   const chat = useChat();
-  const sub = session.subscription;
-
   return (
     <div className="flex h-full flex-col overflow-hidden bg-ink-50">
       <TitleBar
         right={
-          sub && (
-            <Badge tone={sub.active ? 'brand' : 'danger'}>
-              {sub.active
-                ? `${sub.plan} · ${formatDate(sub.expiresAt)} 만료`
-                : '구독 만료됨'}
-            </Badge>
-          )
+          <Badge tone={session.provisioned ? 'brand' : 'danger'}>
+            {session.provisioned ? '계정 연결됨' : '권한 확인 필요'}
+          </Badge>
         }
       />
 

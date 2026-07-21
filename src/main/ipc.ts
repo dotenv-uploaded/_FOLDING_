@@ -108,6 +108,17 @@ export function registerIpcHandlers(
     services.chat.abort(conversationId);
   });
 
+  handle(
+    IPC.executionRetry,
+    '문서 동기화를 다시 시작하지 못했습니다.',
+    (messageId: string, executionId: string) => services.retryExecution(messageId, executionId),
+  );
+  handle(
+    IPC.executionUndo,
+    '문서 변경을 되돌리지 못했습니다.',
+    (messageId: string, executionId: string) => services.undoExecution(messageId, executionId),
+  );
+
   /* --------------------------------------------------------- L1 승인 응답 */
 
   handle(IPC.approvalRespond, '승인 결과를 전달하지 못했습니다.', (id: string, approved: boolean) => {

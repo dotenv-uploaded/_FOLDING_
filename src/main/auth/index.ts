@@ -1,58 +1,78 @@
-/**
- * L4 — 로그인·구독 (스펙 v1.3 §1 L4).
- * `POST /auth/login` → 토큰을 safeStorage 에 보관, `GET /me/subscription` 으로 플랜·만료 표시.
- * 401/402 는 `AuthError` 로 위로 올려 사용자 문장으로 노출한다 (스펙 v1.3 §5).
- */
+import { shell } from 'electron';
+import { createClient, type Session as SupabaseSession, type SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_ERROR_MESSAGE,
   AuthError,
   type LoginRequest,
-  type LoginResponse,
   type Session,
   type Subscription,
-  type SubscriptionResponse,
 } from '@contracts';
 import { httpJson, joinUrl } from '@main/net/http';
-import { logError } from '@main/util/errors';
-import type { SecretStore } from './secret-store';
+import { UserFacingError, logError } from '@main/util/errors';
+import { createOAuthLoopbackReceiver } from './oauth-loopback';
+import type { AuthStorage } from './secret-store';
 
-export { MemorySecretStore, SafeStorageSecretStore } from './secret-store';
-export type { SecretStore, StoredCredentials } from './secret-store';
+export { MemoryAuthStorage, SafeStorageAuthStorage } from './secret-store';
+export type { AuthStorage } from './secret-store';
 export { MemoryLlmKeyStore, SafeStorageLlmKeyStore, LLM_PROVIDERS } from './llm-key';
 export type { LlmKeyStore } from './llm-key';
 
+interface AuthMeResponse {
+  authenticated: true;
+  subject_id: string;
+  tenant_id: string;
+  email: string | null;
+  read_access: string[];
+  write_scope: 'none' | 'documents' | 'workspace';
+  writable_document_ids: string[];
+  provisioned: boolean;
+  authz_source: string;
+}
+
 export interface AuthServiceOptions {
-  backendUrl: string;
-  store: SecretStore;
-  /** 세션이 바뀌면 렌더러에 `IPC_EVENTS.sessionChanged` 로 알린다. */
+  cloudApiUrl: string;
+  supabaseUrl?: string;
+  supabasePublishableKey?: string;
+  store: AuthStorage;
   onSessionChanged?: (session: Session) => void;
+  openExternal?: (url: string) => Promise<void>;
 }
 
 const LOGGED_OUT: Session = { authenticated: false };
 
 export class AuthService {
   private session: Session = LOGGED_OUT;
-  private token: string | null = null;
+  private readonly client: SupabaseClient | null;
 
-  constructor(private readonly options: AuthServiceOptions) {}
+  constructor(private readonly options: AuthServiceOptions) {
+    this.client =
+      options.supabaseUrl && options.supabasePublishableKey
+        ? createClient(options.supabaseUrl, options.supabasePublishableKey, {
+            auth: {
+              flowType: 'pkce',
+              autoRefreshToken: true,
+              persistSession: true,
+              detectSessionInUrl: false,
+              storage: options.store,
+            },
+          })
+        : null;
+  }
 
-  /** 앱 부팅 시 1회 — 저장된 토큰을 복원하고 구독 상태를 갱신한다. */
   async restore(): Promise<Session> {
-    const stored = await this.options.store.read();
-    if (!stored) return this.setSession(LOGGED_OUT);
-    this.token = stored.token;
+    if (!this.client) return this.setSession(LOGGED_OUT);
+    const { data, error } = await this.client.auth.getSession();
+    if (error || !data.session) {
+      if (error) logError('auth:restore', error);
+      await this.options.store.clear();
+      return this.setSession(LOGGED_OUT);
+    }
     try {
-      const subscription = await this.fetchSubscription(stored.token);
-      return this.setSession({ authenticated: true, email: stored.email, subscription });
-    } catch (err) {
-      if (err instanceof AuthError && err.kind === 'unauthenticated') {
-        // 토큰이 죽었다 — 조용히 로그인 화면으로 되돌린다
-        await this.logout();
-        return this.getSession();
-      }
-      // 구독 조회 실패(네트워크 등)는 로그인 자체를 무효화하지 않는다
-      logError('auth:restore', err);
-      return this.setSession({ authenticated: true, email: stored.email });
+      return await this.establishSession(await this.freshSession(data.session));
+    } catch (error) {
+      logError('auth:restore:identity', error);
+      await this.options.store.clear();
+      return this.setSession(LOGGED_OUT);
     }
   }
 
@@ -61,86 +81,120 @@ export class AuthService {
   }
 
   async login(request: LoginRequest): Promise<Session> {
-    const response = await httpJson<LoginResponse>(joinUrl(this.options.backendUrl, 'auth/login'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-      failureMessage: '로그인에 실패했습니다.',
-    }).catch((err: unknown) => {
-      // 로그인 단계의 401 은 "만료"가 아니라 "자격 불일치"다
-      if (err instanceof AuthError && err.kind === 'unauthenticated') {
-        throw new AuthError('unauthenticated', '이메일 또는 비밀번호가 올바르지 않습니다.');
-      }
-      throw err;
-    });
-
-    this.token = response.token;
-    await this.options.store.write({ token: response.token, email: response.email });
-
-    let subscription: Subscription | undefined;
+    const client = this.requireClient();
+    const receiver = await createOAuthLoopbackReceiver();
     try {
-      subscription = await this.fetchSubscription(response.token);
-    } catch (err) {
-      if (err instanceof AuthError && err.kind === 'subscription_expired') {
-        // 로그인은 성공했으나 구독이 만료 — 화면에 만료로 표시한다
-        subscription = { plan: '만료됨', expiresAt: '', active: false };
-      } else {
-        logError('auth:login:subscription', err);
+      const { data, error } = await client.auth.signInWithOAuth({
+        provider: request.provider,
+        options: { redirectTo: receiver.redirectTo, skipBrowserRedirect: true },
+      });
+      if (error || !data.url) throw error ?? new Error('OAuth authorization URL is missing');
+      this.assertTrustedAuthorizationUrl(data.url);
+      await (this.options.openExternal ?? shell.openExternal)(data.url);
+      const code = await receiver.waitForCode();
+      const exchanged = await client.auth.exchangeCodeForSession(code);
+      if (exchanged.error || !exchanged.data.session) {
+        throw exchanged.error ?? new Error('OAuth session exchange failed');
       }
+      return await this.establishSession(exchanged.data.session);
+    } catch (error) {
+      throw new UserFacingError('Google 로그인에 실패했습니다. 다시 시도해 주세요.', {
+        cause: error,
+      });
+    } finally {
+      await receiver.close();
     }
-    return this.setSession({ authenticated: true, email: response.email, subscription });
   }
 
   async logout(): Promise<void> {
-    this.token = null;
+    if (this.client) {
+      const { error } = await this.client.auth.signOut({ scope: 'local' });
+      if (error) logError('auth:logout', error);
+    }
     await this.options.store.clear();
     this.setSession(LOGGED_OUT);
   }
 
-  /** `AgentDeps.auth.getToken` 에 그대로 주입된다. */
   async getToken(): Promise<string> {
-    if (this.token) return this.token;
-    const stored = await this.options.store.read();
-    if (stored?.token) {
-      this.token = stored.token;
-      return stored.token;
+    const client = this.requireClient();
+    const { data, error } = await client.auth.getSession();
+    if (error || !data.session) {
+      await this.logout();
+      throw new AuthError('unauthenticated', AUTH_ERROR_MESSAGE.unauthenticated);
     }
-    throw new AuthError('unauthenticated', AUTH_ERROR_MESSAGE.unauthenticated);
+    const session = await this.freshSession(data.session);
+    return session.access_token;
   }
 
-  /**
-   * 구독이 유효한지 확인한다 (스펙 v1.4 §5 — "구독 검사 시점: 빌드 시작 전 + 앱 시작 시").
-   *
-   * v1.4 에서 서버와의 통신은 로그인·구독 확인 둘뿐이므로, 여기가 백엔드를 부르는 마지막 지점이다.
-   * 실패는 전부 `AuthError` 로 올라가 `AUTH_ERROR_MESSAGE` 한국어 문장으로 노출된다 —
-   * 조용히 넘어가면 사용자는 "빌드가 왜 안 되지"만 겪게 된다.
-   */
   async ensureActiveSubscription(): Promise<Subscription> {
-    const token = await this.getToken(); // 토큰이 없으면 여기서 unauthenticated
-    const subscription = await this.fetchSubscription(token);
-    this.setSession({ ...this.session, subscription });
-    if (!subscription.active) {
-      throw new AuthError('subscription_expired', AUTH_ERROR_MESSAGE.subscription_expired);
+    await this.getToken();
+    if (!this.session.provisioned) {
+      throw new AuthError('not_provisioned', AUTH_ERROR_MESSAGE.not_provisioned);
     }
-    return subscription;
+    return { plan: 'CODEGATE', expiresAt: '', active: true };
   }
 
-  /** 401 을 만나면 세션을 즉시 로그아웃 상태로 되돌린다 (렌더러가 로그인 화면을 띄우도록). */
   async handleAuthError(error: AuthError): Promise<void> {
     if (error.kind === 'unauthenticated') {
       await this.logout();
       return;
     }
-    const subscription: Subscription = { plan: '만료됨', expiresAt: '', active: false };
-    this.setSession({ ...this.session, subscription });
+    if (error.kind === 'not_provisioned') {
+      this.setSession({ ...this.session, provisioned: false, writeScope: 'none' });
+    }
   }
 
-  private async fetchSubscription(token: string): Promise<Subscription> {
-    const res = await httpJson<SubscriptionResponse>(
-      joinUrl(this.options.backendUrl, 'me/subscription'),
-      { token, failureMessage: '구독 정보를 불러오지 못했습니다.' },
-    );
-    return { plan: res.plan, expiresAt: res.expiresAt, active: res.active };
+  private requireClient(): SupabaseClient {
+    if (!this.client) {
+      throw new UserFacingError(
+        'Supabase 연결 정보가 없습니다. CODEGATE_SUPABASE_URL과 CODEGATE_SUPABASE_PUBLISHABLE_KEY를 설정해 주세요.',
+      );
+    }
+    return this.client;
+  }
+
+  private async freshSession(session: SupabaseSession): Promise<SupabaseSession> {
+    if ((session.expires_at ?? 0) > Math.floor(Date.now() / 1000) + 60) return session;
+    const client = this.requireClient();
+    const { data, error } = await client.auth.refreshSession({
+      refresh_token: session.refresh_token,
+    });
+    if (error || !data.session) {
+      throw new AuthError('unauthenticated', AUTH_ERROR_MESSAGE.unauthenticated);
+    }
+    return data.session;
+  }
+
+  private async establishSession(session: SupabaseSession): Promise<Session> {
+    const identity = await httpJson<AuthMeResponse>(joinUrl(this.options.cloudApiUrl, 'auth/me'), {
+      token: session.access_token,
+      failureMessage: '계정 권한을 확인하지 못했습니다.',
+    });
+    return this.setSession({
+      authenticated: true,
+      email: identity.email ?? session.user.email,
+      subjectId: identity.subject_id,
+      tenantId: identity.tenant_id,
+      readAccess: identity.read_access,
+      writeScope: identity.write_scope,
+      writableDocumentIds: identity.writable_document_ids,
+      provisioned: identity.provisioned,
+      authzSource: identity.authz_source,
+    });
+  }
+
+  private assertTrustedAuthorizationUrl(value: string): void {
+    const authorizationUrl = new URL(value);
+    const supabaseUrl = new URL(this.options.supabaseUrl ?? '');
+    const localHttp =
+      authorizationUrl.protocol === 'http:' &&
+      ['127.0.0.1', '::1', 'localhost'].includes(authorizationUrl.hostname);
+    if (
+      authorizationUrl.origin !== supabaseUrl.origin ||
+      (!localHttp && authorizationUrl.protocol !== 'https:')
+    ) {
+      throw new Error('Supabase returned an untrusted authorization URL');
+    }
   }
 
   private setSession(session: Session): Session {

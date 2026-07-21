@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { ChatMessage } from '@contracts';
 import { NOT_FOUND_IN_WIKI } from '@contracts';
 import { Mark } from '@/ui/Wordmark';
@@ -10,6 +11,26 @@ import { CitationChip } from './CitationChip';
  *   에이전트 — 전폭 본문 + 도구 배지 + 인용 칩
  */
 export function MessageBubble({ message }: { message: ChatMessage }) {
+  const [execution, setExecution] = useState(message.execution);
+  const [action, setAction] = useState<'retry' | 'undo' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => setExecution(message.execution), [message.execution]);
+
+  async function runExecutionAction(kind: 'retry' | 'undo') {
+    if (!execution || action) return;
+    setAction(kind);
+    setActionError(null);
+    try {
+      const next = await window.codegate.execution[kind](message.id, execution.executionId);
+      setExecution(next);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '실행 상태를 변경하지 못했습니다.');
+    } finally {
+      setAction(null);
+    }
+  }
+
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -66,6 +87,41 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             {message.citations.map((c, i) => (
               <CitationChip key={`${c.docId}-${c.section}-${i}`} citation={c} />
             ))}
+          </div>
+        )}
+
+        {execution && (
+          <div className="mt-3.5 rounded-md border border-ink-100 bg-ink-50 px-3.5 py-3 text-xs text-ink-600">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-2xs text-ink-400">{execution.stage}</span>
+              <span className="flex-1">
+                {execution.error?.message ??
+                  (execution.status === 'completed'
+                    ? '문서와 위키에 변경이 반영되었습니다.'
+                    : execution.status === 'undone'
+                      ? '문서 변경을 되돌렸습니다.'
+                      : '문서 변경 처리가 종료되었습니다.')}
+              </span>
+              {execution.canRetry && (
+                <button
+                  disabled={action !== null}
+                  onClick={() => void runExecutionAction('retry')}
+                  className="font-semibold text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                >
+                  {action === 'retry' ? '재시도 중…' : '동기화 재시도'}
+                </button>
+              )}
+              {execution.canUndo && (
+                <button
+                  disabled={action !== null}
+                  onClick={() => void runExecutionAction('undo')}
+                  className="font-semibold text-red-600 hover:text-red-700 disabled:opacity-50"
+                >
+                  {action === 'undo' ? '되돌리는 중…' : 'Undo'}
+                </button>
+              )}
+            </div>
+            {actionError && <p className="mt-2 text-red-600">{actionError}</p>}
           </div>
         )}
       </div>

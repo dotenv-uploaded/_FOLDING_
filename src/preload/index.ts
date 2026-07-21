@@ -6,6 +6,7 @@ import type {
   BuildState,
   ChatMessage,
   Conversation,
+  ExecutionSummary,
   FileNode,
   LlmKeyInput,
   LlmKeyStatus,
@@ -76,6 +77,13 @@ const api = {
       ipcRenderer.invoke(IPC.chatAbort, conversationId),
     onAgentEvent: (cb: (e: AgentEventEnvelope) => void) =>
       subscribe<AgentEventEnvelope>(IPC_EVENTS.agentEvent, cb),
+  },
+
+  execution: {
+    retry: (messageId: string, executionId: string): Promise<ExecutionSummary> =>
+      ipcRenderer.invoke(IPC.executionRetry, messageId, executionId),
+    undo: (messageId: string, executionId: string): Promise<ExecutionSummary> =>
+      ipcRenderer.invoke(IPC.executionUndo, messageId, executionId),
   },
 
   approval: {

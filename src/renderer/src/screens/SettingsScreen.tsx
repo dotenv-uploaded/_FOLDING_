@@ -6,7 +6,6 @@ import { Button } from '@/ui/Button';
 import { Badge } from '@/ui/Badge';
 import { LlmKeyForm } from '@/components/LlmKeyForm';
 import { useLlmKey } from '@/state/useLlmKey';
-import { formatDate } from '@/lib/format';
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -33,8 +32,6 @@ export function SettingsScreen({
     await workspace.triggerBuild();
   }
 
-  const sub = session.subscription;
-
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="w-[min(640px,calc(100vw-64px))]">
@@ -50,18 +47,16 @@ export function SettingsScreen({
                   {session.email ?? '로그인됨'}
                 </div>
                 <div className="mt-0.5 text-xs text-ink-400">
-                  {sub ? `${sub.plan} 플랜 · ${formatDate(sub.expiresAt)} 만료` : '구독 정보 없음'}
+                  tenant {session.tenantId ?? '미확인'} · 쓰기 범위 {session.writeScope ?? 'none'}
                 </div>
               </div>
-              {sub && (
-                <Badge tone={sub.active ? 'success' : 'danger'}>
-                  {sub.active ? '사용 중' : '만료됨'}
-                </Badge>
-              )}
+              <Badge tone={session.provisioned ? 'success' : 'danger'}>
+                {session.provisioned ? '권한 연결됨' : '권한 없음'}
+              </Badge>
             </div>
-            {sub && !sub.active && (
+            {!session.provisioned && (
               <p className="mt-2 text-xs text-red-600">
-                구독이 만료되어 새 빌드를 요청할 수 없습니다. 이미 만들어진 위키는 계속 쓸 수 있어요.
+                계정 provisioning이 끝나기 전에는 문서 쓰기 승인을 실행하지 않습니다.
               </p>
             )}
           </section>

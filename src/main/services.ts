@@ -3,9 +3,17 @@
  * IPC 핸들러(`ipc.ts`)와 앱 부트스트랩(`index.ts`)은 이 객체만 본다.
  */
 import path from 'node:path';
-import type { AgentDeps, BuildState, FileNode, Root, ScanPreview, Session } from '@contracts';
+import type {
+  AgentDeps,
+  BuildState,
+  ExecutionSummary,
+  FileNode,
+  Root,
+  ScanPreview,
+  Session,
+} from '@contracts';
 import { AuthError, IPC_EVENTS } from '@contracts';
-import { AuthService, SafeStorageSecretStore } from '@main/auth';
+import { AuthService, SafeStorageAuthStorage } from '@main/auth';
 import { SafeStorageLlmKeyStore, type LlmKeyStore } from '@main/auth/llm-key';
 import { createConverter } from '@main/build/convert';
 import { LlmEnricher, MockEnricher } from '@main/build/enrich';
@@ -22,9 +30,11 @@ import { ensureDir } from '@main/util/fsx';
 import { isInside, makeRootId, splitVirtualPath } from '@main/util/vpath';
 import { FileWatcher, type WatchChange } from '@main/watcher';
 import { describeFile, indexRoot, scanPreview } from '@main/watcher/scan';
+import { SidecarClient } from '@main/sidecar/client';
+import { executionSummary } from '@main/agent/sidecar-agent';
 
-/** 기본 백엔드 주소 — 목 서버(`pnpm mock-server`)와 같은 포트. */
-const DEFAULT_BACKEND_URL = 'http://127.0.0.1:8787';
+const DEFAULT_CLOUD_API_URL = 'http://127.0.0.1:8787/api/v1';
+const DEFAULT_SIDECAR_URL = 'http://127.0.0.1:8000/api/v1';
 
 export interface ServicesOptions {
   /** `app.getPath('userData')` */
@@ -45,6 +55,7 @@ export class AppServices {
   readonly agentSource: AgentSource;
   /** 자격증명 ② — enrichment LLM 키. IPC 핸들러가 이 객체만 만진다. */
   readonly llmKeys: LlmKeyStore;
+  readonly sidecar: SidecarClient;
   /** `~/.codegate/wiki` — `AgentDeps.config.wikiDir` 로 주입된다. */
   readonly wikiDir: string;
 
@@ -65,6 +76,7 @@ export class AppServices {
       watcher: FileWatcher;
       agentSource: AgentSource;
       llmKeys: LlmKeyStore;
+      sidecar: SidecarClient;
       wikiDir: string;
       agentRoots: string[];
     },
@@ -77,12 +89,18 @@ export class AppServices {
     this.watcher = parts.watcher;
     this.agentSource = parts.agentSource;
     this.llmKeys = parts.llmKeys;
+    this.sidecar = parts.sidecar;
     this.wikiDir = parts.wikiDir;
     this.agentRoots = parts.agentRoots;
   }
 
   static async create(options: ServicesOptions): Promise<AppServices> {
-    const backendUrl = process.env.CODEGATE_BACKEND_URL ?? DEFAULT_BACKEND_URL;
+    const cloudApiUrl =
+      process.env.CODEGATE_CLOUD_API_URL ??
+      process.env.CODEGATE_BACKEND_URL ??
+      DEFAULT_CLOUD_API_URL;
+    const sidecarUrl = process.env.CODEGATE_SIDECAR_URL ?? DEFAULT_SIDECAR_URL;
+    const sidecar = new SidecarClient(sidecarUrl);
     // v1.4: 조립 스테이징은 wikiDir 안에서 일어난다 (stagingDirFor) — 별도 tmpDir 불필요
     const wikiDir = path.join(options.homeDir, '.codegate', 'wiki');
     await ensureDir(wikiDir);
@@ -91,8 +109,10 @@ export class AppServices {
     store.clearStaleStreaming();
 
     const auth = new AuthService({
-      backendUrl,
-      store: new SafeStorageSecretStore(options.userDataDir),
+      cloudApiUrl,
+      supabaseUrl: process.env.CODEGATE_SUPABASE_URL,
+      supabasePublishableKey: process.env.CODEGATE_SUPABASE_PUBLISHABLE_KEY,
+      store: new SafeStorageAuthStorage(options.userDataDir),
       onSessionChanged: (session: Session) => options.send(IPC_EVENTS.sessionChanged, session),
     });
 
@@ -147,8 +167,16 @@ export class AppServices {
     // 자격증명 ① 백엔드 토큰(auth)과 ② Anthropic 키(환경변수)는 여기서도 섞이지 않는다.
     const agentRoots: string[] = [];
     const deps: AgentDeps = {
-      config: { roots: agentRoots, backendUrl, wikiDir },
-      auth: { getToken: () => auth.getToken() },
+      config: { roots: agentRoots, backendUrl: sidecarUrl, wikiDir },
+      auth: {
+        getToken: () => auth.getToken(),
+        canWrite: () => {
+          const session = auth.getSession();
+          return Boolean(
+            session.authenticated && session.provisioned && session.writeScope !== 'none',
+          );
+        },
+      },
       kordoc,
       approvalHandler: approval.request,
     };
@@ -159,6 +187,7 @@ export class AppServices {
       createAgent,
       sendEvent: (envelope) => options.send(IPC_EVENTS.agentEvent, envelope),
       onAuthError: (error) => auth.handleAuthError(error),
+      rejectApprovals: () => approval.rejectAll(),
     });
 
     const services = new AppServices(options, {
@@ -170,6 +199,7 @@ export class AppServices {
       watcher,
       agentSource: source,
       llmKeys,
+      sidecar,
       wikiDir,
       agentRoots,
     });
@@ -228,11 +258,38 @@ export class AppServices {
 
   /** 가상 경로(`<rootId>/<상대경로>`) → 원본 절대경로. 등록 폴더 밖이면 null. */
   resolveOriginal(virtualPath: string): string | null {
-    const { rootId, relPath } = splitVirtualPath(virtualPath);
-    const root = this.store.listRoots().find((r) => r.id === rootId);
-    if (!root || !relPath) return null;
-    const abs = path.join(root.path, relPath);
-    return isInside(root.path, abs) ? abs : null;
+    const roots = this.store.listRoots();
+    const normalized = virtualPath.replace(/^source:\/\//, '');
+    const { rootId, relPath } = splitVirtualPath(normalized);
+    const identifiedRoot = roots.find((root) => root.id === rootId);
+    if (identifiedRoot && relPath) {
+      const absolute = path.resolve(identifiedRoot.path, relPath);
+      return isInside(identifiedRoot.path, absolute) ? absolute : null;
+    }
+    const indexedFiles = this.store.listFiles();
+    for (const root of roots) {
+      const indexed = indexedFiles.find(
+        (file) => file.rootId === root.id && file.relPath === normalized,
+      );
+      if (indexed && isInside(root.path, indexed.absPath)) return indexed.absPath;
+    }
+    return null;
+  }
+
+  async retryExecution(messageId: string, executionId: string): Promise<ExecutionSummary> {
+    this.requireWriteProvisioning();
+    const execution = await this.sidecar.retry(executionId);
+    const summary = executionSummary(await this.sidecar.waitForExecution(execution));
+    this.store.updateMessage(messageId, { execution: summary });
+    return summary;
+  }
+
+  async undoExecution(messageId: string, executionId: string): Promise<ExecutionSummary> {
+    this.requireWriteProvisioning();
+    const execution = await this.sidecar.undo(executionId);
+    const summary = executionSummary(await this.sidecar.waitForExecution(execution));
+    this.store.updateMessage(messageId, { execution: summary });
+    return summary;
   }
 
   /* --------------------------------------------------------------- 정리 */
@@ -270,5 +327,12 @@ export class AppServices {
   private syncAgentRoots(): void {
     const paths = this.store.listRoots().map((r) => r.path);
     this.agentRoots.splice(0, this.agentRoots.length, ...paths);
+  }
+
+  private requireWriteProvisioning(): void {
+    const session = this.auth.getSession();
+    if (!session.authenticated || !session.provisioned || session.writeScope === 'none') {
+      throw new AuthError('not_provisioned', '계정에 문서 쓰기 권한이 연결되지 않았습니다.');
+    }
   }
 }

@@ -72,4 +72,9 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE builds ADD COLUMN deferred TEXT;
   `,
+
+  // v3 — sidecar execution 상태를 채팅 메시지와 함께 보존한다.
+  `
+  ALTER TABLE messages ADD COLUMN execution TEXT;
+  `,
 ];

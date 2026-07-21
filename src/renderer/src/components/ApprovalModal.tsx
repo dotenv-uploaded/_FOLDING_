@@ -71,6 +71,18 @@ export function ApprovalModal({
             </div>
           )}
 
+          {request.planHash && (
+            <div>
+              <div className="fold-eyebrow mb-1.5">plan_hash</div>
+              <div
+                data-selectable
+                className="break-all rounded-md bg-ink-50 px-3 py-2 font-mono text-2xs text-ink-700"
+              >
+                {request.planHash}
+              </div>
+            </div>
+          )}
+
           <DiffView diff={request.diff} />
         </div>
 

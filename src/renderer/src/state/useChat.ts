@@ -74,6 +74,7 @@ export function useChat() {
             break;
           case 'done':
             msg.citations = event.citations;
+            msg.execution = event.execution;
             msg.streaming = false;
             break;
           case 'auth_error':

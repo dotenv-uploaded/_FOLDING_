@@ -14,6 +14,7 @@ import {
   type Citation,
   type Conversation,
   type CreateAgent,
+  type ExecutionSummary,
 } from '@contracts';
 import type { Store } from '@main/db/store';
 import { logError, toUserMessage } from '@main/util/errors';
@@ -26,6 +27,7 @@ export interface ChatServiceOptions {
   sendEvent: (envelope: AgentEventEnvelope) => void;
   /** 401/402 를 세션에 반영하기 위한 훅 */
   onAuthError?: (error: AuthError) => void | Promise<void>;
+  rejectApprovals?: () => void;
 }
 
 /** DB 쓰기 폭주를 막기 위한 부분 저장 간격. */
@@ -95,11 +97,13 @@ export class ChatService {
   /** 스트리밍 중단 — `AbortController` 로 루프를 빠져나온다. */
   abort(conversationId: string): void {
     this.aborters.get(conversationId)?.abort();
+    this.options.rejectApprovals?.();
   }
 
   abortAll(): void {
     for (const controller of this.aborters.values()) controller.abort();
     this.aborters.clear();
+    this.options.rejectApprovals?.();
   }
 
   private async stream(conversationId: string, messageId: string, text: string): Promise<void> {
@@ -109,6 +113,7 @@ export class ChatService {
 
     let buffer = '';
     let citations: Citation[] = [];
+    let execution: ExecutionSummary | undefined;
     const tools: { name: string; summary: string }[] = [];
     let lastPersist = 0;
 
@@ -125,7 +130,10 @@ export class ChatService {
     };
 
     try {
-      for await (const event of this.agent.send(text)) {
+      for await (const event of this.agent.send(text, {
+        conversationId,
+        signal: controller.signal,
+      })) {
         if (controller.signal.aborted) break;
 
         if (event.type === 'text_delta') {
@@ -136,6 +144,7 @@ export class ChatService {
           persist(true);
         } else if (event.type === 'done') {
           citations = event.citations;
+          execution = event.execution;
         } else if (event.type === 'auth_error') {
           // 401/402 는 절대 삼키지 않는다 (스펙 v1.3 §5)
           buffer += `\n\n${AUTH_ERROR_MESSAGE[event.kind]}`;
@@ -149,6 +158,11 @@ export class ChatService {
         emit({ type: 'done', citations });
       }
     } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        buffer += '\n\n(사용자가 응답 생성을 중단했습니다.)';
+        emit({ type: 'done', citations, execution });
+        return;
+      }
       logError('chat', err);
       if (err instanceof AuthError) {
         await this.options.onAuthError?.(err);
@@ -160,7 +174,13 @@ export class ChatService {
       emit({ type: 'done', citations });
     } finally {
       this.aborters.delete(conversationId);
-      store.updateMessage(messageId, { text: buffer, tools, citations, streaming: false });
+      store.updateMessage(messageId, {
+        text: buffer,
+        tools,
+        citations,
+        execution,
+        streaming: false,
+      });
       store.touchConversation(conversationId);
     }
   }

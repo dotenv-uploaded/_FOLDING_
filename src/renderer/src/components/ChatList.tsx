@@ -82,11 +82,9 @@ export function ChatList({
             <span className="block truncate text-xs font-semibold text-ink-800">
               {session.email ?? '설정'}
             </span>
-            {session.subscription && (
-              <span className="block truncate text-2xs text-ink-400">
-                {session.subscription.plan} 플랜
-              </span>
-            )}
+            <span className="block truncate text-2xs text-ink-400">
+              {session.tenantId ?? (session.provisioned ? 'CODEGATE 연결됨' : '권한 확인 필요')}
+            </span>
           </span>
         </button>
       </div>

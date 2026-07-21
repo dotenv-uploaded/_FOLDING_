@@ -1,8 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { FileText, Quote, ShieldCheck } from 'lucide-react';
-import type { LoginRequest, Session } from '@contracts';
+import type { Session } from '@contracts';
 import { Button } from '@/ui/Button';
-import { Field, Input } from '@/ui/Input';
 import { Logo, MarkWithText } from '@/ui/Wordmark';
 
 /**
@@ -10,19 +9,16 @@ import { Logo, MarkWithText } from '@/ui/Wordmark';
  * Folding 앱 킷의 split-screen 온보딩 구성을 따른다 —
  * 좌: ink 그라디언트 레일(라디얼 블루 글로우), 우: 폼.
  */
-export function LoginScreen({ onLogin }: { onLogin: (req: LoginRequest) => Promise<Session> }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+export function LoginScreen({ onLogin }: { onLogin: () => Promise<Session> }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
+  async function login() {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await onLogin({ email, password });
+      await onLogin();
     } catch (err) {
       // 어떤 실패든 사용자 문장으로 (스펙 v1.3 §5 — silent fail 금지)
       setError(err instanceof Error ? err.message : '로그인에 실패했습니다. 다시 시도해 주세요.');
@@ -74,39 +70,16 @@ export function LoginScreen({ onLogin }: { onLogin: (req: LoginRequest) => Promi
 
       {/* ── 우: 폼 ── */}
       <main className="flex items-center justify-center bg-white px-8" data-drag-region>
-        <form onSubmit={submit} className="w-full max-w-[380px]" data-drag-region={undefined}>
+        <div className="w-full max-w-[380px]" data-drag-region={undefined}>
           <div className="mb-8 hidden max-[980px]:block">
             <Logo height={26} />
           </div>
 
           <h2 className="text-h3 font-bold tracking-tight text-ink-950">로그인</h2>
-          <p className="mt-2 text-sm text-ink-500">
-            codegate 계정으로 로그인하면 문서 빌드를 사용할 수 있어요.
+          <p className="mt-2 text-sm leading-relaxed text-ink-500">
+            시스템 브라우저에서 Google 계정으로 인증합니다. 비밀번호는 CODEGATE 앱이나
+            백엔드로 전달되지 않습니다.
           </p>
-
-          <div className="mt-7 flex flex-col gap-4">
-            <Field label="이메일">
-              <Input
-                type="email"
-                autoFocus
-                required
-                autoComplete="username"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </Field>
-            <Field label="비밀번호">
-              <Input
-                type="password"
-                required
-                autoComplete="current-password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </Field>
-          </div>
 
           {error && (
             <div
@@ -117,16 +90,23 @@ export function LoginScreen({ onLogin }: { onLogin: (req: LoginRequest) => Promi
             </div>
           )}
 
-          <Button type="submit" size="lg" fullWidth loading={busy} className="mt-6">
-            {busy ? '확인하는 중…' : '로그인'}
+          <Button
+            type="button"
+            size="lg"
+            fullWidth
+            loading={busy}
+            className="mt-7"
+            onClick={() => void login()}
+          >
+            {busy ? '브라우저 인증을 기다리는 중…' : 'Google로 로그인'}
           </Button>
 
           <p className="mt-5 text-center text-xs leading-relaxed text-ink-400">
-            로그인은 빌드에만 필요합니다.
+            로그인 창은 기본 브라우저에서 열립니다.
             <br />
             이미 만들어진 위키는 오프라인에서도 검색·질의할 수 있어요.
           </p>
-        </form>
+        </div>
       </main>
     </div>
   );

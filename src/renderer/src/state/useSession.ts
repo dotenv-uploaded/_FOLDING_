@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { LoginRequest, Session } from '@contracts';
+import type { Session } from '@contracts';
 
 /** L4 — 로그인 상태. 메인이 세션을 바꾸면 푸시로 따라간다. */
 export function useSession() {
@@ -19,8 +19,8 @@ export function useSession() {
     };
   }, []);
 
-  const login = useCallback(async (req: LoginRequest) => {
-    const s = await window.codegate.auth.login(req);
+  const login = useCallback(async () => {
+    const s = await window.codegate.auth.login({ provider: 'google' });
     setSession(s);
     return s;
   }, []);

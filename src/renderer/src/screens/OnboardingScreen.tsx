@@ -9,7 +9,6 @@ import { Badge } from '@/ui/Badge';
 import { TitleBar } from '@/ui/TitleBar';
 import { Spinner } from '@/ui/Spinner';
 import { LlmKeyForm } from '@/components/LlmKeyForm';
-import { formatDate } from '@/lib/format';
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -47,11 +46,9 @@ function Shell({ session, children }: { session: Session; children?: React.React
     <div className="flex h-full flex-col overflow-hidden bg-ink-50">
       <TitleBar
         right={
-          session.subscription && (
-            <Badge tone="brand">
-              {session.subscription.plan} · {formatDate(session.subscription.expiresAt)} 만료
-            </Badge>
-          )
+          <Badge tone={session.provisioned ? 'brand' : 'danger'}>
+            {session.provisioned ? '계정 연결됨' : '권한 확인 필요'}
+          </Badge>
         }
       />
       <div className="mx-auto flex min-h-0 w-full max-w-[680px] flex-1 flex-col justify-center overflow-auto px-8 pb-16">
