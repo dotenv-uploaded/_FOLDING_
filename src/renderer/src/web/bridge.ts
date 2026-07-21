@@ -15,7 +15,7 @@ import type {
 import type { CodegateApi } from '../../../preload/api';
 
 const SUPPORTED_EXTENSIONS = new Set(['hwp', 'hwpx', 'docx', 'pdf', 'md', 'txt']);
-const SEEDED_ROOT = 'CODEGATE 웹 데모';
+const SEEDED_ROOT = 'Folding 웹 데모';
 const SEEDED_FILES = [
   '지원사업/지난달 제출/사업신청서.hwp',
   '지원사업/지난달 제출/사업계획서.pdf',

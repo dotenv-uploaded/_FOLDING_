@@ -21,7 +21,7 @@
   --gutter: 24px;
   --section-y: 112px;
 
-  /* ---- codegate 앱 셸 (스펙 v1.3 §3 — 3분할) ---- */
+  /* ---- Folding 앱 셸 (스펙 v1.3 §3 — 3분할) ---- */
   --pane-chatlist: 260px;  /* 좌: 채팅 목록 */
   --pane-tree: 320px;      /* 우: 디렉터리 트리 + 진행률 */
   --topbar-h: 56px;

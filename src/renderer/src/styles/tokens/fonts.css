@@ -1,5 +1,5 @@
 /* Folding webfonts — 자체 호스팅.
-   원본 디자인 시스템은 jsDelivr CDN을 쓰지만, codegate는 오프라인에서도
+   원본 디자인 시스템은 jsDelivr CDN을 쓰지만, Folding은 오프라인에서도
    동작해야 하므로(위키가 로컬에만 존재) 바이너리를 앱에 번들한다.
    파일은 scripts/fetch-fonts.sh 로 받아 public/fonts/ 에 둔다. */
 

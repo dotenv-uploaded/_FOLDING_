@@ -37,8 +37,16 @@ try {
   // release 성격의 integrations:smoke는 별도로 deep health를 끝까지 검증한다.
   await waitForHealth(`${doc2mdUrl}/health`, doc2md);
 
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  const electron = start(pnpm, ['exec', 'electron-vite', 'dev'], {
+  // 로컬 바이너리를 직접 부른다. `pnpm exec` 를 거치면 packageManager 핀이 맞지 않는
+  // 컴퓨터에서 pnpm 이 버전 전환을 시도하다 죽고, 그 실패가 "electron 종료 코드 1" 로만
+  // 보여 원인을 찾기 어려웠다. 중간 단계를 없애면 그런 실패가 아예 생기지 않는다.
+  const electronVite = path.join(
+    projectDir,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'electron-vite.cmd' : 'electron-vite',
+  );
+  const electron = start(electronVite, ['dev'], {
     cwd: projectDir,
     env: { ...process.env, CODEGATE_DOC2MD_URL: doc2mdUrl },
     name: 'electron',
