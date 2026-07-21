@@ -1,6 +1,6 @@
 +++
 schema_version = "1.0.0"
-required_citations = ["document_id", "graph_version", "chunk_id"]
+required_citations = ["document_id", "revision", "graph_version", "chunk_id", "section_id"]
 document_content_trust = "untrusted"
 read_acl_stage = "before_retrieval"
 write_authority = "application_approval_only"

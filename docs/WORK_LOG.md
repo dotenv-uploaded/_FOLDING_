@@ -31,3 +31,45 @@
   - LangGraph와 MCP는 단일 agent/tool 흐름이 부족할 때만 추가
   - OS shortcut·symlink 대신 manifest source URI를 사용하고 부분 index update는 active version으로 공개하지 않음
 - 남은 일: Claude model session의 API 연결과 실제 allow/deny 통합 검증, Supabase JWT ACL adapter, diff preview, approval/write/Undo, converter·graph sync, Supabase/Railway runtime 결정
+
+## 2026-07-21 — 승인·원본 수정·비동기 knowledge publish 수직 기능
+
+- 목적: 성주 담당 전체 범위를 합성 fixture로 끝까지 실행하고, 받은 전체 흐름도의 원문 근거·동시 색인·승인 후 write 조건을 코드로 강제
+- 변경:
+  - conversation, message, agent run, immutable change plan, approval, execution, file version, audit, idempotency, journal, outbox, sync task, knowledge version SQLite 상태 추가
+  - Claude Agent SDK 실제 async client, Pydantic structured output, principal·conversation 기반 server-owned session과 timeout·disconnect 검증 추가
+  - Supabase JWKS JWT 검증과 custom access token hook migration, tenant/read/write claim mapping 추가
+  - exact diff와 domain-separated plan hash, ACL·base hash 재검사, dirfd/O_NOFOLLOW atomic replace, immutable backup, crash recovery와 Undo 추가
+  - source symlink 대신 checksummed `references/*.source.json` 추가
+  - manifest status·효력 기간·ACL filter와 alias expansion 추가
+  - chunk의 `section_id`, 전체 `heading_path`, `embedding_text`, file version 검증과 canonical section exact quote evidence gate 추가
+  - `[document_id rev.N §section_id]` 구조화 citation과 model 문장 대신 canonical quote 기반 답변 추가
+  - 변경 outbox 뒤 converter, FTS, vector, graph 병렬 fan-out, candidate barrier, immutable release, CURRENT CAS와 request snapshot pinning 추가
+  - `codegate-2026-api/services/doc2md` v0.1.0 read-only audit 후 stable ID·source URI override와 stale source hash 거부 adapter 연결
+  - approve·Undo를 `202 + Location`으로 바꾸고 lifespan sync worker, execution polling field와 retry-sync 추가
+  - 외부 watcher가 전체 본문·base hash·단일 exact operation으로 변경 계획만 만들고 표준 승인/outbox 흐름을 재사용하는 source-sync API 추가
+  - source 무변경 storage 오류 뒤 consumed plan·Undo row를 새로 만들지 않고 기존 execution journal을 same/new idempotency key로 재개하도록 보완
+  - 일시적 state/pipeline 예외를 bounded backoff로 재처리하고 stale pending을 health에 노출하며 immutable index readiness를 load 시 cache
+  - Supabase JWT unknown-`kid` negative cache·JWKS 최소 refresh 간격/timeout과 Authorization header·pre-auth IP 제한 추가
+  - Claude session UUID 생성·resume 검증, anonymous session 비지속, 실제 chunked body 크기 제한 추가
+  - candidate 전체 file/directory fsync 뒤 release rename, revision-bound multi-chunk ID와 link evidence 동시 갱신 추가
+  - Railway volume 자동 경로 mapping과 writable probe, production Supabase·Claude·doc2md·no-demo fail-closed validation 추가
+  - `.env.example`, README, 역할·팀 handoff·통합·배포 계약과 ADR 0003 갱신
+- 검증:
+  - Ruff format/check 통과
+  - mypy strict 통과
+  - pytest 88개 통과, line coverage 86%
+  - wrong hash, stale plan, ACL revoke, symlink, concurrent plan, crash-after-replace, fan-out failure/retry, Undo conflict와 byte 복구 검증
+  - alias/effective filter, duplicate anchor, wrong section quote, heading/file version mismatch, configured doc2md 호출 검증
+  - production unsafe mode, volume 밖 path, missing mount와 Supabase migration 정적 권한 계약 검증
+  - OpenAPI 10개 path, mutation idempotency header, response enum과 stale health schema 검증
+  - Claude Agent SDK가 포함된 Docker image build, container health와 canonical citation 검색 HTTP smoke test 통과
+  - approval·Undo no-effect write failure 재개, transient worker self-wake, stale health, unknown-`kid` refresh throttle 회귀 검증
+- 전달 상태: 로컬 구현과 문서 완료. branch commit·push와 draft PR CI 결과는 이 작업의 delivery 단계에서 갱신
+- 결정:
+  - 인용 문장은 model 생성이 아니라 검증된 canonical quote로 조립해 사실 근거를 fail-closed로 유지
+  - browser shortcut/symlink 대신 portable source reference JSON 사용
+  - polling-first로 HTTP timeout과 converter latency를 분리하고 WebSocket은 실제 UI 필요가 생길 때만 추가
+  - single-volume Railway MVP는 SQLite를 유지하고 multi-replica 전에는 Postgres·외부 artifact store 전환을 필수화
+  - HWP/PDF/DOCX는 parse 가능 여부와 무관하게 verified round-trip writer 전까지 read-only
+- 남은 외부 조건: 팀 Supabase project migration·hook 활성화, Railway volume과 production env 설정, Anthropic key smoke test, 민규 stable-section converter 결과, 용휘 실제 vector/Kuzu adapter

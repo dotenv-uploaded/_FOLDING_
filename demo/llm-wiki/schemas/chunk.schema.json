@@ -7,8 +7,11 @@
     "chunk_id",
     "document_id",
     "file_version_id",
+    "section_id",
     "section",
+    "heading_path",
     "text",
+    "embedding_text",
     "text_sha256",
     "ordinal"
   ],
@@ -17,8 +20,18 @@
     "chunk_id": {"type": "string", "minLength": 1},
     "document_id": {"type": "string", "pattern": "^[A-Z]{3}-[0-9]{6}$"},
     "file_version_id": {"type": "string", "minLength": 1},
+    "section_id": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z._:-]{0,127}$"
+    },
     "section": {"type": "string"},
+    "heading_path": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1
+    },
     "text": {"type": "string", "minLength": 1},
+    "embedding_text": {"type": "string", "minLength": 1},
     "text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "ordinal": {"type": "integer", "minimum": 0}
   },

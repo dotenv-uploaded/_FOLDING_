@@ -15,14 +15,18 @@
     "schema_version": {"const": "1.0.0"},
     "required_citations": {
       "type": "array",
-      "items": {"enum": ["document_id", "graph_version", "chunk_id"]},
-      "minItems": 3,
-      "maxItems": 3,
+      "items": {
+        "enum": ["document_id", "revision", "graph_version", "chunk_id", "section_id"]
+      },
+      "minItems": 5,
+      "maxItems": 5,
       "uniqueItems": true,
       "allOf": [
         {"contains": {"const": "document_id"}},
+        {"contains": {"const": "revision"}},
         {"contains": {"const": "graph_version"}},
-        {"contains": {"const": "chunk_id"}}
+        {"contains": {"const": "chunk_id"}},
+        {"contains": {"const": "section_id"}}
       ]
     },
     "document_content_trust": {"const": "untrusted"},

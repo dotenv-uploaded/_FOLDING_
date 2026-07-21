@@ -8,6 +8,7 @@ class AccessContext:
     """Authorization result created by a trusted authentication adapter."""
 
     subject_id: str | None
+    tenant_id: str | None
     readable_access: frozenset[AccessLevel]
     writable_document_ids: frozenset[str]
 
@@ -15,6 +16,7 @@ class AccessContext:
     def anonymous(cls) -> "AccessContext":
         return cls(
             subject_id=None,
+            tenant_id=None,
             readable_access=frozenset({AccessLevel.PUBLIC}),
             writable_document_ids=frozenset(),
         )
@@ -26,6 +28,6 @@ class AccessContext:
         return (
             self.subject_id is not None
             and document.id in self.writable_document_ids
-            and document.write_access is WriteAccess.ALLOWED
+            and document.write_access is not WriteAccess.NONE
             and document.editability is Editability.EDITABLE
         )

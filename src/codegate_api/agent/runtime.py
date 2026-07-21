@@ -46,6 +46,10 @@ def build_claude_agent_options(
     working_directory: Path,
     state_directory: Path,
     access_context: AccessContext,
+    output_schema: dict[str, object] | None = None,
+    model: str | None = None,
+    session_id: str | None = None,
+    resume: str | None = None,
 ) -> ClaudeAgentOptions:
     tool_server = create_codegate_tool_server(repository, access_context)
     return ClaudeAgentOptions(
@@ -70,6 +74,12 @@ def build_claude_agent_options(
         setting_sources=[],
         skills=[],
         plugins=[],
+        output_format=(
+            {"type": "json_schema", "schema": output_schema} if output_schema is not None else None
+        ),
+        model=model,
+        session_id=session_id,
+        resume=resume,
         max_turns=8,
         max_budget_usd=0.50,
         enable_file_checkpointing=False,
@@ -82,6 +92,10 @@ def create_claude_agent_client(
     working_directory: Path,
     state_directory: Path,
     access_context: AccessContext,
+    output_schema: dict[str, object] | None = None,
+    model: str | None = None,
+    session_id: str | None = None,
+    resume: str | None = None,
 ) -> ClaudeSDKClient:
     return ClaudeSDKClient(
         options=build_claude_agent_options(
@@ -89,5 +103,9 @@ def create_claude_agent_client(
             working_directory=working_directory,
             state_directory=state_directory,
             access_context=access_context,
+            output_schema=output_schema,
+            model=model,
+            session_id=session_id,
+            resume=resume,
         )
     )

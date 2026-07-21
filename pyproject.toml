@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
   "claude-agent-sdk>=0.2.124,<0.3",
   "fastapi>=0.116.0,<1",
+  "PyJWT[crypto]>=2.13.0,<3",
   "pydantic-settings>=2.10.0,<3",
   "uvicorn[standard]>=0.35.0,<1",
 ]

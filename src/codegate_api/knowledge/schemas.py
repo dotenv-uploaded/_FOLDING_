@@ -2,16 +2,25 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+CitationField = Literal[
+    "document_id",
+    "revision",
+    "graph_version",
+    "chunk_id",
+    "section_id",
+]
+
+
 class AgentGuide(StrictModel):
     schema_version: Literal["1.0.0"]
-    required_citations: list[Literal["document_id", "graph_version", "chunk_id"]]
+    required_citations: list[CitationField]
     document_content_trust: Literal["untrusted"]
     read_acl_stage: Literal["before_retrieval"]
     write_authority: Literal["application_approval_only"]
@@ -22,9 +31,9 @@ class AgentGuide(StrictModel):
     @classmethod
     def require_all_citation_fields(
         cls,
-        value: list[Literal["document_id", "graph_version", "chunk_id"]],
-    ) -> list[Literal["document_id", "graph_version", "chunk_id"]]:
-        required = {"document_id", "graph_version", "chunk_id"}
+        value: list[CitationField],
+    ) -> list[CitationField]:
+        required = {"document_id", "revision", "graph_version", "chunk_id", "section_id"}
         if set(value) != required or len(value) != len(required):
             raise ValueError("required_citations must contain each required field exactly once")
         return value
@@ -48,10 +57,18 @@ class WriteAccess(StrEnum):
 
 
 class SourceMetadata(StrictModel):
-    filename: str
-    uri: str
-    media_type: str
+    filename: str = Field(min_length=1)
+    uri: str = Field(pattern=r"^source://")
+    media_type: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SourceReference(StrictModel):
+    schema_version: Literal["1.0.0"]
+    kind: Literal["source_reference"]
+    document_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    source_uri: str = Field(pattern=r"^source://")
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ConversionMetadata(StrictModel):
@@ -62,19 +79,22 @@ class ConversionMetadata(StrictModel):
 
 
 class ManifestEntry(StrictModel):
-    schema_version: str
-    id: str
-    file_version_id: str
-    title: str
-    doc_type: str
-    language: str
-    revision: str
-    status: str
+    schema_version: Literal["1.0.0"]
+    id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    file_version_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    doc_type: Literal["regulation", "manual", "report"]
+    language: str = Field(min_length=2)
+    revision: str = Field(min_length=1)
+    status: Literal["active", "inactive", "draft", "superseded"]
+    official_number: str | None = None
+    authority_level: str = Field(min_length=1)
+    issuing_org: str | None = None
     issued_on: date | None = None
     effective_from: date | None = None
     effective_to: date | None = None
     source: SourceMetadata
-    canonical_path: str
+    canonical_path: str = Field(pattern=r"^docs/")
     access: AccessLevel
     write_access: WriteAccess
     editability: Editability
@@ -82,14 +102,27 @@ class ManifestEntry(StrictModel):
     aliases: list[str]
     conversion: ConversionMetadata
 
+    @model_validator(mode="after")
+    def validate_effective_range(self) -> "ManifestEntry":
+        if (
+            self.effective_from is not None
+            and self.effective_to is not None
+            and self.effective_to < self.effective_from
+        ):
+            raise ValueError("effective_to must not precede effective_from")
+        return self
+
 
 class Chunk(StrictModel):
-    schema_version: str
-    chunk_id: str
-    document_id: str
-    file_version_id: str
-    section: str
-    text: str
+    schema_version: Literal["1.0.0"]
+    chunk_id: str = Field(min_length=1)
+    document_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    file_version_id: str = Field(min_length=1)
+    section_id: str = Field(pattern=r"^[0-9A-Za-z][0-9A-Za-z._:-]{0,127}$")
+    section: str = Field(min_length=1)
+    heading_path: list[str] = Field(min_length=1)
+    text: str = Field(min_length=1)
+    embedding_text: str = Field(min_length=1)
     text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     ordinal: int = Field(ge=0)
 
@@ -100,9 +133,9 @@ class RelationStatus(StrEnum):
 
 
 class Link(StrictModel):
-    schema_version: str
-    source_id: str
-    target_id: str
-    relation: str
+    schema_version: Literal["1.0.0"]
+    source_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    target_id: str = Field(pattern=r"^[A-Z]{3}-[0-9]{6}$")
+    relation: str = Field(min_length=1)
     status: RelationStatus
     evidence_chunk_ids: list[str]

@@ -1,21 +1,29 @@
-from functools import lru_cache
+from __future__ import annotations
 
-from codegate_api.config import get_settings
-from codegate_api.files.resolver import SourceUriResolver
+from typing import Annotated
+
+from fastapi import Header, Request
+
+from codegate_api.auth import authenticate_authorization_header
+from codegate_api.container import AppContainer
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
 
 
-@lru_cache
-def get_knowledge_repository() -> KnowledgeRepository:
-    settings = get_settings()
-    return KnowledgeRepository(
-        settings.resolved_knowledge_root(),
-        SourceUriResolver(settings.resolved_source_root()),
+def get_container(request: Request) -> AppContainer:
+    container: AppContainer = request.app.state.container
+    return container
+
+
+def get_knowledge_repository(request: Request) -> KnowledgeRepository:
+    return get_container(request).catalog.snapshot()
+
+
+def get_access_context(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> AccessContext:
+    return authenticate_authorization_header(
+        authorization,
+        get_container(request).authenticator,
     )
-
-
-def get_access_context() -> AccessContext:
-    """Return anonymous access until a verified Supabase JWT adapter is connected."""
-
-    return AccessContext.anonymous()

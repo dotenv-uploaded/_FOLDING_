@@ -39,6 +39,7 @@
 - versioned `llm-wiki`의 `VERSION`과 checksum 검증
 - 요청자 ACL을 검색·relation 확장 전에 적용하고 권한 없는 문서의 존재도 숨김
 - source와 chunk SHA-256을 실제 bytes·text와 대조
+- canonical `section_id` index에서 heading path와 exact quote를 대조
 - manifest, chunks, aliases, links schema와 참조 무결성 검증
 - FTS/vector seed 검색과 graph 1-hop 확장
 - evidence와 graph version을 모든 결과에 포함
@@ -69,6 +70,7 @@ MVP actual write는 Markdown/TXT부터 지원한다. JSON/YAML은 schema 검증�
 - 같은 문서는 base hash·execution lock으로 직렬화하고 서로 다른 문서는 병렬 처리
 - graph publish CAS 패자는 최신 active version에 미반영 event를 rebase·coalesce해 선행 변경 유실 방지
 - 동기화 실패 시 기존 graph version을 계속 제공하고 부분 version은 노출하지 않음
+- approve HTTP와 긴 동기화를 분리한 lifespan outbox worker와 retry-sync
 
 ### 보안과 운영
 
@@ -101,7 +103,7 @@ MVP actual write는 Markdown/TXT부터 지원한다. JSON/YAML은 schema 검증�
 ### 우창
 
 - `NEXT_PUBLIC_API_BASE_URL`과 CORS origin
-- 여섯 `response_type`의 화면 상태
+- 현재 네 `response_type`과 별도 execution polling 화면 상태
 - exact `plan_hash` 승인·거절 UI
 - polling 간격, terminal status, Undo UX
 
@@ -113,11 +115,13 @@ MVP actual write는 Markdown/TXT부터 지원한다. JSON/YAML은 schema 검증�
 | --- | --- | --- | --- |
 | 0 | 계약과 합성 `llm-wiki` | checksum·schema·source URI 검증 | 완료 |
 | 1 | read-only vertical slice | 질문 하나가 실제 위치·근거를 반환 | 완료 |
-| 2 | Claude Agent SDK | 안전한 client/tool 구성 완료, 실제 session 응답을 API schema에 연결 | 진행 중 |
-| 3 | edit preview | 자연어 요청이 실제 파일 기준 diff를 만들고 write는 0건 | 예정 |
-| 4 | approval·write·Undo | 승인 전 무변경, 승인 후 atomic write, Undo hash 복구 | 예정 |
-| 5 | converter·graph sync | 수정 뒤 같은 질문이 새 version·내용을 반환 | 예정 |
-| 6 | 통합·데모 보호 | 핵심 E2E, 실패 흐름, reset, 배포·보안 검증 | 예정 |
+| 2 | Claude Agent SDK | deny-by-default runtime, 실제 SDK client 구조화 응답, server-owned session | 완료 |
+| 3 | edit preview | 자연어 요청이 실제 파일 기준 diff를 만들고 write는 0건 | 완료 |
+| 4 | approval·write·Undo | 승인 전 무변경, atomic write, crash recovery, Undo hash 복구 | 완료 |
+| 5 | converter·graph sync | outbox, doc2md adapter, 병렬 local index, immutable VERSION publish | 완료(팀 adapter 대기) |
+| 6 | 통합·데모 보호 | E2E, 실패·retry, reset, Supabase/Railway fail-closed 설정 | 완료(외부 적용 대기) |
+
+`완료`는 합성 fixture와 adapter contract 기준이다. 실제 Anthropic 호출은 server key, Supabase hook은 project 설정, 민규 converter와 용휘 graph는 각 팀 산출물이 있어야 staging에서 최종 smoke test할 수 있다. 이 외부 조건을 Backend 구현 완료와 혼동하지 않는다.
 
 ## 최종 완료 기준
 

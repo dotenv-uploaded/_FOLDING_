@@ -1,47 +1,34 @@
 from typing import Annotated
-from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
-from codegate_api.dependencies import get_access_context, get_knowledge_repository
+from codegate_api.container import AppContainer
+from codegate_api.dependencies import get_access_context, get_container, get_knowledge_repository
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
-from codegate_api.models import (
-    ApiError,
-    ChatMessageRequest,
-    ChatMessageResponse,
-    ResponseType,
-)
+from codegate_api.models import ChatMessageRequest, ChatMessageResponse
+from codegate_api.state.store import StateConflict
 
 router = APIRouter(tags=["chat"])
 
 
 @router.post("/chat/messages", response_model=ChatMessageResponse)
-def create_message(
+async def create_message(
     request: ChatMessageRequest,
     repository: Annotated[KnowledgeRepository, Depends(get_knowledge_repository)],
     access_context: Annotated[AccessContext, Depends(get_access_context)],
-    idempotency_key: Annotated[str | None, Header()] = None,
+    container: Annotated[AppContainer, Depends(get_container)],
+    idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
 ) -> ChatMessageResponse:
-    del idempotency_key  # Persistence and deduplication start in the approval phase.
-    documents = repository.search(request.message, access_context=access_context)
-    if not documents:
-        return ChatMessageResponse(
-            conversation_id=request.conversation_id,
-            message_id=f"msg_{uuid4().hex}",
-            response_type=ResponseType.ERROR,
-            assistant_text="관련 문서를 찾지 못했습니다.",
-            documents=[],
-            error=ApiError(
-                code="DOCUMENT_NOT_FOUND",
-                message="검색어와 일치하는 근거 청크가 없습니다.",
-            ),
+    try:
+        return await container.chat.create_message(
+            request=request,
+            repository=repository,
+            access_context=access_context,
+            idempotency_key=idempotency_key,
         )
-
-    return ChatMessageResponse(
-        conversation_id=request.conversation_id,
-        message_id=f"msg_{uuid4().hex}",
-        response_type=ResponseType.LOCATION_RESULT,
-        assistant_text="관련 문서와 근거를 찾았습니다.",
-        documents=documents,
-    )
+    except StateConflict as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
