@@ -27,8 +27,10 @@
   - v4 agent run schema의 session 보존 v5 migration, failed/running session rotation, tool trace/result 위조·순서·
     provenance·빈 검색·source hash 회귀 테스트 통과
   - 독립 최종 diff review에서 blocker/high finding 없음
-- 전달 상태: `feat/claude-prompt-hardening` 격리 worktree에서 구현·검증했다. 공유 `main` checkout은
-  수정하지 않았으며 commit·draft PR 전달을 진행한다. Production migration·배포는 수행하지 않는다.
+- 전달 상태: 구현 commit `e878bf5`를 `feat/claude-prompt-hardening`에 push하고
+  https://github.com/dotenv-uploaded/codegate-2026-agent/pull/9 draft PR을 생성했다. GitHub Actions run
+  `29852521789`가 성공했다. 이 전달 기록 commit의 required check를 다시 확인하며, 공유 `main` checkout,
+  merge, Production migration·배포는 건드리지 않는다.
 - 결정:
   - prompt 문구만 신뢰하지 않고 구조화 schema, current-turn tool trace, application hash·approval 경계로
     같은 계약을 중복 검증
