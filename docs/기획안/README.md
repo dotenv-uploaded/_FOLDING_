@@ -1,4 +1,4 @@
-# CODEGATE 2026 — 제품 기획 개요 v2.1 (팀 계약 정합 개정판)
+# CODEGATE 2026 — 제품 기획 개요 v2.2 (실제 구현 정합)
 
 - 작성: 우창 · 위치: `codegate-2026-local/docs/기획안/`
 - 성격: **파생 문서**. 팀의 정본은 성주 레포의 계약 문서다.
@@ -12,8 +12,11 @@
 > 폐기: TS 단일 런타임 · SDK 내장 도구 사용 · kordoc 파이프라인 · 프론트의 enrichment 직접 호출 ·
 > "서버=로그인·구독만" · "오프라인 동작" 표현.
 >
-> **v2.1**: 인증을 성주 구현 기준으로 정정(D9). 데스크톱 MVP는 `auth_mode=local`이라
-> **로그인 UI 없이 핵심 흐름이 완결**된다. 성주 레포는 수정하지 않는다.
+> **v2.2 정정**: v2.0/v2.1이 kordoc·로컬 빌드 파이프라인·enrichment 직접 호출을 "폐기"로 적은 것은
+> **과잉 수정**이었다. 이들은 v1.4/v1.5 설계대로 Electron 앱에 실제 구현돼 동작 중이다
+> (`src/main/kordoc/`, `src/main/build/`). 실제 아키텍처는 **하이브리드**다 —
+> Electron이 변환·enrichment·빌드·인증·워처를 소유하고, 대화·승인·실행은 Python sidecar에 위임한다.
+> OAuth도 Supabase+PKCE+루프백으로 구현 완료(커밋 `cde5bbf`). 성주 레포는 수정하지 않는다.
 
 ---
 
@@ -41,19 +44,23 @@
 
 ```
 사용자 기기
-├─ Electron 앱 〔우창 · codegate-2026-local〕  ※ MVP는 로그인 없이 동작
-│    렌더러(React/shadcn) — UI · 인용 · diff 승인 · execution 폴링 · Undo
-│    메인(Node, 얇음) — sidecar 수명주기 · 폴더 capability · 원본 열기
+├─ Electron 앱 〔우창 · codegate-2026-local〕
+│    렌더러(React/shadcn) — UI · 인용 칩 · diff 승인 모달 · execution 폴링 · Undo
+│    메인(Node) — auth(OAuth·PKCE·safeStorage) · build(convert→enrich→assemble)
+│                kordoc · watcher · SQLite · sidecar 클라이언트
+│    ★ 위키 빌드를 Electron이 소유 (문서가 자사 서버로 나가지 않음)
 │
 └─ codegate-local sidecar (Python) 〔성주 · codegate-2026-agent〕  ← loopback bind
+     chat · change-plan · execution 위임
      Claude Agent SDK (app-owned read tools, 내장 Read/Edit/Write/Bash 비활성)
      LLMWIKI WikiBuildService 〔용휘 · codegate-2026-backend〕 in-process
      doc2md 클라이언트 〔민규 · codegate-2026-convert〕
      승인·backup·atomic replace·outbox·Undo·SQLite journal
 
 클라우드
-├─ Anthropic API — 모델 추론 (사용자 소유 ANTHROPIC_API_KEY)  ※ 상시 필요
-└─ (선택 · 클라우드 계정 도입 시) Supabase Auth + 배포 Backend JWKS 검증
+├─ Anthropic API — 모델 추론 (sidecar)
+├─ LLM 제공자 — enrichment (Electron이 직접 호출 · 유일한 비용 지점)
+└─ Supabase Auth + 배포 Backend — 로그인·구독·JWKS 검증
 ```
 
 ### 3.2 로컬 디렉터리 (서로 겹칠 수 없음)
@@ -102,20 +109,21 @@ source와 source-md를 같은 경로로 두면 frontmatter의 source SHA가 자�
 | D3 | Claude Agent SDK를 **사용자 장치에서 실행** | 원본과 에이전트가 같은 기기. 단 모델 추론은 Anthropic API 호출 |
 | D4 | **SDK 내장 Read/Edit/Write/Bash/Web 비활성** + `PreToolUse` allowlist | 내장 도구는 승인·ACL·Undo 경계를 우회 (ADR 0004) |
 | D5 | 쓰기는 **exact diff → plan_hash → 승인 → backup → atomic replace → outbox → Undo** 경로만 | 결정적·감사 가능·복구 가능 |
-| D6 | 실제 write는 **UTF-8 Markdown/TXT만**. PDF·DOCX·HWP는 verified round-trip writer 전까지 read-only | 무손실 왕복이 검증되지 않은 포맷의 파괴적 변경 방지 (§8 제안 참조) |
+| D6 | 문서 변환·편집은 **kordoc**(Electron `main/kordoc/`, real·mock·atomic). 실제 write는 계약상 **UTF-8 Markdown/TXT만**, PDF·DOCX·HWP는 verified round-trip writer 전까지 read-only | 무손실 왕복 미검증 포맷의 파괴적 변경 방지. HWP 왕복은 §8에서 검증돼 완화 제안 가능 |
 | D7 | 원본이 정본, 정규화 Markdown은 파생 | 책임이 한 방향으로 흐름 |
 | D8 | LLMWIKI `current.json`이 **유일한 활성 포인터**, `build-<hex>`는 불변 | split-brain 방지. Backend는 build ID별 read cache만 |
-| D9 | 인증은 성주 구현(`TokenAuthenticator`)을 **모드 선택으로 소비**. 데스크톱 MVP는 `auth_mode=local`(로그인 불필요), 클라우드 전환 시 `auth_mode=supabase` | 이미 4개 인증자·JWKS·마이그레이션·테스트가 구현돼 있음. Backend에 자체 OAuth 엔드포인트를 만들지 않음(ADR 0004가 secret 보관 중복으로 기각) |
+| D9 | **로그인은 프론트가 Supabase Auth와 직접** (구현 완료: supabase-js `flowType:'pkce'` + 시스템 브라우저 + 루프백 콜백 + safeStorage). Backend는 JWKS 검증만 | ADR 0004. Backend에 자체 OAuth 엔드포인트를 만들지 않음(secret 보관 중복으로 기각). 성주 백엔드에 `auth_mode`별 인증자 4종이 이미 구현돼 있어 소비만 함 |
 | D10 | UI = **Electron 데스크톱 앱** (렌더러 React/shadcn) | 로컬 파일 capability·sidecar 프로세스 관리·원본 열기를 네이티브로 처리 |
 | D11 | **Supabase 신원과 로컬 파일 capability 분리** | 로그인만으로 폴더 권한이 생기지 않음. capability는 OS 다이얼로그 범위에서 발생 |
 | D12 | sidecar는 **loopback만 bind**, 명시적 CORS origin, 클라이언트 2개 분리 | cloud identity와 local capability 경계 유지 |
 | D13 | LLMWIKI bundle은 **앱과 함께 배포·검증된 고정 bundle**만 실행 | 사용자 임의 폴더를 project root로 실행 금지 (신뢰 구성요소) |
 | D14 | **"오프라인·로컬 전용"으로 표현하지 않음** | 모델 추론이 Anthropic API 호출이므로 정직한 표현 유지 |
+| D15 | **위키 빌드는 Electron이 소유** — convert(kordoc) → enrich(LLM 직접) → assemble(빌더 코어) → `current.json` 원자 승격 | 문서가 자사 서버로 나가지 않음. 서버엔 로그인·구독만 질의. ⚠️ sidecar도 `WikiBuildService`를 도므로 **정본 빌더 확정 필요** |
 
 ## 6. MVP 범위
 
-**포함**: 폴더 선택(로그인 불필요 — `auth_mode=local`) → doc2md 변환 → LLMWIKI 빌드 → 질문·인용 답변(위치 찾기)
-→ 변경 요청·diff·plan_hash 승인 → md/txt 실제 수정 → 재빌드 → Undo
+**포함**: OAuth 로그인 → 폴더 선택 → kordoc 변환 → enrichment → 위키 조립 → 질문·인용 답변(위치 찾기)
+→ 변경 요청·diff·plan_hash 승인 → md/txt 실제 수정 → 증분 재빌드 → Undo
 
 **제외**: 바이너리 포맷 쓰기, 멀티디바이스, 웹 UI, enrichment 기반 검색 확장(계약상 아직 로드 안 함),
 구독·과금 강제
@@ -128,6 +136,7 @@ source와 source-md를 같은 경로로 두면 frontmatter의 source SHA가 자�
 | 계약서 "Next.js UI" 표기 ↔ Electron 확정 | 미해결 | 계약 v0.4에서 갱신 |
 | 바이너리 포맷 read-only 제약 | 완화안 있음 | §8 kordoc 검증 결과 제안 |
 | 데모 교차연결 빈약 | 미해결 | 데모 질문 확정 후 코퍼스 큐레이션 |
+| **빌드 이중화** (Electron `build/` ↔ sidecar `WikiBuildService`) | 미해결 | 정본 빌더를 성주와 확정, 중복이면 한쪽 제거 |
 
 ## 7. 부록 — enrichment 비용 실측 (2026-07-21, M4 Pro 24GB)
 
