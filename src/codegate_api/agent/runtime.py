@@ -22,6 +22,8 @@ SAFE_AGENT_TOOLS = frozenset(
         "mcp__codegate__source_file_read",
     }
 )
+SDK_CONTROL_TOOLS = frozenset({"StructuredOutput"})
+ALLOWED_AGENT_TOOLS = SAFE_AGENT_TOOLS | SDK_CONTROL_TOOLS
 
 
 async def enforce_tool_allowlist(
@@ -31,7 +33,7 @@ async def enforce_tool_allowlist(
 ) -> HookJSONOutput:
     del tool_use_id, context
     tool_name = str(input_data.get("tool_name", ""))
-    if tool_name in SAFE_AGENT_TOOLS:
+    if tool_name in ALLOWED_AGENT_TOOLS:
         return {}
     return {
         "hookSpecificOutput": {
@@ -59,7 +61,7 @@ def build_claude_agent_options(
         tools=[],
         mcp_servers={"codegate": tool_server},
         strict_mcp_config=True,
-        allowed_tools=sorted(SAFE_AGENT_TOOLS),
+        allowed_tools=sorted(ALLOWED_AGENT_TOOLS),
         disallowed_tools=["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"],
         permission_mode="dontAsk",
         hooks={

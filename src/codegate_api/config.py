@@ -62,8 +62,9 @@ class Settings(BaseSettings):
     )
 
     agent_mode: Literal["deterministic", "claude"] = "deterministic"
-    claude_model: str | None = None
+    claude_model: str | None = Field(default=None, min_length=1, pattern=r"^\S+$")
     claude_timeout_seconds: float = Field(default=45.0, ge=1.0, le=300.0)
+    claude_session_ttl_seconds: int = Field(default=3_600, ge=60, le=86_400)
 
     auth_mode: Literal["disabled", "demo", "local", "supabase"] = "disabled"
     demo_auth_token: str | None = None
@@ -143,6 +144,8 @@ class Settings(BaseSettings):
                 raise ValueError("production requires Supabase issuer and JWKS configuration")
             if self.agent_mode != "claude":
                 raise ValueError("production requires CODEGATE_AGENT_MODE=claude")
+            if not self.claude_model:
+                raise ValueError("production requires CODEGATE_CLAUDE_MODEL")
             if not self.doc2md_base_url:
                 raise ValueError("production requires CODEGATE_DOC2MD_BASE_URL")
             if not self.doc2md_api_token:

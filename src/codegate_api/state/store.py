@@ -71,7 +71,7 @@ class WriteJournal:
     state: str
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class StateStore:
@@ -106,6 +106,18 @@ class StateStore:
                 connection.execute(
                     "UPDATE executions SET error_retryable = 1 WHERE sync_status = 'failed'"
                 )
+            agent_run_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
+            }
+            if "runtime_fingerprint" not in agent_run_columns:
+                connection.execute("ALTER TABLE agent_runs ADD COLUMN runtime_fingerprint TEXT")
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_session_resume
+                ON agent_runs(conversation_key, runtime_fingerprint, updated_at)
+                """
+            )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, _now_text()),
@@ -165,6 +177,7 @@ class StateStore:
         subject_id: str,
         status: str,
         provider: str,
+        runtime_fingerprint: str | None = None,
         session_id: str | None = None,
         error_code: str | None = None,
     ) -> None:
@@ -174,16 +187,27 @@ class StateStore:
             connection.execute(
                 """
                 INSERT INTO agent_runs(
-                    id, conversation_key, status, provider, session_id, error_code,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    id, conversation_key, status, provider, runtime_fingerprint, session_id,
+                    error_code, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
+                    runtime_fingerprint = excluded.runtime_fingerprint,
                     session_id = excluded.session_id,
                     error_code = excluded.error_code,
                     updated_at = excluded.updated_at
                 """,
-                (run_id, conversation_key, status, provider, session_id, error_code, now, now),
+                (
+                    run_id,
+                    conversation_key,
+                    status,
+                    provider,
+                    runtime_fingerprint,
+                    session_id,
+                    error_code,
+                    now,
+                    now,
+                ),
             )
 
     def latest_agent_session(
@@ -192,18 +216,29 @@ class StateStore:
         conversation_id: str,
         tenant_id: str,
         subject_id: str,
+        runtime_fingerprint: str,
+        max_age_seconds: int,
     ) -> str | None:
         conversation_key = _conversation_key(tenant_id, subject_id, conversation_id)
+        cutoff = datetime.now(UTC) - timedelta(seconds=max_age_seconds)
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT session_id FROM agent_runs
-                WHERE conversation_key = ? AND status = 'succeeded' AND session_id IS NOT NULL
-                ORDER BY updated_at DESC, id DESC LIMIT 1
+                SELECT status, session_id, updated_at FROM agent_runs
+                WHERE conversation_key = ?
+                  AND runtime_fingerprint = ?
+                ORDER BY updated_at DESC, rowid DESC LIMIT 1
                 """,
-                (conversation_key,),
+                (conversation_key, runtime_fingerprint),
             ).fetchone()
-        return str(row["session_id"]) if row is not None else None
+        if (
+            row is None
+            or row["status"] != "succeeded"
+            or row["session_id"] is None
+            or _parse_datetime(str(row["updated_at"])) < cutoff
+        ):
+            return None
+        return str(row["session_id"])
 
     def get_chat_idempotency(
         self,
@@ -1713,6 +1748,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     conversation_key TEXT NOT NULL REFERENCES conversations(conversation_key),
     status TEXT NOT NULL,
     provider TEXT NOT NULL,
+    runtime_fingerprint TEXT,
     session_id TEXT,
     error_code TEXT,
     created_at TEXT NOT NULL,

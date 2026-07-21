@@ -71,6 +71,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
 - ACL을 검색, direct get, relation 확장, preview, approve, Undo마다 적용한다.
 - 모델에는 built-in `Edit`, `Write`, `Bash`, web tool을 주지 않는다.
 - 모든 Claude session은 checksum과 schema를 통과한 `AGENT_GUIDE.md` frontmatter로 시작한다.
+- Prompt v2는 사용자·문서·tool content를 untrusted data로 분리하고 매 turn 현재 graph version의
+  fresh read를 요구한다. 구조화 `outcome`과 source hash를 Python validator와 preview 경계에서 다시
+  검증한다.
+- Prompt, model, SDK, tool schema, graph version, authorization fingerprint가 같고 TTL 안인 session만
+  resume한다.
 - `llm-wiki`에는 원본 symlink 대신 checksummed `references/*.source.json`을 둔다.
 - 근거 quote는 선언된 `section_id`의 canonical section 안에 정확히 한 번 있어야 한다.
 - 계획의 exact operation·diff·base/result hash·expiry를 canonical hash로 고정하고 owner는 tenant·subject scoped persistence로 별도 결박한다.
@@ -94,10 +99,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
 
 ```text
 CODEGATE_AGENT_MODE=claude
+CODEGATE_CLAUDE_MODEL=<exact-model-id>
+CODEGATE_CLAUDE_SESSION_TTL_SECONDS=3600
 ANTHROPIC_API_KEY=...
 ```
 
-production은 Supabase Auth, Claude mode, doc2md URL, 비활성 demo bootstrap, Railway persistent volume이 없으면 설정 단계에서 기동을 거부한다. 적용 절차와 아직 사람이 해야 하는 작업은 [배포 runbook](docs/DEPLOYMENT.md)을 따른다.
+production은 Supabase Auth, Claude mode, 고정 model ID, doc2md URL, 비활성 demo bootstrap,
+Railway persistent volume이 없으면 설정 단계에서 기동을 거부한다. 적용 절차와 아직 사람이 해야 하는
+작업은 [배포 runbook](docs/DEPLOYMENT.md)을 따른다.
 
 ## 로그인
 
@@ -111,6 +120,7 @@ Frontend가 Supabase Auth에 직접 로그인하고 access token만 cloud Backen
 
 ```bash
 export ANTHROPIC_API_KEY=<user-api-key>
+export CODEGATE_CLAUDE_MODEL=<exact-model-id>
 
 uv run codegate-local \
   --source-root /workspace/source \
@@ -132,6 +142,22 @@ uv run mypy src
 uv run pytest
 ```
 
+Prompt corpus와 grader 구성을 API 호출 없이 확인한다.
+
+```bash
+uv run python scripts/evaluate_agent_prompt.py --list
+```
+
+실제 model canary는 demo 문서와 read-only 도구만 사용하지만 Anthropic API 비용이 발생한다. 모델을
+고정하고 필요한 case만 실행한다.
+
+```bash
+uv run python scripts/evaluate_agent_prompt.py \
+  --model <exact-model-id> \
+  --case exact-change \
+  --case direct-injection-with-safe-task
+```
+
 Docker 확인:
 
 ```bash
@@ -139,4 +165,6 @@ docker build -t codegate-backend .
 docker run --rm -p 8000:8000 codegate-backend
 ```
 
-개발 도구는 저장소 루트의 `AGENTS.md`를 먼저 읽는다. Claude Code는 `CLAUDE.md`가 같은 파일을 import한다. 서비스의 Claude Agent SDK는 개발 도구 지침이 아니라 versioned `llm-wiki/AGENT_GUIDE.md`만 검증해 사용한다.
+개발 도구는 저장소 루트의 `AGENTS.md`를 먼저 읽는다. Claude Code는 `CLAUDE.md`가 같은 파일을
+import한다. 서비스의 Claude Agent SDK는 개발 도구 지침이 아니라 versioned
+`llm-wiki/AGENT_GUIDE.md`의 제한된 frontmatter와 [prompt contract ADR](docs/adr/0006-claude-prompt-contract-and-evaluation.md)만 검증해 사용한다.

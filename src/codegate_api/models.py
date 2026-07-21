@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from codegate_api.knowledge.schemas import DOCUMENT_ID_PATTERN
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -49,10 +51,24 @@ class SyncStatus(StrEnum):
 
 
 class ReplaceExactOperation(StrictModel):
-    type: Literal["replace_exact"] = "replace_exact"
-    expected_text: str = Field(min_length=1, max_length=16_000)
-    replacement_text: str = Field(min_length=1, max_length=16_000)
-    expected_occurrences: Literal[1] = 1
+    type: Literal["replace_exact"] = Field(
+        default="replace_exact",
+        description="The only supported deterministic source edit operation.",
+    )
+    expected_text: str = Field(
+        min_length=1,
+        max_length=16_000,
+        description="Smallest exact span copied from the current source and occurring once.",
+    )
+    replacement_text: str = Field(
+        min_length=1,
+        max_length=16_000,
+        description="Exact replacement wording explicitly supplied by the user.",
+    )
+    expected_occurrences: Literal[1] = Field(
+        default=1,
+        description="Safety invariant requiring exactly one current-source match.",
+    )
 
 
 class ChangePlanView(StrictModel):
@@ -178,7 +194,11 @@ class ApiError(StrictModel):
 class ChatMessageRequest(StrictModel):
     conversation_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4_000)
-    selected_document_id: str | None = None
+    selected_document_id: str | None = Field(
+        default=None,
+        pattern=DOCUMENT_ID_PATTERN,
+        max_length=96,
+    )
 
 
 class ChatMessageResponse(StrictModel):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-from codegate_api.agent.gateway import AgentGateway, AgentGatewayError
+from codegate_api.agent.gateway import AgentGateway, AgentGatewayError, AgentOutcome
 from codegate_api.changes.hashing import request_hash
 from codegate_api.changes.service import ChangePlanService, ChangeServiceError
 from codegate_api.knowledge.access import AccessContext
@@ -87,6 +87,25 @@ class ChatService:
         assistant_message_id = f"msg_{uuid4().hex}"
         run_id = f"run_{uuid4().hex}"
         authenticated = access_context.subject_id is not None
+        runtime_fingerprint = self._agent.session_fingerprint(
+            repository=repository,
+            access_context=access_context,
+        )
+        resume_session_id = (
+            self._state.latest_agent_session(
+                conversation_id=request.conversation_id,
+                tenant_id=tenant_id,
+                subject_id=subject_id,
+                runtime_fingerprint=runtime_fingerprint,
+                max_age_seconds=self._agent.session_ttl_seconds,
+            )
+            if (
+                authenticated
+                and runtime_fingerprint is not None
+                and self._agent.session_ttl_seconds is not None
+            )
+            else None
+        )
         if authenticated:
             self._state.record_message(
                 conversation_id=request.conversation_id,
@@ -103,16 +122,8 @@ class ChatService:
                 subject_id=subject_id,
                 status="running",
                 provider=type(self._agent).__name__,
+                runtime_fingerprint=runtime_fingerprint,
             )
-        resume_session_id = (
-            self._state.latest_agent_session(
-                conversation_id=request.conversation_id,
-                tenant_id=tenant_id,
-                subject_id=subject_id,
-            )
-            if authenticated
-            else None
-        )
         try:
             result = await self._agent.decide(
                 message=request.message,
@@ -131,6 +142,7 @@ class ChatService:
                     subject_id=subject_id,
                     status="failed",
                     provider=type(self._agent).__name__,
+                    runtime_fingerprint=runtime_fingerprint,
                     error_code=error.code,
                 )
             response = _error_response(
@@ -150,9 +162,19 @@ class ChatService:
                 subject_id=subject_id,
                 status="succeeded",
                 provider=result.provider,
+                runtime_fingerprint=runtime_fingerprint,
                 session_id=result.session_id,
             )
         decision = result.decision
+        if decision.outcome is not AgentOutcome.READY:
+            response = _agent_outcome_response(
+                request.conversation_id,
+                assistant_message_id,
+                outcome=decision.outcome,
+                intent=decision.intent,
+            )
+            self._record_assistant(response, tenant_id, subject_id)
+            return response
         documents = repository.search(
             decision.search_query,
             access_context=access_context,
@@ -179,6 +201,15 @@ class ChatService:
             )
             self._record_assistant(response, tenant_id, subject_id)
             return response
+        if decision.operation.replacement_text not in request.message:
+            response = _error_response(
+                request.conversation_id,
+                assistant_message_id,
+                code="CHANGE_REPLACEMENT_UNVERIFIED",
+                message="변경 후 텍스트는 요청에 정확히 포함해 주세요.",
+            )
+            self._record_assistant(response, tenant_id, subject_id)
+            return response
         if access_context.subject_id is None:
             response = _error_response(
                 request.conversation_id,
@@ -189,7 +220,23 @@ class ChatService:
             self._record_assistant(response, tenant_id, subject_id)
             return response
 
-        target_id = request.selected_document_id or decision.target_document_id
+        if (
+            request.selected_document_id is not None
+            and decision.target_document_id != request.selected_document_id
+        ):
+            response = _error_response(
+                request.conversation_id,
+                assistant_message_id,
+                code="SELECTED_DOCUMENT_MISMATCH",
+                message=(
+                    "선택한 문서와 요청에서 확인된 대상이 다릅니다. "
+                    "수정할 문서를 다시 선택해 주세요."
+                ),
+            )
+            self._record_assistant(response, tenant_id, subject_id)
+            return response
+
+        target_id = decision.target_document_id
         writable_candidates = [document for document in documents if document.can_write]
         if target_id is None:
             if len(writable_candidates) != 1:
@@ -222,6 +269,7 @@ class ChatService:
                 document_id=target_id,
                 operation=decision.operation,
                 request_text=request.message,
+                expected_base_sha256=decision.source_sha256,
             )
         except ChangeServiceError as error:
             response = _error_response(
@@ -317,6 +365,7 @@ def _error_response(
     *,
     code: str,
     message: str,
+    retryable: bool = False,
 ) -> ChatMessageResponse:
     return ChatMessageResponse(
         conversation_id=conversation_id,
@@ -324,5 +373,49 @@ def _error_response(
         response_type=ResponseType.ERROR,
         assistant_text=message,
         documents=[],
-        error=ApiError(code=code, message=message),
+        error=ApiError(code=code, message=message, retryable=retryable),
+    )
+
+
+def _agent_outcome_response(
+    conversation_id: str,
+    message_id: str,
+    *,
+    outcome: AgentOutcome,
+    intent: str,
+) -> ChatMessageResponse:
+    if outcome is AgentOutcome.NEEDS_CLARIFICATION:
+        if intent == "change":
+            return _error_response(
+                conversation_id,
+                message_id,
+                code="CHANGE_DETAILS_REQUIRED",
+                message="수정할 문서와 변경 전후 텍스트를 명확히 적어주세요.",
+            )
+        return _error_response(
+            conversation_id,
+            message_id,
+            code="CLARIFICATION_REQUIRED",
+            message="찾을 문서나 내용을 조금 더 구체적으로 적어주세요.",
+        )
+    if outcome is AgentOutcome.NOT_FOUND:
+        return _error_response(
+            conversation_id,
+            message_id,
+            code="DOCUMENT_NOT_FOUND",
+            message="검색어와 일치하는 검증된 문서 근거가 없습니다.",
+        )
+    if outcome is AgentOutcome.TOOL_ERROR:
+        return _error_response(
+            conversation_id,
+            message_id,
+            code="AGENT_TOOL_ERROR",
+            message="현재 문서 근거를 안전하게 확인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.",
+            retryable=True,
+        )
+    return _error_response(
+        conversation_id,
+        message_id,
+        code="UNSUPPORTED_AGENT_REQUEST",
+        message="요청에서 처리할 수 있는 안전한 문서 작업을 확인하지 못했습니다.",
     )

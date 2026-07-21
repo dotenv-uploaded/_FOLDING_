@@ -48,6 +48,8 @@ transport로 synthetic source를 한 번 변환해야 배포 완료로 본다.
 CODEGATE_ENVIRONMENT=production
 CODEGATE_AUTH_MODE=supabase
 CODEGATE_AGENT_MODE=claude
+CODEGATE_CLAUDE_MODEL=<exact-model-id>
+CODEGATE_CLAUDE_SESSION_TTL_SECONDS=3600
 CODEGATE_BOOTSTRAP_DEMO=false
 CODEGATE_DOC2MD_BASE_URL=http://<doc2md-host>:<port>
 CODEGATE_DOC2MD_SOURCE_KIND=path|bytes
@@ -58,7 +60,11 @@ CODEGATE_CORS_ORIGINS=["https://<vercel-domain>"]
 ANTHROPIC_API_KEY=<server-secret>
 ```
 
-`RAILWAY_VOLUME_MOUNT_PATH`는 volume 연결 시 Railway가 제공한다. 값이 없거나 mount가 writable하지 않거나 mutable path가 volume 밖이면 startup이 실패한다. production에서 disabled/demo auth, deterministic agent, local demo bootstrap, 누락된 doc2md URL도 설정 검증에서 거부한다.
+`RAILWAY_VOLUME_MOUNT_PATH`는 volume 연결 시 Railway가 제공한다. 값이 없거나 mount가 writable하지
+않거나 mutable path가 volume 밖이면 startup이 실패한다. production에서 disabled/demo auth,
+deterministic agent, 누락된 Claude model ID, local demo bootstrap, 누락된 doc2md URL도 설정 검증에서
+거부한다. Model ID를 바꿀 때는 prompt eval corpus를 다시 실행하고 기존 SDK session을 resume하지
+않는다.
 
 ## 4. 첫 source와 knowledge package
 
