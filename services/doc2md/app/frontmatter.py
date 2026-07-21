@@ -1,0 +1,150 @@
+import hashlib
+import json
+import re
+from pathlib import Path
+from threading import Lock
+
+import yaml
+
+from app.schemas import Frontmatter, MetadataOverrides, SourceInfo
+
+_LOCK = Lock()
+_STATE_DIR = Path(__file__).resolve().parent.parent / ".cache"
+_ID_COUNTER_FILE = _STATE_DIR / "id_counters.json"
+_ID_BY_SHA_FILE = _STATE_DIR / "id_by_sha256.json"
+
+# doc_type -> id prefix. Unknown doc_types fall back to their first 3 letters, uppercased.
+DOC_TYPE_PREFIX = {
+    "regulation": "REG",
+    "policy": "POL",
+    "manual": "MAN",
+    "report": "RPT",
+    "form": "FRM",
+    "document": "DOC",
+}
+
+_HANGUL_RE = re.compile(r"[가-힣]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+# markdown/HTML scaffolding whose Latin chars are not document language:
+# slide markers, image/link syntax, URLs, code spans.
+_LANG_NOISE = re.compile(
+    r"<!--.*?-->|!?\[[^\]]*\]\([^)]*\)|https?://\S+|`[^`]*`",
+    re.DOTALL,
+)
+
+
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_json(path: Path, data: dict) -> None:
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _next_id(doc_type: str) -> str:
+    prefix = DOC_TYPE_PREFIX.get(doc_type, (doc_type[:3] or "DOC").upper())
+    with _LOCK:
+        counters = _load_json(_ID_COUNTER_FILE)
+        n = counters.get(prefix, 0) + 1
+        counters[prefix] = n
+        _save_json(_ID_COUNTER_FILE, counters)
+    return f"{prefix}-{n:06d}"
+
+
+def _stable_id_for_sha(sha256: str, doc_type: str) -> str:
+    """Same source content always gets the same id, even across separate /convert calls."""
+    with _LOCK:
+        by_sha = _load_json(_ID_BY_SHA_FILE)
+        if sha256 in by_sha:
+            return by_sha[sha256]
+    new_id = _next_id(doc_type)
+    with _LOCK:
+        by_sha = _load_json(_ID_BY_SHA_FILE)
+        by_sha[sha256] = new_id
+        _save_json(_ID_BY_SHA_FILE, by_sha)
+    return new_id
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def detect_language(text: str) -> str:
+    # Strip markdown/HTML scaffolding first so slide markers and image links
+    # don't skew a Korean document toward "en" on its Latin noise.
+    cleaned = _LANG_NOISE.sub(" ", text)
+    sample = cleaned[:4000]
+    hangul = len(_HANGUL_RE.findall(sample))
+    latin = len(_LATIN_RE.findall(sample))
+    if hangul == 0 and latin == 0:
+        return "und"
+    return "ko" if hangul >= latin else "en"
+
+
+def guess_title(markdown: str, fallback: str) -> str:
+    for line in markdown.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            return line.lstrip("#").strip() or fallback
+    return fallback
+
+
+def build(
+    path: Path,
+    markdown: str,
+    overrides: MetadataOverrides,
+    auto: dict[str, str] | None = None,
+    title_hint: str | None = None,
+) -> Frontmatter:
+    """Assemble frontmatter. Field precedence is:
+    explicit caller override > auto-extracted value > heuristic default.
+    ``auto`` carries regex-extracted bid metadata; ``title_hint`` the H1 that
+    postprocessing promoted.
+    """
+    auto = auto or {}
+    sha256 = sha256_file(path)
+    doc_type = overrides.doc_type or "document"
+    doc_id = overrides.id or _stable_id_for_sha(sha256, doc_type)
+    title = overrides.title or title_hint or guess_title(markdown, path.stem)
+    language = overrides.language or detect_language(markdown or title)
+
+    return Frontmatter(
+        id=doc_id,
+        title=title,
+        doc_type=doc_type,
+        language=language,
+        revision=str(overrides.revision) if overrides.revision is not None else "1",
+        status=overrides.status or "active",
+        official_number=overrides.official_number or auto.get("official_number"),
+        authority_level=overrides.authority_level,
+        issuing_org=overrides.issuing_org or auto.get("issuing_org"),
+        issued_on=overrides.issued_on,
+        effective_from=overrides.effective_from,
+        effective_to=overrides.effective_to,
+        source=SourceInfo(
+            filename=path.name,
+            uri=overrides.uri or f"source://{path.name}",
+            sha256=sha256,
+        ),
+        access=overrides.access or "internal",
+        tags=overrides.tags or [],
+        aliases=overrides.aliases or [],
+    )
+
+
+def render(fm: Frontmatter, body: str) -> str:
+    yaml_block = yaml.safe_dump(
+        fm.model_dump(),
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    return f"---\n{yaml_block}---\n\n{body}"
