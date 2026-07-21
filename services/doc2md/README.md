@@ -6,6 +6,8 @@
 **v0.2.0** — `POST /convert`는 v0.1.0 응답 모양으로 동결됐고, 새 기능은 전부
 `POST /v2/convert`에 있다. 이유는 [API 버전](#api-버전) 참조.
 
+설치는 [requirement.md](requirement.md) — 패키지, GPU 설정, 자동 다운로드되는 OCR 모델(최대 3.1GB).
+
 ## 파이프라인
 
 ```
