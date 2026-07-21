@@ -344,3 +344,63 @@ def test_source_edited_after_the_caller_read_it_is_refused(client, source):
         },
     )
     assert r.status_code == 409
+
+
+# --------------------------------------------------------------------------
+# page markers
+# --------------------------------------------------------------------------
+
+
+def test_page_markers_map_back_to_source_page(client, tmp_path):
+    """converters.page_marker writes them; structure.py reads them back."""
+    from app.converters import page_marker
+
+    p = tmp_path / "페이지문서.md"
+    p.write_text(
+        f"{page_marker(1)}\n\n# 문서\n\n## 첫 장\n\n1쪽 본문.\n\n"
+        f"{page_marker(2)}\n\n## 둘째 장\n\n2쪽 본문.\n\n"
+        f"{page_marker(7)}\n\n## 일곱째 장\n\n7쪽 본문.\n",
+        encoding="utf-8",
+    )
+    sections = convert(client, p)["sections"]
+
+    by_heading = {s["heading"]: s["source_page"] for s in sections}
+    assert by_heading["첫 장"] == 1
+    assert by_heading["둘째 장"] == 2
+    assert by_heading["일곱째 장"] == 7
+
+
+def test_page_markers_do_not_leak_into_the_title_or_language(client, tmp_path):
+    from app.converters import page_marker
+
+    p = tmp_path / "표지.md"
+    p.write_text(
+        f"{page_marker(1)}\n\n입찰 공고문\n\n본문 내용입니다.\n", encoding="utf-8"
+    )
+    fm = convert(client, p)["frontmatter"]
+
+    assert "page" not in fm["title"]
+    assert fm["title"] == "입찰 공고문"
+    assert fm["language"] == "ko"
+
+
+# --------------------------------------------------------------------------
+# frontmatter carries the canonical hash and converter version
+# --------------------------------------------------------------------------
+
+
+def test_frontmatter_carries_canonical_sha_and_converter_version(client, source):
+    out = convert(client, source)
+    fm = out["frontmatter"]
+
+    assert fm["schema_version"] == "1.1.0"
+    assert fm["canonical_sha256"] == out["canonical_sha256"]
+    assert fm["converter_version"] == out["converter"]["version"]
+
+
+def test_chunk_frontmatter_points_at_the_parent_document_version(client, source):
+    out = convert(client, source, chunking={"enabled": True})
+
+    assert out["chunks"]
+    for chunk in out["chunks"]:
+        assert chunk["frontmatter"]["canonical_sha256"] == out["canonical_sha256"]

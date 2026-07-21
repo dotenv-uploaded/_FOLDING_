@@ -57,29 +57,69 @@ def _convert_hwp(path: Path, ext: str) -> RawConversion:
 _SCANNED_PDF_CHARS = 64
 
 
+def page_marker(n: int) -> str:
+    """Page delimiter written into the body.
+
+    An HTML comment, so it renders as nothing but survives every markdown
+    round-trip, and a reader (human or model) can always tell which page a
+    passage came from. ``structure.py`` parses these back out to fill
+    ``sections[].source_page``.
+    """
+    return f"<!--- page {n} --->"
+
+
+def _join_pages(pages: dict[int, str] | list[str]) -> str:
+    items = (
+        sorted(pages.items())
+        if isinstance(pages, dict)
+        else [(i, t) for i, t in enumerate(pages, start=1)]
+    )
+    return "\n\n".join(f"{page_marker(n)}\n\n{text}" for n, text in items if text.strip())
+
+
 def _convert_markitdown(path: Path, ext: str, job=None) -> RawConversion:
+    warnings: list[Diagnostic] = []
+
+    if ext == ".pdf":
+        return _convert_pdf(path, ext, warnings, job)
+
     try:
         result = _markitdown.convert(str(path))
     except MarkItDownException as e:
         raise ConversionFailedError(f"markitdown conversion failed: {e}") from e
 
-    body = result.markdown
-    warnings: list[Diagnostic] = []
+    return _finish(result.markdown, ext, "markitdown", warnings)
 
-    # Scanned PDFs have no text layer at all — markitdown returns empty and the
-    # document would silently convert to nothing. Render each page and OCR it.
-    if ext == ".pdf" and len(body.strip()) < _SCANNED_PDF_CHARS and ocr.available():
+
+def _convert_pdf(
+    path: Path, ext: str, warnings: list[Diagnostic], job=None
+) -> RawConversion:
+    """PDFs are converted page by page so the body carries page boundaries."""
+    progress.update(job, phase="convert", total=1, current=0, message="pdf 페이지 변환 중")
+    pages = render.extract_pdf_pages_markdown(path)
+
+    if pages is None:
+        # Could not slice the file — fall back to one flat conversion. Correct,
+        # just without page markers.
+        warnings.append(diagnostic("pdf_page_extract_failed"))
+        try:
+            body = _markitdown.convert(str(path)).markdown
+        except MarkItDownException as e:
+            raise ConversionFailedError(f"markitdown conversion failed: {e}") from e
+    else:
+        body = _join_pages(pages)
+
+    # A scanned PDF has no text layer at all, so the above yields nothing.
+    # Render each page to an image and OCR it instead.
+    if len(body.strip()) < _SCANNED_PDF_CHARS and ocr.available():
         progress.update(
             job, phase="convert", total=1, current=0, message="스캔 PDF — 페이지 렌더링 중"
         )
-        pages = render.render_pdf_pages(path)
-        if pages:
-            by_page, _ = _ocr_rendered(pages, "페이지", job, ocr.DEFAULT_LANG)
+        images = render.render_pdf_pages(path)
+        if images:
+            by_page, _ = _ocr_rendered(images, "페이지", job, ocr.DEFAULT_LANG)
             if by_page:
-                body = "\n\n".join(
-                    f"<!-- page {n} -->\n\n{md}" for n, md in sorted(by_page.items())
-                )
-                return _finish(body, ext, "markitdown+ocr", warnings)
+                return _finish(_join_pages(by_page), ext, "markitdown+ocr", warnings)
         warnings.append(diagnostic("scanned_pdf_ocr_failed"))
 
     return _finish(body, ext, "markitdown", warnings)

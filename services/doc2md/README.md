@@ -14,32 +14,36 @@
 
 ## 실측 성능
 
-33개 문서(hwp 3 / hwpx 4 / pdf 25 / pptx 1) 전체 변환 — **114.4초, 33/33 성공** (GPU, 콜드 캐시).
-결과는 379청크 · 842섹션 · 약 826,000 토큰.
+33개 문서(hwp 3 / hwpx 4 / pdf 25 / pptx 1) 전체 변환 — **173.8초, 33/33 성공** (GPU, 콜드 캐시).
+결과는 376청크 · 842섹션 · 약 826,000 토큰.
 
 | 파일 | 크기 | 시간 | 결과 |
 |---|---:|---:|---|
-| pdf (대용량) | 3.3MB | 45.2초 | 245,224토큰 → 95청크 |
+| pdf (353페이지) | 3.3MB | 111초 | 245,224토큰 → 95청크 |
 | pptx | 118.2MB | 19.4초 | 9슬라이드 → 5청크 |
 | hwpx (대용량) | 3.7MB | 14.2초 | 485,231토큰 → 216청크, 778섹션 |
 | 스캔 pdf 6개 | — | 1.3~2.9초 | OCR 폴백 |
 | 나머지 24개 | — | 0.0~5.5초 | 대부분 1초 미만 |
+
+PDF를 페이지 단위로 변환하면서 114.4초 → 173.8초가 됐다. 대부분 353페이지 문서 하나
+(49초 → 111초)에서 나온 비용이고, 그 대가로 모든 PDF가 페이지 경계를 갖는다.
 
 캐시가 살아 있으면 같은 코퍼스가 **1.9초**에 끝난다.
 
 같은 pptx가 처음엔 1,241초였다. 줄어든 순서대로: 슬라이드 단위 렌더링(109회→9회 추론),
 빠른 OCR 기본값, GPU.
 
-남은 병목은 대용량 PDF의 45초인데 이건 OCR이 아니라 pdfminer의 텍스트 추출 자체다.
-**PyMuPDF로 바꾸면 66.3초 → 1.4초(47배)가 되고 한글 문자수도 완전히 동일하지만, 표가
-전부 사라진다** — 28K자 문서 하나에서 pdfminer가 만든 표 210행이 0행이 된다. 표 보존이
-더 중요하다고 판단해 교체하지 않았다. 근거는 [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+남은 병목은 대용량 PDF인데 이건 OCR이 아니라 markitdown의 텍스트 추출 자체다.
+**PyMuPDF `get_text()`로 바꾸면 66.3초 → 1.4초(47배)가 되고 한글 문자수도 완전히 동일하지만,
+표가 전부 사라진다** — 28K자 문서 하나에서 표 210행이 0행이 된다. 표 보존이 더 중요하다고
+판단해 교체하지 않았다. 근거는 [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ## 라우팅 규칙 (변환 단계)
 
 - `.hwp`, `.hwpx` → `pyhwp2md`
 - `.pptx` → `markitdown`(텍스트·표) + 슬라이드 렌더 OCR
-- `.pdf` → `markitdown`. **텍스트 레이어가 없으면(스캔본) 페이지 렌더 OCR로 폴백**
+- `.pdf` → `markitdown` **페이지 단위**(본문에 `<!--- page N --->` 구분자).
+  **텍스트 레이어가 없으면(스캔본) 페이지 렌더 OCR로 폴백**
 - 그 외 (docx/xlsx/csv/html/...) → `markitdown`
 
 ## OCR
@@ -361,7 +365,7 @@ GET  /batches/{id}    -> 배치 전체 진행률
   "sections": [
     { "ordinal": 2, "anchor_hint": "sec-002", "stable_key": "h-e005c718",
       "level": 2, "heading": "제1장 총칙", "heading_path": ["입찰안내서", "제1장 총칙"],
-      "char_start": 15, "char_end": 34, "source_page": null }
+      "char_start": 15, "char_end": 34, "source_page": 3 }
   ],
   "diagnostics": [
     { "code": "slide_render_unavailable", "message": "...",
@@ -454,7 +458,7 @@ URI는 `pip install -e ".[uri]"`가 필요하고, `http(s)`는 **의도적으로
 
 ```bash
 pip install -e ".[test]"
-pytest tests/ -q          # 53개
+pytest tests/ -q          # 60개
 ```
 
 `tests/test_v1_contract.py`가 가장 중요하다 — 소비자의 pydantic 모델을 복제해 v1 응답이

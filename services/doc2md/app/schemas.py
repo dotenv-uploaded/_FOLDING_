@@ -13,7 +13,10 @@ class SourceInfo(BaseModel):
 
 
 class Frontmatter(BaseModel):
-    schema_version: str = "1.0.0"
+    # 1.1.0 adds canonical_sha256 + converter_version. Additive only, and safe:
+    # the consuming adapter reads this object with extra="ignore" and never
+    # parses the rendered YAML, so older readers are unaffected.
+    schema_version: str = "1.1.0"
     id: str
     title: str
     doc_type: str
@@ -33,6 +36,12 @@ class Frontmatter(BaseModel):
     effective_to: str | None = None
 
     source: SourceInfo
+
+    # Travels with the .md file itself so a canonical body can be verified and
+    # attributed without calling the API again. On a chunk these describe the
+    # *parent document*, which is what identifies the version it was cut from.
+    canonical_sha256: str | None = None
+    converter_version: str | None = None
 
     access: str = "internal"
     tags: list[str] = []

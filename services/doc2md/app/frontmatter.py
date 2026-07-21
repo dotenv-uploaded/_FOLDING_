@@ -6,6 +6,7 @@ from threading import Lock
 
 import yaml
 
+from app import __version__
 from app.schemas import Frontmatter, MetadataOverrides, SourceInfo
 
 _LOCK = Lock()
@@ -177,6 +178,8 @@ def build(
             uri=overrides.uri or f"source://{path.name}",
             sha256=sha256,
         ),
+        canonical_sha256=canonical_sha256(markdown),
+        converter_version=__version__,
         access=overrides.access or "internal",
         tags=overrides.tags or [],
         aliases=overrides.aliases or [],

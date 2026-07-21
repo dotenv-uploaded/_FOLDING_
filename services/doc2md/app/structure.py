@@ -257,10 +257,10 @@ def _first_body_line_after_h1(
 # Section mapping
 # ---------------------------------------------------------------------------
 
-# Page/slide provenance the converters emit. PDFs get `<!-- page N -->` when a
-# scanned page is OCR'd or when text is extracted page-by-page; markitdown
-# writes the slide marker for every pptx deck.
-_PAGE_MARKER = re.compile(r"<!--\s*page\s+(\d+)\s*-->", re.IGNORECASE)
+# Page/slide provenance the converters emit. PDFs get `<!--- page N --->` on
+# every page boundary (see converters.page_marker); markitdown writes the slide
+# marker for every pptx deck. The `-*` allows either comment style.
+_PAGE_MARKER = re.compile(r"<!--+\s*page\s+(\d+)\s*-+->", re.IGNORECASE)
 _SLIDE_MARKER = re.compile(r"<!--\s*Slide number:\s*(\d+)\s*-->", re.IGNORECASE)
 
 
