@@ -159,4 +159,5 @@ def validate_wiki(
         "nonapproved": nonapproved,
         "needs_review": review_files,
         "reproducible": check_reproducible,
+        "complete": bool(build_meta["complete"]),
     }

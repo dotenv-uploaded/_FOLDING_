@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,6 +126,7 @@ def activate_build(
     pointer: dict[str, Any],
     actor_id: str,
     expected_current_build_id: str | None | object = CURRENT_NOT_CHECKED,
+    before_write: Callable[[], None] | None = None,
 ) -> None:
     ensure_scoped_storage_path(wiki_root, storage_root)
     current_path = wiki_root / "current.json"
@@ -146,6 +147,9 @@ def activate_build(
                     f"expected={expected_current_build_id!r}, "
                     f"actual={actual_current_build_id!r}"
                 )
+
+        if before_write is not None:
+            before_write()
 
         atomic_write_json(current_path, pointer)
         audit_dir = wiki_root / "audit" / "builds"

@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -185,13 +186,10 @@ def _migrate_default_sample_cache(base_config: WikiConfig, scope: WikiScope) -> 
     shutil.copytree(legacy, target)
 
 
-def build_wiki(
+def _stage_wiki(
     config: WikiConfig,
     scope: WikiScope | None = None,
-    *,
-    activate_incomplete: bool = False,
-    expected_current_build_id: str | None | object = CURRENT_NOT_CHECKED,
-) -> BuildResult:
+) -> tuple[BuildResult, bool]:
     selected_scope = scope or default_scope(config)
     _migrate_default_sample_cache(config, selected_scope)
     active_config = scoped_config(config, selected_scope)
@@ -208,32 +206,76 @@ def build_wiki(
     except BaseException:
         discard_staging_dir(staging)
         raise
-    should_activate = bool(build_meta["complete"] or activate_incomplete)
-    if should_activate:
-        pointer = {
-            "schema_version": config.schema_version,
-            "tenant_id": selected_scope.tenant_id,
-            "wiki_id": selected_scope.wiki_id,
-            "build_id": build_id,
-            "relative_path": f"builds/{build_id}",
-            "complete": bool(build_meta["complete"]),
-        }
-        validate_record(render_config, "current", pointer, "current.json")
-        activate_build(
-            selected_scope.wiki_root,
-            selected_scope.storage_root,
-            pointer,
-            selected_scope.actor_id,
-            expected_current_build_id,
-        )
-    return BuildResult(
-        build_id=build_id,
-        build_dir=target,
-        wiki_root=selected_scope.wiki_root,
-        activated=should_activate,
-        created=created,
-        data=data,
+    return (
+        BuildResult(
+            build_id=build_id,
+            build_dir=target,
+            wiki_root=selected_scope.wiki_root,
+            activated=False,
+            created=created,
+            data=data,
+        ),
+        bool(build_meta["complete"]),
     )
+
+
+def stage_wiki(
+    config: WikiConfig,
+    scope: WikiScope | None = None,
+) -> BuildResult:
+    result, _ = _stage_wiki(config, scope)
+    return result
+
+
+def _activate_staged_build(
+    config: WikiConfig,
+    scope: WikiScope,
+    *,
+    build_id: str,
+    complete: bool,
+    expected_current_build_id: str | None | object,
+    before_write: Callable[[], None] | None = None,
+) -> None:
+    active_config = scoped_config(config, scope)
+    render_config = _config_with_build_id(active_config, build_id)
+    pointer = {
+        "schema_version": config.schema_version,
+        "tenant_id": scope.tenant_id,
+        "wiki_id": scope.wiki_id,
+        "build_id": build_id,
+        "relative_path": f"builds/{build_id}",
+        "complete": complete,
+    }
+    validate_record(render_config, "current", pointer, "current.json")
+    activate_build(
+        scope.wiki_root,
+        scope.storage_root,
+        pointer,
+        scope.actor_id,
+        expected_current_build_id,
+        before_write,
+    )
+
+
+def build_wiki(
+    config: WikiConfig,
+    scope: WikiScope | None = None,
+    *,
+    activate_incomplete: bool = False,
+    expected_current_build_id: str | None | object = CURRENT_NOT_CHECKED,
+) -> BuildResult:
+    selected_scope = scope or default_scope(config)
+    result, complete = _stage_wiki(config, selected_scope)
+    should_activate = complete or activate_incomplete
+    if should_activate:
+        _activate_staged_build(
+            config,
+            selected_scope,
+            build_id=result.build_id,
+            complete=complete,
+            expected_current_build_id=expected_current_build_id,
+        )
+    return replace(result, activated=should_activate)
 
 
 def render_to_temporary(

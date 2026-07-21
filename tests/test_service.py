@@ -9,6 +9,7 @@ import pytest
 from wiki_builder.builder import build_wiki
 from wiki_builder.config import WikiConfig, WikiScope
 from wiki_builder.errors import UnsafeOutputError, ValidationError
+from wiki_builder.service import WikiBuildRequest, WikiBuildService
 
 GENERAL_DOCUMENT = """---
 schema_version: "1.0.0"
@@ -52,6 +53,18 @@ def _scope(config: WikiConfig, tmp_path: Path) -> WikiScope:
         storage_root=tmp_path / "storage",
         synthetic_corpus=True,
         actor_id="tester",
+    )
+
+
+def _request(scope: WikiScope, expected_current_build_id: str | None) -> WikiBuildRequest:
+    return WikiBuildRequest(
+        tenant_id=scope.tenant_id,
+        wiki_id=scope.wiki_id,
+        input_dir=scope.input_dir,
+        storage_root=scope.storage_root,
+        actor_id=scope.actor_id,
+        synthetic_corpus=scope.synthetic_corpus,
+        expected_current_build_id=expected_current_build_id,
     )
 
 
@@ -141,3 +154,93 @@ def test_stale_activation_is_rejected(config: WikiConfig, tmp_path: Path) -> Non
         )
     current = json.loads(scope.current_pointer.read_text(encoding="utf-8"))
     assert current["build_id"] == second.build_id
+
+
+def test_service_stages_validates_and_activates_candidate(
+    config: WikiConfig,
+    tmp_path: Path,
+) -> None:
+    scope = _scope(config, tmp_path)
+    service = WikiBuildService(config)
+    request = _request(scope, expected_current_build_id=None)
+
+    candidate = service.stage(request)
+
+    assert candidate.activated is False
+    assert not scope.current_pointer.exists()
+    assert not (scope.wiki_root / "audit").exists()
+    validation = service.validate_candidate(
+        request,
+        candidate.build_id,
+        require_enrichment=False,
+        check_reproducible=False,
+    )
+    assert validation["build_id"] == candidate.build_id
+
+    activated = service.activate_candidate(
+        request,
+        candidate.build_id,
+        activate_incomplete=True,
+        check_reproducible=False,
+    )
+
+    assert activated["activated"] is True
+    current = json.loads(scope.current_pointer.read_text(encoding="utf-8"))
+    assert current["build_id"] == candidate.build_id
+    assert len(list((scope.wiki_root / "audit" / "builds").glob("*.json"))) == 1
+
+
+def test_service_rejects_invalid_candidate_before_activation(
+    config: WikiConfig,
+    tmp_path: Path,
+) -> None:
+    scope = _scope(config, tmp_path)
+    service = WikiBuildService(config)
+    request = _request(scope, expected_current_build_id=None)
+    candidate = service.stage(request)
+    manifest_path = candidate.build_dir / "manifest.jsonl"
+    manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        service.activate_candidate(
+            request,
+            candidate.build_id,
+            activate_incomplete=True,
+            check_reproducible=False,
+        )
+
+    assert not scope.current_pointer.exists()
+    assert not (scope.wiki_root / "audit").exists()
+
+
+def test_service_candidate_activation_requires_valid_id_and_cas(
+    config: WikiConfig,
+    tmp_path: Path,
+) -> None:
+    scope = _scope(config, tmp_path)
+    service = WikiBuildService(config)
+    first = build_wiki(config, scope, activate_incomplete=True)
+
+    with pytest.raises(ValidationError, match="build_id"):
+        service.validate_candidate(
+            _request(scope, expected_current_build_id=first.build_id),
+            "../build-0123456789abcdefabcd",
+            require_enrichment=False,
+            check_reproducible=False,
+        )
+
+    added_path = scope.input_dir / "DOC-000001.md"
+    added_path.write_text(GENERAL_DOCUMENT, encoding="utf-8")
+    stale_request = _request(scope, expected_current_build_id="build-00000000000000000000")
+    candidate = service.stage(stale_request)
+
+    with pytest.raises(UnsafeOutputError, match="요청 시작 시점과 달라"):
+        service.activate_candidate(
+            stale_request,
+            candidate.build_id,
+            activate_incomplete=True,
+            check_reproducible=False,
+        )
+
+    current = json.loads(scope.current_pointer.read_text(encoding="utf-8"))
+    assert current["build_id"] == first.build_id
