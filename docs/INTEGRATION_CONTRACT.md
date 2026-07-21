@@ -221,11 +221,14 @@ input, native storage root는 서로 겹칠 수 없다.
 
 ## 문서 변환 계약
 
-현재 연동 대상은 `codegate-2026-convert/services/doc2md@fa88f15`의 내부 `POST /convert`다. 이 저장소는 `codegate-2026-api`에서 이름이 바뀌었다 — ADR-0004와 WORK_LOG의 `codegate-2026-api@360ff41` 표기는 그 시점의 기록이므로 그대로 두고, 현재 핀은 여기를 따른다. Backend가 allowlisted absolute path를 서비스 내부 요청에만 전달하고 metadata로 stable ID, source URI, doc type, access를 강제한다. 응답 source SHA가 요청한 현재 SHA와 다르면 cache 결과를 거부한다.
+현재 연동 대상은 `codegate-2026-convert/services/doc2md@fa88f15`의 v0.2
+`POST /v2/convert`다. 이 저장소는 `codegate-2026-api`에서 이름이 바뀌었다. ADR 0004와 이전
+WORK_LOG의 `codegate-2026-api@360ff41` 표기는 당시 기록으로 남기고, 현재 integration pin은
+여기를 따른다. Backend는 metadata로 stable ID, source URI, doc type, access를 강제하고 요청 직전과
+응답 후 source SHA를 대조한다. 응답은 `extra="forbid"`로 검증해 계약 밖 최상위 필드를 거부한다.
 
-`POST /convert`의 응답은 v0.1.0 7키로 **동결**됐다. Backend adapter가 `extra="forbid"`로 검증하므로 최상위 key가 하나라도 늘면 `DOC2MD_RESPONSE_INVALID`로 전체 변환이 거부된다. doc2md 쪽 `tests/test_v1_contract.py`가 이 모양을 회귀 테스트로 고정한다.
-
-`doc2md`가 추가로 보장해야 하는 항목은 `POST /v2/convert`(v0.2.0)에서 제공된다. adapter는 아직 v1을 사용하므로 아래를 쓰려면 migration이 필요하다.
+doc2md의 v1 `POST /convert` 7키 응답은 호환성을 위해 동결되어 있지만 Backend는 더 이상 이를
+사용하지 않는다. 현재 adapter는 v0.2가 제공하는 다음 항목을 필수로 검증한다.
 
 | 항목 | v0.2 제공 형태 |
 |---|---|
@@ -239,9 +242,15 @@ input, native storage root는 서로 겹칠 수 없다.
 
 `expected_source_sha256`을 요청에 넣으면 doc2md가 변환을 시작하기 전에 원본 hash를 대조해 불일치 시 `409 SOURCE_HASH_MISMATCH`로 거부한다. Backend의 응답측 stale cache 검증과 별개의 방어선이다.
 
-원격 doc2md의 무인증 absolute path API를 public network에 노출하지 않는다. v0.2는 `DOC2MD_API_TOKEN`(Bearer)과 `DOC2MD_ALLOWED_ROOTS`(심링크·`..` 해석 후 경로 제한)를 opt-in으로 제공한다. 둘 다 미설정이면 기존 co-located 배포와 동일하게 동작한다.
+원격 doc2md의 무인증 path API를 public network에 노출하지 않는다. v0.2는
+`DOC2MD_API_TOKEN` Bearer 인증과 `DOC2MD_ALLOWED_ROOTS` 경로 제한을 제공하며 Backend production
+설정은 `CODEGATE_DOC2MD_API_TOKEN`이 없으면 기동을 거부한다.
 
-path 입력은 같은 filesystem namespace가 필수라는 제약이 그대로다. 별도 Railway service를 쓰려면 v0.2의 `source.kind`를 `bytes`(inline base64) 또는 `uri`(s3/gs/azure/file)로 쓴다. `http(s)`는 SSRF 통로가 되므로 의도적으로 제외됐다.
+`CODEGATE_DOC2MD_SOURCE_KIND=path`는 같은 filesystem namespace에서만 사용한다. 별도 Railway
+service에는 `bytes`를 사용해 승인된 원본을 base64로 전송하며, Backend가 전송 직전 hash와
+`CODEGATE_DOC2MD_MAX_SOURCE_BYTES` 상한을 검사한다. doc2md v0.2 자체는 object-storage `uri`도
+지원하지만 현재 Backend adapter의 허용 transport는 `path|bytes`다. `http(s)`는 SSRF 통로가
+되므로 양쪽 모두 사용하지 않는다.
 
 ## 지식 그래프 update 계약
 

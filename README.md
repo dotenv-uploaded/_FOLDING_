@@ -80,7 +80,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
 
 ## 팀 통합
 
-`codegate-2026-api@360ff41`의 `services/doc2md` v0.1.0은 내부 adapter로만 호출한다. stable document ID와 `source://` URI override를 강제하고 응답 source SHA가 현재 원본과 다르면 stale cache로 거부한다. `LLMWIKI@fb0f8c7`은 `WikiBuildService`를 in-process로 호출하며 native tenant/wiki `current.json`을 유일한 활성 포인터로 유지한다. Backend용 artifact는 native build ID에 결박된 checksum 포함 read cache다.
+`codegate-2026-convert/services/doc2md@fa88f15`의 v0.2 `POST /v2/convert`를 내부 adapter로 호출한다. stable document ID와 `source://` URI override를 강제하고 source/canonical SHA, converter provenance, stable section mapping과 구조화 diagnostic을 검증한다. 같은 filesystem namespace에서는 `source.kind=path`, 별도 service에서는 최대 32 MiB의 `source.kind=bytes`와 Bearer 인증을 사용한다. `LLMWIKI@fb0f8c7`은 `WikiBuildService`를 in-process로 호출하며 native tenant/wiki `current.json`을 유일한 활성 포인터로 유지한다. Backend용 artifact는 native build ID에 결박된 checksum 포함 read cache다.
 
 로컬 변경은 원본 파일과 정규화 Markdown의 본문·source SHA·revision을 갱신한 뒤 새 native build를 공개한다. 실제 LLMWIKI checkout으로 명령, 승인, 원본 write, 새 current 공개와 변경된 근거 재검색까지 smoke 검증했다. 실행과 디렉터리 계약은 [로컬 runtime](docs/LOCAL_RUNTIME.md), 결정 근거는 [ADR 0004](docs/adr/0004-local-agent-llmwiki-and-auth-boundaries.md)에 있다.
 

@@ -16,7 +16,7 @@
 
 ## 민규
 
-> `codegate-2026-api@360ff41`의 `services/doc2md` v0.1.0 adapter를 연결했습니다. stable ID·source URI metadata override와 현재 source SHA를 검증하고 결과를 LLMWIKI normalized input으로 사용합니다. LLMWIKI가 H1/H2에서 stable `sec-*` anchor를 생성하므로 변환 결과는 frontmatter, 정확히 하나의 H1, 하나 이상의 비어 있지 않은 H2와 heading hierarchy를 보존해야 합니다. source SHA, canonical SHA, converter version, source page/span, warning/error schema를 추가해 주세요. HWP/PDF/DOCX는 parse와 원본 round-trip write를 구분해 capability 표로 알려주세요. 검증된 writer가 없으면 Backend는 read-only로 유지합니다.
+> `codegate-2026-convert/services/doc2md@fa88f15`의 v0.2 `POST /v2/convert` adapter를 연결했습니다. stable ID·source URI metadata override, source/canonical SHA, converter version, stable section key, source page/span과 구조화 diagnostic을 검증하고 결과를 LLMWIKI normalized input으로 사용합니다. 같은 filesystem에서는 `source.kind=path`, 별도 service에서는 최대 32 MiB의 `source.kind=bytes`를 사용하며 production 호출은 Bearer 인증을 필수로 합니다. 응답 schema나 stable section 의미를 바꿀 때 version과 migration contract를 함께 알려주세요. HWP/PDF/DOCX는 현재 capability대로 parse와 원본 round-trip write를 분리하고, 검증된 writer가 없으므로 Backend는 read-only로 유지합니다.
 
 ## 보내지 않을 것
 

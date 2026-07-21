@@ -121,7 +121,7 @@ MVP actual write는 Markdown/TXT부터 지원한다. JSON/YAML은 schema 검증�
 | 2 | Claude Agent SDK | deny-by-default runtime, 실제 SDK client 구조화 응답, server-owned session | 완료 |
 | 3 | edit preview | 자연어 요청이 실제 파일 기준 diff를 만들고 write는 0건 | 완료 |
 | 4 | approval·write·Undo | 승인 전 무변경, atomic write, crash recovery, Undo hash 복구 | 완료 |
-| 5 | converter·graph sync | outbox, doc2md adapter, 병렬 local index, immutable VERSION publish | 완료(팀 adapter 대기) |
+| 5 | converter·graph sync | outbox, doc2md v0.2 adapter, 실제 LLMWIKI build, immutable VERSION publish | 완료(추가 enrichment/vector adapter 대기) |
 | 6 | 통합·데모 보호 | E2E, 실패·retry, reset, Supabase/Railway fail-closed 설정 | 완료(외부 적용 대기) |
 | 7 | 다운로드 앱 local runtime | loopback sidecar, 실제 LLMWIKI build, source/input 동기화, local capability | 완료(패키징 UI 대기) |
 | 8 | 로그인 handoff | Supabase direct login, `/auth/me`, provisioning write gate, CORS 계약 | 완료(프로젝트 hook·UI 적용 대기) |

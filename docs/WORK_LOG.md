@@ -117,3 +117,33 @@
   - 용휘의 실제 vector·graph adapter를 native publish barrier에 연결
   - 우창의 chat·diff 승인/거절·Undo UI를 execution polling 계약에 연결
   - Production migration·volume·single-replica 배포는 별도 명시 승인 뒤 실행
+
+## 2026-07-21 — 성주 역할 전수 감사와 doc2md v0.2 계약 정합화
+
+- 목적: 현재 아키텍처에서 성주가 소유한 sidecar·agent·승인·파일 변경·지식 동기화·인증 경계를
+  구현과 테스트로 다시 확인하고, 협업 문서를 실행 코드와 일치시킴
+- 변경:
+  - Claude read-only tool, exact `plan_hash` 승인, atomic replace·Undo, outbox와 실제 LLMWIKI
+    `current.json` publish가 역할 계약을 충족하는지 전수 대조
+  - README, 로컬 runtime, 통합 계약, 배포 runbook, 팀 handoff와 역할 로드맵을 실제
+    `codegate-2026-convert/services/doc2md@fa88f15` v0.2 adapter에 맞게 갱신
+  - `/v2/convert`, `path|bytes` transport, Bearer 인증, 32 MiB 상한, source/canonical SHA와
+    stable section·diagnostic 검증을 환경변수 예시와 배포 조건에 반영
+- 검증:
+  - Ruff format/check 통과
+  - mypy strict 46개 source file 통과
+  - pytest 144개 통과, line coverage 84%
+  - wheel·sdist build와 `codegate-local --help` 진입점 확인
+  - Docker image build 후 container `/health`와 canonical citation 위치 검색 HTTP smoke 성공
+- 전달 상태: `777b758`, `41edf57`을 `docs/role-contract-audit`에 push하고 draft PR #7 생성.
+  GitHub Actions run `29841686245` 성공
+- 결정:
+  - 사진의 Electron main 임베드·agent write tool·kordoc 구조는 폐기된 v1.x로 유지하지 않고,
+    Python sidecar와 application-owned deterministic write 경계를 정본으로 사용
+  - 성주 코드 범위는 완료 상태이며 외부 credential·팀 UI·운영 환경이 필요한 검증은 내부 완료와 분리
+- 남은 일:
+  - 실제 Anthropic credential로 Claude Agent SDK read-tool smoke
+  - 팀 Supabase project hook과 실제 JWT provisioning·권한 회수 검증
+  - 우창 UI의 sidecar lifecycle·diff 승인·execution polling·Undo 연결
+  - 용휘 enrichment/vector 확장 adapter 연결
+  - production migration·volume·deploy·restart는 별도 명시 승인 뒤 수행
