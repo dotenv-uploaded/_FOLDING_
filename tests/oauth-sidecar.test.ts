@@ -2,7 +2,11 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentDeps } from '@contracts';
-import { createOAuthLoopbackReceiver } from '@main/auth/oauth-loopback';
+import {
+  createOAuthLoopbackReceiver,
+  DEFAULT_OAUTH_REDIRECT_URI,
+  OAuthCancelledError,
+} from '@main/auth/oauth-loopback';
 import { createSidecarAgent } from '@main/agent/sidecar-agent';
 import { MIGRATIONS } from '@main/db/schema';
 
@@ -13,14 +17,23 @@ afterEach(async () => {
 });
 
 describe('sidecar execution persistence', () => {
-  it('adds an execution column in the next SQLite migration', () => {
-    expect(MIGRATIONS.at(-1)).toContain('ALTER TABLE messages ADD COLUMN execution TEXT');
+  // 마이그레이션은 배열 끝에만 추가하는 규칙이므로, "마지막 항목"을 고정하면 다음 단계를
+  // 추가할 때마다 깨진다. 검증할 것은 위치가 아니라 **그 단계가 존재하는지** 다.
+  it('adds an execution column in a SQLite migration', () => {
+    expect(MIGRATIONS.join('\n')).toContain('ALTER TABLE messages ADD COLUMN execution TEXT');
+  });
+
+  it('keeps migrations append-only so existing installs replay in the same order', () => {
+    expect(MIGRATIONS[2]).toContain('ALTER TABLE messages ADD COLUMN execution TEXT');
   });
 });
 
 describe('OAuth loopback receiver', () => {
-  it('rejects the wrong state and accepts the pending callback once', async () => {
-    const receiver = await createOAuthLoopbackReceiver(2_000);
+  // 포트 0 = 임시 포트. 실제 앱은 콘솔에 등록된 고정 포트를 쓴다.
+  const EPHEMERAL = 'http://127.0.0.1:0/auth/callback';
+
+  it('rejects the wrong path and accepts the pending callback once', async () => {
+    const receiver = await createOAuthLoopbackReceiver(2_000, EPHEMERAL);
     try {
       const callback = new URL(receiver.redirectTo);
       const wrong = new URL(callback);
@@ -29,11 +42,54 @@ describe('OAuth loopback receiver', () => {
       expect((await fetch(wrong)).status).toBe(404);
 
       callback.searchParams.set('code', 'valid-code');
+      callback.searchParams.set('state', 'flow-state-1');
       expect((await fetch(callback)).status).toBe(200);
-      await expect(receiver.waitForCode()).resolves.toBe('valid-code');
+      // 경로는 이제 고정이므로, "우리가 시작한 흐름인가"는 state 대조가 전담한다.
+      await expect(receiver.waitForCode()).resolves.toEqual({
+        code: 'valid-code',
+        state: 'flow-state-1',
+      });
     } finally {
       await receiver.close();
     }
+  });
+
+  /**
+   * Google Console 에 등록한 주소와 **글자 그대로** 같아야 한다.
+   * 경로가 한 글자라도 다르면 Desktop 클라이언트에서도 400 redirect_uri_mismatch 가 난다.
+   */
+  it('serves exactly the registered callback path', async () => {
+    const receiver = await createOAuthLoopbackReceiver(2_000, EPHEMERAL);
+    try {
+      expect(new URL(receiver.redirectTo).pathname).toBe('/auth/callback');
+      expect(receiver.redirectTo).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/);
+    } finally {
+      await receiver.close();
+    }
+  });
+
+  it('기본값은 콘솔에 등록된 고정 주소다', () => {
+    expect(DEFAULT_OAUTH_REDIRECT_URI).toBe('http://127.0.0.1:47821/auth/callback');
+  });
+
+  /**
+   * 콜백 포트는 콘솔에 등록된 **고정값**이라 하나뿐이다. 로그인을 띄웠다 그냥 닫으면
+   * 이전 시도가 포트를 붙든 채 남아, 다시 누를 때 EADDRINUSE 로 막혔다.
+   * close() 는 기다리던 약속을 끊고 포트를 반드시 돌려줘야 한다.
+   */
+  it('버려진 로그인을 닫으면 같은 포트를 곧바로 다시 쓸 수 있다', async () => {
+    const FIXED = 'http://127.0.0.1:47899/auth/callback';
+    const first = await createOAuthLoopbackReceiver(60_000, FIXED);
+    const pending = first.waitForCode();
+
+    await first.close();
+    // 기다리던 쪽이 영원히 잠들지 않고 "취소"로 깨어난다.
+    await expect(pending).rejects.toBeInstanceOf(OAuthCancelledError);
+
+    // 같은 포트를 즉시 다시 잡을 수 있어야 한다 — 이게 안 되면 두 번째 로그인이 막힌다.
+    const second = await createOAuthLoopbackReceiver(2_000, FIXED);
+    expect(second.redirectTo).toBe(FIXED);
+    await second.close();
   });
 });
 

@@ -11,6 +11,12 @@ export interface HttpOptions {
   /** 토큰이 필요한 요청이면 넘긴다. */
   token?: string;
   body?: RequestInit['body'];
+  /**
+   * JSON 본문. `content-type: application/json` 을 함께 붙인다.
+   * 이걸 두지 않으면 호출부마다 직렬화와 헤더를 따로 챙기게 되고, 헤더를 빠뜨리면
+   * 서버가 본문을 못 읽어 422 로 떨어진다.
+   */
+  json?: unknown;
   headers?: Record<string, string>;
   signal?: AbortSignal;
   /** 실패 시 사용자에게 보여줄 한국어 문장 */
@@ -22,12 +28,18 @@ export async function httpRequest(url: string, options: HttpOptions): Promise<Re
   const headers: Record<string, string> = { ...options.headers };
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
 
+  let body = options.body;
+  if (options.json !== undefined) {
+    headers['content-type'] = 'application/json';
+    body = JSON.stringify(options.json);
+  }
+
   let response: Response;
   try {
     response = await fetch(url, {
       method: options.method ?? 'GET',
       headers,
-      body: options.body,
+      body,
       signal: options.signal,
     });
   } catch (err) {
