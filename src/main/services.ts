@@ -25,13 +25,16 @@ import { ChatService } from '@main/agent/host';
 import { loadCreateAgent, type AgentSource } from '@main/agent/loader';
 import { createKordoc } from '@main/kordoc';
 import { buildTree } from '@main/tree';
-import { logError } from '@main/util/errors';
+import { UserFacingError, logError } from '@main/util/errors';
 import { ensureDir } from '@main/util/fsx';
 import { isInside, makeRootId, splitVirtualPath } from '@main/util/vpath';
 import { FileWatcher, type WatchChange } from '@main/watcher';
 import { describeFile, indexRoot, scanPreview } from '@main/watcher/scan';
 import { SidecarClient } from '@main/sidecar/client';
-import { SidecarSupervisor } from '@main/sidecar/supervisor';
+import {
+  SidecarSupervisor,
+  type SidecarRuntimePaths,
+} from '@main/sidecar/supervisor';
 import { executionSummary } from '@main/agent/sidecar-agent';
 
 const DEFAULT_CLOUD_API_URL = 'http://127.0.0.1:8787/api/v1';
@@ -45,6 +48,10 @@ export interface ServicesOptions {
   homeDir: string;
   /** 렌더러로 단방향 푸시 */
   send: (channel: string, payload: unknown) => void;
+  /** 패키징 자원 경로. 테스트와 개발 도구에서는 생략 가능하다. */
+  resourcesPath?: string;
+  isPackaged?: boolean;
+  projectDir?: string;
 }
 
 export class AppServices {
@@ -101,10 +108,17 @@ export class AppServices {
   }
 
   static async create(options: ServicesOptions): Promise<AppServices> {
+    const authMode = process.env.CODEGATE_AUTH_MODE === 'supabase' ? 'supabase' : 'local';
     const cloudApiUrl =
       process.env.CODEGATE_CLOUD_API_URL ??
       process.env.CODEGATE_BACKEND_URL ??
       DEFAULT_CLOUD_API_URL;
+    const wikiDir = path.join(options.homeDir, '.codegate', 'wiki');
+    await ensureDir(wikiDir);
+    const store = new Store(openDb(path.join(options.userDataDir, 'codegate.db')));
+    store.clearStaleStreaming();
+    const llmKeys = new SafeStorageLlmKeyStore(options.userDataDir);
+
     /*
      * sidecar 수명주기 (스펙 v2.1 §1 L2).
      *
@@ -118,19 +132,18 @@ export class AppServices {
     const supervisor = new SidecarSupervisor({
       corsOrigin: process.env['ELECTRON_RENDERER_URL'] ?? 'app://codegate',
       externalUrl: process.env.CODEGATE_SIDECAR_URL,
+      binary: sidecarBinary(options),
+      resolveAnthropicApiKey: () => llmKeys.get('anthropic'),
       onState: (state) => options.send(IPC_EVENTS.sidecarState, state),
     });
+    const initialRoot = store.listRoots()[0];
+    if (initialRoot) supervisor.configure(sidecarRuntimePaths(options, initialRoot.path));
     const sidecarOrigin = await supervisor.prepare();
-    const sidecarUrl = supervisor.managed ? `${sidecarOrigin}/api/v1` : sidecarOrigin;
+    const sidecarUrl = `${sidecarOrigin}/api/v1`;
     const sidecar = new SidecarClient(sidecarUrl);
-    // v1.4: 조립 스테이징은 wikiDir 안에서 일어난다 (stagingDirFor) — 별도 tmpDir 불필요
-    const wikiDir = path.join(options.homeDir, '.codegate', 'wiki');
-    await ensureDir(wikiDir);
-
-    const store = new Store(openDb(path.join(options.userDataDir, 'codegate.db')));
-    store.clearStaleStreaming();
 
     const auth = new AuthService({
+      authMode,
       cloudApiUrl,
       supabaseUrl: process.env.CODEGATE_SUPABASE_URL,
       supabasePublishableKey: process.env.CODEGATE_SUPABASE_PUBLISHABLE_KEY,
@@ -143,9 +156,6 @@ export class AppServices {
     });
 
     const kordoc = createKordoc({ fixtureDir: path.join(wikiDir, 'fixtures') });
-
-    // 자격증명 ② — 백엔드 토큰(auth.bin)과 다른 파일에 따로 보관한다 (스펙 v1.4 §5)
-    const llmKeys = new SafeStorageLlmKeyStore(options.userDataDir);
 
     /*
      * 로컬 빌드 파이프라인 (스펙 v1.4 §0).
@@ -173,7 +183,7 @@ export class AppServices {
       onFilesChanged: () => self?.emitTree(),
       // 구독 검사는 빌드 시작 전에 (스펙 v1.4 §5)
       ensureSubscription: async () => {
-        await auth.ensureActiveSubscription();
+        if (authMode === 'supabase') await auth.ensureActiveSubscription();
       },
       onAuthError: (error: AuthError) => auth.handleAuthError(error),
     });
@@ -193,6 +203,7 @@ export class AppServices {
       auth: {
         getToken: () => auth.getToken(),
         canWrite: () => {
+          if (authMode === 'local') return agentRoots.length > 0;
           const session = auth.getSession();
           return Boolean(
             session.authenticated && session.provisioned && session.writeScope !== 'none',
@@ -252,6 +263,12 @@ export class AppServices {
   }
 
   async addRoot(rootPath: string): Promise<Root> {
+    const existing = this.store.listRoots();
+    if (existing.length > 0 && existing[0]?.path !== rootPath) {
+      throw new UserFacingError(
+        '현재 버전은 문서 폴더 하나만 연결할 수 있습니다. 기존 폴더를 제거한 뒤 다시 선택해 주세요.',
+      );
+    }
     const preview = await scanPreview(rootPath);
     const root: Root = {
       id: makeRootId(rootPath),
@@ -266,6 +283,8 @@ export class AppServices {
     this.syncAgentRoots();
     await this.watcher.sync(this.store.listRoots());
     this.emitTree();
+    this.supervisor.configure(sidecarRuntimePaths(this.options, rootPath));
+    void this.supervisor.restart().catch((err: unknown) => logError('sidecar:restart', err));
     void this.build.trigger();
     return root;
   }
@@ -275,6 +294,8 @@ export class AppServices {
     this.syncAgentRoots();
     await this.watcher.sync(this.store.listRoots());
     this.emitTree();
+    await this.supervisor.stop().catch((err: unknown) => logError('sidecar:stop', err));
+    this.supervisor.clearRuntime();
   }
 
   /* --------------------------------------------------------------- 트리 (L1) */
@@ -363,9 +384,55 @@ export class AppServices {
   }
 
   private requireWriteProvisioning(): void {
+    if (process.env.CODEGATE_AUTH_MODE !== 'supabase') {
+      if (this.store.listRoots().length === 0) {
+        throw new AuthError('not_provisioned', '먼저 문서 폴더를 선택해 주세요.');
+      }
+      return;
+    }
     const session = this.auth.getSession();
     if (!session.authenticated || !session.provisioned || session.writeScope === 'none') {
       throw new AuthError('not_provisioned', '계정에 문서 쓰기 권한이 연결되지 않았습니다.');
     }
   }
+}
+
+function sidecarRuntimePaths(options: ServicesOptions, sourceRoot: string): SidecarRuntimePaths {
+  const runtimeRoot = path.join(options.userDataDir, 'sidecar');
+  const projectDir = options.projectDir ?? process.cwd();
+  const resourcesPath = options.resourcesPath ?? process.resourcesPath;
+  const developmentBundle = path.resolve(projectDir, '..', 'LLMWIKI');
+  const packagedBundle = path.join(resourcesPath, 'LLMWIKI');
+  return {
+    sourceRoot,
+    llmwikiProjectRoot:
+      process.env.CODEGATE_LLMWIKI_PROJECT_ROOT ??
+      (options.isPackaged ? packagedBundle : developmentBundle),
+    llmwikiInputRoot:
+      process.env.CODEGATE_LLMWIKI_INPUT_ROOT ?? path.join(runtimeRoot, 'source-md'),
+    llmwikiStorageRoot:
+      process.env.CODEGATE_LLMWIKI_STORAGE_ROOT ?? path.join(runtimeRoot, 'llmwiki-storage'),
+    dataRoot: process.env.CODEGATE_SIDECAR_DATA_ROOT ?? path.join(runtimeRoot, 'app-data'),
+    doc2mdUrl: process.env.CODEGATE_DOC2MD_URL,
+    deterministicAgent:
+      process.env.CODEGATE_AGENT_MODE === 'deterministic' || process.env.CODEGATE_MOCK === '1',
+    tenantId: process.env.CODEGATE_LLMWIKI_TENANT_ID ?? 'local',
+    wikiId: process.env.CODEGATE_LLMWIKI_WIKI_ID ?? 'workspace',
+  };
+}
+
+function sidecarBinary(options: ServicesOptions): string {
+  if (process.env.CODEGATE_SIDECAR_BIN) return process.env.CODEGATE_SIDECAR_BIN;
+  const executable = process.platform === 'win32' ? 'codegate-local.exe' : 'codegate-local';
+  if (options.isPackaged) {
+    return path.join(options.resourcesPath ?? process.resourcesPath, 'sidecar', executable);
+  }
+  return path.resolve(
+    options.projectDir ?? process.cwd(),
+    '..',
+    'Backend',
+    '.venv',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    executable,
+  );
 }

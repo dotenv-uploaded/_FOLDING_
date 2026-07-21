@@ -23,7 +23,7 @@ export function LlmKeyForm({
   onSave: (provider: LlmProvider, apiKey: string) => Promise<void>;
   onClear: (provider: LlmProvider) => Promise<void>;
 }) {
-  const [provider, setProvider] = useState<LlmProvider>('gemini');
+  const [provider, setProvider] = useState<LlmProvider>('anthropic');
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

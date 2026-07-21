@@ -27,12 +27,15 @@ export function OnboardingScreen({
   session: Session;
 }) {
   const llmKey = useLlmKey();
+  const anthropicConfigured = llmKey.keys.some(
+    (key) => key.provider === 'anthropic' && key.configured,
+  );
 
   if (llmKey.loading) return <Shell session={session} />;
 
   return (
     <Shell session={session}>
-      {llmKey.configured ? (
+      {llmKey.configured && anthropicConfigured ? (
         <FolderStep workspace={workspace} />
       ) : (
         <KeyStep llmKey={llmKey} />
@@ -65,11 +68,11 @@ function KeyStep({ llmKey }: { llmKey: ReturnType<typeof useLlmKey> }) {
     <>
       <span className="fold-eyebrow">STEP 1 · 분석 키 설정</span>
       <h1 className="mt-3 text-h2 font-bold tracking-tight text-ink-950">
-        문서를 읽을 열쇠가 필요해요.
+        문서를 읽을 Anthropic 키가 필요해요.
       </h1>
       <p className="mt-2.5 text-base leading-relaxed text-ink-500">
-        문서를 위키로 정리할 때 내용을 이해하는 데 LLM을 씁니다. 변환·분석·조립은 모두 이
-        컴퓨터에서 이뤄지고,
+        로컬 sidecar의 Claude Agent SDK가 문서를 검색하고 변경안을 만들 때 Anthropic API를
+        사용합니다. 변환·조립과 원본 처리는 이 컴퓨터에서 이뤄지고,
         <br />
         문서가 저희 서버로 전송되는 일은 없습니다.
       </p>

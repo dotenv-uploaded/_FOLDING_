@@ -15,6 +15,8 @@ const currentDir =
 
 let mainWindow: BrowserWindow | null = null;
 let services: AppServices | null = null;
+let allowQuit = false;
+let cleanupStarted = false;
 
 /** 렌더러로 단방향 푸시 — 창이 없으면 조용히 버린다. */
 function send(channel: string, payload: unknown): void {
@@ -69,6 +71,9 @@ async function bootstrap(): Promise<void> {
   services = await AppServices.create({
     userDataDir: app.getPath('userData'),
     homeDir: app.getPath('home'),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    projectDir: process.cwd(),
     send,
   });
 
@@ -111,8 +116,17 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    if (allowQuit) return;
+    event.preventDefault();
+    if (cleanupStarted) return;
+    cleanupStarted = true;
     unregisterIpcHandlers();
-    void services?.dispose().catch((err: unknown) => logError('dispose', err));
+    void (services?.dispose() ?? Promise.resolve())
+      .catch((err: unknown) => logError('dispose', err))
+      .finally(() => {
+        allowQuit = true;
+        app.quit();
+      });
   });
 }

@@ -10,7 +10,9 @@
  * 비즈니스 로직은 하나도 두지 않는다. 띄우고·기다리고·되살리고·내리는 것이 전부다.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs/promises';
 import { createServer } from 'node:net';
+import path from 'node:path';
 import type { SidecarLifecycleState, SidecarStatus } from '@contracts';
 import { SIDECAR_STATUS_MESSAGE } from '@contracts';
 import { logError } from '@main/util/errors';
@@ -36,8 +38,60 @@ export interface SidecarSupervisorOptions {
   externalUrl?: string;
   /** 자식에게 넘길 추가 환경변수 (경로 등) */
   extraEnv?: Record<string, string>;
+  /** 앱이 안전하게 복호화한 Anthropic 키. 없으면 process 환경변수를 사용한다. */
+  resolveAnthropicApiKey?: () => Promise<string | null>;
   /** 테스트에서 health 확인을 갈아끼우기 위한 구멍 */
   fetchImpl?: typeof fetch;
+}
+
+export interface SidecarRuntimePaths {
+  sourceRoot: string;
+  llmwikiProjectRoot: string;
+  llmwikiInputRoot: string;
+  llmwikiStorageRoot: string;
+  dataRoot: string;
+  doc2mdUrl?: string;
+  deterministicAgent?: boolean;
+  tenantId?: string;
+  wikiId?: string;
+}
+
+export function normalizeSidecarOrigin(value: string): string {
+  const url = new URL(value);
+  const normalizedPath = url.pathname.replace(/\/+$/, '').replace(/\/api\/v1$/, '');
+  url.pathname = normalizedPath || '/';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+export function buildSidecarArgs(
+  baseUrl: string,
+  corsOrigin: string,
+  runtime: SidecarRuntimePaths,
+): string[] {
+  const url = new URL(baseUrl);
+  const args = [
+    '--source-root',
+    runtime.sourceRoot,
+    '--llmwiki-project-root',
+    runtime.llmwikiProjectRoot,
+    '--llmwiki-input-root',
+    runtime.llmwikiInputRoot,
+    '--llmwiki-storage-root',
+    runtime.llmwikiStorageRoot,
+    '--data-root',
+    runtime.dataRoot,
+    '--port',
+    url.port,
+    '--cors-origin',
+    corsOrigin,
+  ];
+  if (runtime.tenantId) args.push('--tenant-id', runtime.tenantId);
+  if (runtime.wikiId) args.push('--wiki-id', runtime.wikiId);
+  if (runtime.doc2mdUrl) args.push('--doc2md-url', runtime.doc2mdUrl);
+  if (runtime.deterministicAgent) args.push('--deterministic-agent');
+  return args;
 }
 
 /** 비어 있는 loopback 포트를 하나 잡아 준다. */
@@ -62,6 +116,7 @@ export class SidecarSupervisor {
   private baseUrl: string | null = null;
   private stopping = false;
   private readonly fetchImpl: typeof fetch;
+  private runtime: SidecarRuntimePaths | null = null;
   private state: SidecarLifecycleState;
 
   constructor(private readonly options: SidecarSupervisorOptions) {
@@ -84,6 +139,18 @@ export class SidecarSupervisor {
     return !this.options.externalUrl;
   }
 
+  get configured(): boolean {
+    return this.runtime !== null;
+  }
+
+  configure(runtime: SidecarRuntimePaths): void {
+    this.runtime = runtime;
+  }
+
+  clearRuntime(): void {
+    this.runtime = null;
+  }
+
   private setState(status: SidecarStatus, patch: Partial<SidecarLifecycleState> = {}): void {
     this.state = {
       ...this.state,
@@ -102,7 +169,7 @@ export class SidecarSupervisor {
    */
   async prepare(): Promise<string> {
     if (this.options.externalUrl) {
-      this.baseUrl = this.options.externalUrl.replace(/\/+$/, '');
+      this.baseUrl = normalizeSidecarOrigin(this.options.externalUrl);
       this.setState('external', { baseUrl: this.baseUrl });
       return this.baseUrl;
     }
@@ -125,13 +192,24 @@ export class SidecarSupervisor {
       return;
     }
 
+    if (!this.runtime) {
+      this.setState('stopped', {
+        message: '문서 폴더를 선택하면 엔진을 시작합니다.',
+        error: undefined,
+      });
+      return;
+    }
+
     this.setState('starting');
     try {
-      this.spawnChild();
+      await prepareRuntimePaths(this.runtime);
+      const storedKey = await this.options.resolveAnthropicApiKey?.();
+      this.spawnChild(storedKey ?? process.env.ANTHROPIC_API_KEY ?? '');
       await this.waitForHealth();
       this.setState('ready');
     } catch (err) {
       logError('sidecar:start', err);
+      await this.stopChild();
       this.setState('crashed', {
         error: err instanceof Error ? err.message : '엔진을 시작하지 못했습니다.',
       });
@@ -149,17 +227,18 @@ export class SidecarSupervisor {
     await this.start();
   }
 
-  private spawnChild(): void {
-    const url = new URL(this.baseUrl!);
+  private spawnChild(anthropicApiKey: string): void {
     const bin = this.options.binary ?? process.env.CODEGATE_SIDECAR_BIN ?? 'codegate-local';
+    const runtime = this.runtime;
+    if (!runtime) throw new Error('sidecar runtime paths are not configured');
 
-    const child = spawn(bin, ['--port', url.port, '--cors-origin', this.options.corsOrigin], {
+    const child = spawn(bin, buildSidecarArgs(this.baseUrl!, this.options.corsOrigin, runtime), {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
         // 자격증명 분리 (스펙 v2.1 §6): Anthropic 키는 sidecar 환경변수로만 간다.
         // Supabase 토큰은 여기 절대 넣지 않는다.
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? '',
+        ANTHROPIC_API_KEY: anthropicApiKey,
         CODEGATE_ENVIRONMENT: process.env.CODEGATE_ENVIRONMENT ?? 'local',
         CODEGATE_AUTH_MODE: process.env.CODEGATE_AUTH_MODE ?? 'local',
         ...this.options.extraEnv,
@@ -188,6 +267,13 @@ export class SidecarSupervisor {
     this.child = null;
     const detail = signal ? `신호 ${signal}` : `종료 코드 ${code}`;
 
+    // startup 호출자가 health 실패를 정리한다. 여기서 별도 재기동을 예약하면
+    // 두 start 흐름이 겹쳐 앱 종료 뒤에도 process가 다시 생길 수 있다.
+    if (this.state.status === 'starting') {
+      this.setState('crashed', { error: `엔진 시작 중 종료됐습니다 (${detail}).` });
+      return;
+    }
+
     if (this.state.restarts >= MAX_RESTARTS) {
       this.setState('crashed', {
         error: `엔진이 반복해서 종료됩니다 (${detail}). 설정에서 다시 시작해 주세요.`,
@@ -199,7 +285,7 @@ export class SidecarSupervisor {
     this.setState('restarting', { restarts });
     // 연달아 죽을 때 즉시 재시도하면 CPU 만 태운다 — 점점 늦춘다
     setTimeout(() => {
-      void this.start();
+      if (!this.stopping && this.runtime) void this.start();
     }, 500 * restarts);
   }
 
@@ -209,10 +295,18 @@ export class SidecarSupervisor {
     let lastError = '엔진이 응답하지 않습니다.';
 
     while (Date.now() < deadline) {
+      if (this.managed && (!this.child || this.child.exitCode !== null || this.child.signalCode !== null)) {
+        throw new Error('엔진 process가 준비되기 전에 종료됐습니다.');
+      }
       try {
         const res = await this.fetchImpl(`${this.baseUrl}/api/v1/health`);
-        if (res.ok) return;
-        lastError = `엔진이 준비되지 않았습니다 (HTTP ${res.status}).`;
+        if (res.ok) {
+          const health = (await res.json()) as { status?: unknown; agent_available?: unknown };
+          if (health.status === 'ok' && health.agent_available === true) return;
+          lastError = '엔진 의존성이 아직 준비되지 않았습니다.';
+        } else {
+          lastError = `엔진이 준비되지 않았습니다 (HTTP ${res.status}).`;
+        }
       } catch {
         lastError = '엔진에 연결하지 못했습니다.';
       }
@@ -231,7 +325,7 @@ export class SidecarSupervisor {
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         // 얌전히 안 죽으면 강제로 — 고아로 남기는 것보다 낫다
-        if (!child.killed) child.kill('SIGKILL');
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         resolve();
       }, KILL_GRACE_MS);
       child.once('exit', () => {
@@ -250,4 +344,35 @@ export class SidecarSupervisor {
     await this.stopChild();
     this.setState('stopped');
   }
+}
+
+async function prepareRuntimePaths(runtime: SidecarRuntimePaths): Promise<void> {
+  for (const [label, candidate] of [
+    ['문서 폴더', runtime.sourceRoot],
+    ['LLMWIKI bundle', runtime.llmwikiProjectRoot],
+  ] as const) {
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (!stat?.isDirectory()) throw new Error(`${label}를 찾을 수 없습니다: ${candidate}`);
+  }
+
+  const roots = [
+    runtime.sourceRoot,
+    runtime.llmwikiProjectRoot,
+    runtime.llmwikiInputRoot,
+    runtime.llmwikiStorageRoot,
+    runtime.dataRoot,
+  ].map((candidate) => path.resolve(candidate));
+  for (const [index, left] of roots.entries()) {
+    for (const right of roots.slice(index + 1)) {
+      if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) {
+        throw new Error('sidecar source, bundle, input, storage, data 경로는 서로 겹칠 수 없습니다.');
+      }
+    }
+  }
+
+  await Promise.all(
+    [runtime.llmwikiInputRoot, runtime.llmwikiStorageRoot, runtime.dataRoot].map((candidate) =>
+      fs.mkdir(candidate, { recursive: true }),
+    ),
+  );
 }

@@ -36,6 +36,7 @@ export interface LlmKeyStore extends LlmKeyResolver {
   status(): Promise<LlmKeyStatus[]>;
   set(input: LlmKeyInput): Promise<LlmKeyStatus[]>;
   clear(provider: LlmProvider): Promise<LlmKeyStatus[]>;
+  get(provider: LlmProvider): Promise<string | null>;
 }
 
 /** 끝 4자리만 노출한다 (`…8f2a`). 그 외의 어떤 조각도 렌더러로 가지 않는다. */
@@ -128,6 +129,10 @@ export class SafeStorageLlmKeyStore implements LlmKeyStore {
     return toStatus(keys);
   }
 
+  async get(provider: LlmProvider): Promise<string | null> {
+    return (await this.read())[provider] ?? null;
+  }
+
   /** 파이프라인이 쓰는 유일한 경로 — 원문 키는 메인 프로세스를 벗어나지 않는다. */
   async resolve(): Promise<ResolvedLlmKey | null> {
     return resolveFrom(await this.read());
@@ -152,6 +157,10 @@ export class MemoryLlmKeyStore implements LlmKeyStore {
     delete keys[provider];
     this.keys = keys;
     return toStatus(this.keys);
+  }
+
+  async get(provider: LlmProvider): Promise<string | null> {
+    return this.keys[provider] ?? null;
   }
 
   async resolve(): Promise<ResolvedLlmKey | null> {

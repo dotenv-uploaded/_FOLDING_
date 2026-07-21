@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "start": "electron-vite preview",
     "mock-server": "node scripts/mock-server.mjs",
+    "integrations:check": "node scripts/check-integrations.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "electron-builder install-app-deps"

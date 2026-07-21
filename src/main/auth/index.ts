@@ -30,6 +30,7 @@ interface AuthMeResponse {
 }
 
 export interface AuthServiceOptions {
+  authMode?: 'local' | 'supabase';
   cloudApiUrl: string;
   supabaseUrl?: string;
   supabasePublishableKey?: string;
@@ -39,6 +40,15 @@ export interface AuthServiceOptions {
 }
 
 const LOGGED_OUT: Session = { authenticated: false };
+const LOCAL_SESSION: Session = {
+  authenticated: true,
+  subjectId: 'local-user',
+  tenantId: 'local',
+  readAccess: ['public', 'internal'],
+  writeScope: 'workspace',
+  provisioned: true,
+  authzSource: 'local-workspace',
+};
 
 export class AuthService {
   private session: Session = LOGGED_OUT;
@@ -46,7 +56,7 @@ export class AuthService {
 
   constructor(private readonly options: AuthServiceOptions) {
     this.client =
-      options.supabaseUrl && options.supabasePublishableKey
+      options.authMode !== 'local' && options.supabaseUrl && options.supabasePublishableKey
         ? createClient(options.supabaseUrl, options.supabasePublishableKey, {
             auth: {
               flowType: 'pkce',
@@ -60,6 +70,7 @@ export class AuthService {
   }
 
   async restore(): Promise<Session> {
+    if (this.options.authMode === 'local') return this.setSession(LOCAL_SESSION);
     if (!this.client) return this.setSession(LOGGED_OUT);
     const { data, error } = await this.client.auth.getSession();
     if (error || !data.session) {
@@ -81,6 +92,7 @@ export class AuthService {
   }
 
   async login(request: LoginRequest): Promise<Session> {
+    if (this.options.authMode === 'local') return this.setSession(LOCAL_SESSION);
     const client = this.requireClient();
     const receiver = await createOAuthLoopbackReceiver();
     try {
@@ -107,6 +119,10 @@ export class AuthService {
   }
 
   async logout(): Promise<void> {
+    if (this.options.authMode === 'local') {
+      this.setSession(LOCAL_SESSION);
+      return;
+    }
     if (this.client) {
       const { error } = await this.client.auth.signOut({ scope: 'local' });
       if (error) logError('auth:logout', error);
@@ -116,6 +132,7 @@ export class AuthService {
   }
 
   async getToken(): Promise<string> {
+    if (this.options.authMode === 'local') return '';
     const client = this.requireClient();
     const { data, error } = await client.auth.getSession();
     if (error || !data.session) {
@@ -127,6 +144,9 @@ export class AuthService {
   }
 
   async ensureActiveSubscription(): Promise<Subscription> {
+    if (this.options.authMode === 'local') {
+      return { plan: 'Local', expiresAt: '', active: true };
+    }
     await this.getToken();
     if (!this.session.provisioned) {
       throw new AuthError('not_provisioned', AUTH_ERROR_MESSAGE.not_provisioned);
