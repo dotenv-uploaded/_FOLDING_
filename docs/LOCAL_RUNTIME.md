@@ -39,9 +39,10 @@ uv run codegate-local \
 `codegate-local`은 loopback IP만 bind한다. Claude 연결 없이 상태 머신만 개발할 때에만
 `--deterministic-agent`를 추가한다. 제품 배포판은 이 옵션을 기본으로 사용하지 않는다.
 
-doc2md v0.1.0을 함께 실행하는 구성이라면 `--doc2md-url http://127.0.0.1:<port>`를 추가한다.
-이 버전은 absolute path를 읽으므로 Backend와 같은 filesystem namespace와 loopback/trusted
-process 경계가 필요하다.
+doc2md v0.2를 함께 실행하는 구성이라면 `--doc2md-url http://127.0.0.1:<port>`를 추가한다.
+로컬 CLI의 기본 transport는 `source.kind=path`이므로 Backend와 같은 filesystem namespace와
+loopback/trusted process 경계가 필요하다. doc2md에 Bearer 인증을 켰다면
+`CODEGATE_DOC2MD_API_TOKEN`과 doc2md의 `DOC2MD_API_TOKEN`에 같은 값을 설정한다.
 
 ## 한 번의 변경
 

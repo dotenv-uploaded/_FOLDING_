@@ -27,12 +27,20 @@ Backend service에 persistent volume 하나를 `/data` 같은 절대경로로 �
 
 ### doc2md 배치 제약
 
-`POST /convert`(v0.1.0)는 request의 absolute local path를 직접 연다. private network URL만 연결해서는 다른 Railway service가 Backend volume을 볼 수 없으므로 동작하지 않는다. 아래 둘 중 하나를 택한다.
+Backend adapter는 doc2md v0.2 `POST /v2/convert`를 사용한다. 배치 방식에 따라 transport 하나를
+선택한다.
 
-1. **현재 adapter 기준.** doc2md를 Backend와 같은 container·filesystem namespace에 배치하고 loopback URL로 호출한다. adapter 변경이 필요 없다.
-2. **별도 service로 분리할 때.** doc2md v0.2.0이 `POST /v2/convert`에서 `source.kind`를 `bytes`(inline base64) 또는 `uri`(s3/gs/azure)로 받으므로 filesystem 공유가 필요 없다. `DOC2MD_API_TOKEN`으로 Bearer 인증을 건다. Backend adapter를 v2로 교체하는 작업이 남아 있다.
+1. **같은 filesystem namespace.** `CODEGATE_DOC2MD_SOURCE_KIND=path`로 두고 doc2md에 Backend
+   source root를 `DOC2MD_ALLOWED_ROOTS`로 허용한다. 단순히 private URL만 연결한 별도 Railway
+   service는 Backend volume을 볼 수 없으므로 이 구성으로 동작하지 않는다.
+2. **별도 service.** `CODEGATE_DOC2MD_SOURCE_KIND=bytes`로 두고 승인된 원본을 inline base64로
+   전송한다. Backend는 전송 직전 SHA-256과 최대 32 MiB 상한을 검사하므로 filesystem 공유가
+   필요 없다.
 
-1번은 지금 그대로 배포 가능하고, 2번은 adapter migration이 선행돼야 한다. 별도 service URL과 독립 volume 조합은 여전히 지원하지 않는다. `/health` 성공만으로 path 접근 가능성을 증명하지 않으므로 실제 synthetic source 변환 smoke test 전에는 배포 완료로 판정하지 않는다. doc2md는 이 용도로 `GET /health?deep=1`을 제공한다 — synthetic 문서를 실제로 변환하고 OCR device, 인증·allowlist 설정 상태, temp 쓰기 가능 여부를 함께 반환하며 실패 시 503이다.
+두 구성 모두 `DOC2MD_API_TOKEN`과 `CODEGATE_DOC2MD_API_TOKEN`에 같은 Bearer secret을 넣는다.
+`/health` 성공만으로 실제 path 또는 bytes 변환이 가능하다고 판정하지 않는다. doc2md의
+`GET /health?deep=1`로 synthetic 변환과 OCR·보안 설정을 확인하고, 이어서 Backend가 선택한
+transport로 synthetic source를 한 번 변환해야 배포 완료로 본다.
 
 ## 3. 필수 환경변수
 
@@ -41,7 +49,9 @@ CODEGATE_ENVIRONMENT=production
 CODEGATE_AUTH_MODE=supabase
 CODEGATE_AGENT_MODE=claude
 CODEGATE_BOOTSTRAP_DEMO=false
-CODEGATE_DOC2MD_BASE_URL=http://127.0.0.1:<co-located-doc2md-port>
+CODEGATE_DOC2MD_BASE_URL=http://<doc2md-host>:<port>
+CODEGATE_DOC2MD_SOURCE_KIND=path|bytes
+CODEGATE_DOC2MD_API_TOKEN=<shared-doc2md-secret>
 CODEGATE_SUPABASE_URL=https://<project-ref>.supabase.co
 CODEGATE_SUPABASE_JWT_AUDIENCE=authenticated
 CODEGATE_CORS_ORIGINS=["https://<vercel-domain>"]
