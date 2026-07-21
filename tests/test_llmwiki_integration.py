@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,7 @@ from typing import Any
 import pytest
 import yaml
 
-from codegate_api.files.atomic import SafeSourceFileStore
+from codegate_api.files.atomic import DocumentLockManager, SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.integrations.doc2md import ConversionResult
 from codegate_api.knowledge.access import AccessContext
@@ -19,7 +21,7 @@ from codegate_api.knowledge.llmwiki import (
     NativeLLMWikiCatalog,
     NativeLLMWikiPipeline,
 )
-from codegate_api.knowledge.repository import KnowledgeRepository
+from codegate_api.knowledge.repository import KnowledgePackageError, KnowledgeRepository
 from codegate_api.state.store import PendingEvent, StateStore
 
 
@@ -202,6 +204,7 @@ def _create_native_fixture(tmp_path: Path) -> NativeFixture:
             "tenant_id": "local",
             "wiki_id": "workspace",
             "build_id": build_id,
+            "complete": False,
         },
     )
     permissive_schema = {
@@ -242,14 +245,15 @@ def _create_native_fixture(tmp_path: Path) -> NativeFixture:
 
 
 def _build_pipeline(fixture: NativeFixture, tmp_path: Path) -> NativeLLMWikiPipeline:
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
     catalog = NativeLLMWikiCatalog(
         adapter=fixture.adapter,
         runner=object(),  # type: ignore[arg-type]
         source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
     )
     catalog.bootstrap()
-    state = StateStore(tmp_path / "state.sqlite3")
-    state.initialize()
     return NativeLLMWikiPipeline(
         catalog=catalog,
         file_store=SafeSourceFileStore(
@@ -258,7 +262,100 @@ def _build_pipeline(fixture: NativeFixture, tmp_path: Path) -> NativeLLMWikiPipe
             max_bytes=1_000_000,
         ),
         state_store=state,
+        lock_manager=DocumentLockManager(tmp_path / "locks"),
     )
+
+
+def _clone_native_build(
+    fixture: NativeFixture,
+    build_id: str,
+    *,
+    ingest_sha256: str | None = None,
+) -> Path:
+    active = fixture.adapter.current_native_build()
+    assert active is not None
+    candidate_dir = active.build_dir.parent / build_id
+    shutil.copytree(active.build_dir, candidate_dir)
+    build_meta = json.loads((candidate_dir / "build-meta.json").read_text(encoding="utf-8"))
+    build_meta["build_id"] = build_id
+    _write_json(candidate_dir / "build-meta.json", build_meta)
+    if ingest_sha256 is not None:
+        manifest_path = candidate_dir / "manifest.jsonl"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["ingest"]["sha256"] = ingest_sha256
+        _write_jsonl(manifest_path, [manifest])
+    return candidate_dir
+
+
+class _ActivatingRunner:
+    def __init__(
+        self,
+        fixture: NativeFixture,
+        *,
+        fail_after_commit: bool = False,
+        tamper_after_commit: bool = False,
+    ) -> None:
+        self._fixture = fixture
+        self._fail_after_commit = fail_after_commit
+        self._tamper_after_commit = tamper_after_commit
+        self.activations: list[tuple[str, str | None]] = []
+
+    def activate(self, *, build_id: str, expected_current_build_id: str | None) -> None:
+        current = self._fixture.adapter.current_native_build()
+        actual = current.build_id if current is not None else None
+        if actual != expected_current_build_id:
+            raise LLMWikiCompatibilityError("stale activation")
+        build = self._fixture.adapter.native_build(build_id)
+        self.activations.append((build_id, expected_current_build_id))
+        _write_json(
+            self._fixture.adapter.wiki_root / "current.json",
+            {
+                "schema_version": "1.0.0",
+                "tenant_id": "local",
+                "wiki_id": "workspace",
+                "build_id": build_id,
+                "relative_path": f"builds/{build_id}",
+                "complete": build.complete,
+            },
+        )
+        if self._tamper_after_commit:
+            (build.build_dir / "README.md").write_text("tampered after commit", encoding="utf-8")
+        if self._fail_after_commit:
+            raise LLMWikiCompatibilityError("audit write failed after pointer commit")
+
+
+class _PipelineState:
+    def __init__(self, event: PendingEvent, *, fail_completion_once: bool = False) -> None:
+        self._event = event
+        self._fail_completion_once = fail_completion_once
+        self._completion_failed = False
+        self.completed: tuple[list[str], str] | None = None
+
+    def pending_events(self) -> list[PendingEvent]:
+        return [self._event]
+
+    def begin_event_batch(self, _event_ids: list[str]) -> None:
+        return None
+
+    def record_sync_task(self, *_args: object, **kwargs: object) -> None:
+        if (
+            self._fail_completion_once
+            and not self._completion_failed
+            and kwargs.get("stage") == "publish"
+            and kwargs.get("status") == "succeeded"
+        ):
+            self._completion_failed = True
+            raise OSError("state store temporarily unavailable")
+        return None
+
+    def record_knowledge_version(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def complete_event_batch(self, event_ids: list[str], version: str) -> None:
+        self.completed = (event_ids, version)
+
+    def fail_event_batch(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("successful pipeline must not fail its batch")
 
 
 def _event(
@@ -321,6 +418,283 @@ def test_native_llmwiki_build_is_mapped_to_valid_read_cache(tmp_path: Path) -> N
     canonical = (package_root / "docs/regulations/REG-100001.md").read_text(encoding="utf-8")
     assert '<span id="art-1"></span>' in canonical
     assert canonical.count('<a id="sec-0123456789"></a>') == 1
+
+
+def test_native_catalog_prepares_before_cas_activation(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-11111111111111111111"
+    _clone_native_build(fixture, candidate_id)
+    runner = _ActivatingRunner(fixture)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=runner,  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+
+    prepared = catalog.prepare_candidate(
+        candidate_id,
+        expected_current_build_id=parent_version,
+        changed_document_ids=set(),
+    )
+
+    assert catalog.snapshot().version == parent_version
+    assert fixture.adapter.current_native_build().build_id == parent_version  # type: ignore[union-attr]
+    assert state.llmwiki_build_digest(candidate_id) == prepared.native_digest
+    repository = catalog.activate_candidate(
+        prepared,
+        expected_current_build_id=parent_version,
+    )
+    assert repository.version == candidate_id
+    assert catalog.snapshot().version == candidate_id
+    assert runner.activations == [(candidate_id, parent_version)]
+
+
+def test_native_catalog_rejects_unrelated_candidate_input(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-22222222222222222222"
+    _clone_native_build(fixture, candidate_id, ingest_sha256="f" * 64)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=object(),  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+
+    with pytest.raises(LLMWikiCompatibilityError, match="unrelated input"):
+        catalog.prepare_candidate(
+            candidate_id,
+            expected_current_build_id=parent_version,
+            changed_document_ids=set(),
+        )
+
+    assert fixture.adapter.current_native_build().build_id == parent_version  # type: ignore[union-attr]
+    assert catalog.snapshot().version == parent_version
+
+
+def test_native_catalog_rechecks_sources_before_activation(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-33333333333333333333"
+    _clone_native_build(fixture, candidate_id)
+    runner = _ActivatingRunner(fixture)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=runner,  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+    prepared = catalog.prepare_candidate(
+        candidate_id,
+        expected_current_build_id=parent_version,
+        changed_document_ids=set(),
+    )
+    fixture.source_path.write_text("changed outside approval", encoding="utf-8")
+
+    with pytest.raises(KnowledgePackageError, match="source checksum mismatch"):
+        catalog.activate_candidate(
+            prepared,
+            expected_current_build_id=parent_version,
+        )
+
+    assert runner.activations == []
+    assert fixture.adapter.current_native_build().build_id == parent_version  # type: ignore[union-attr]
+    assert catalog.snapshot().version == parent_version
+
+
+def test_native_catalog_recovers_activation_committed_before_error(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-55555555555555555555"
+    _clone_native_build(fixture, candidate_id)
+    runner = _ActivatingRunner(fixture, fail_after_commit=True)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=runner,  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+    prepared = catalog.prepare_candidate(
+        candidate_id,
+        expected_current_build_id=parent_version,
+        changed_document_ids=set(),
+    )
+
+    repository = catalog.activate_candidate(
+        prepared,
+        expected_current_build_id=parent_version,
+    )
+
+    assert repository.version == candidate_id
+    assert fixture.adapter.current_native_build().build_id == candidate_id  # type: ignore[union-attr]
+    assert catalog.snapshot().version == candidate_id
+
+
+def test_native_catalog_rejects_candidate_changed_after_validation(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-66666666666666666666"
+    candidate_dir = _clone_native_build(fixture, candidate_id)
+    runner = _ActivatingRunner(fixture)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=runner,  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+    prepared = catalog.prepare_candidate(
+        candidate_id,
+        expected_current_build_id=parent_version,
+        changed_document_ids=set(),
+    )
+    (candidate_dir / "README.md").write_text("tampered", encoding="utf-8")
+
+    with pytest.raises(LLMWikiCompatibilityError, match="changed after validation"):
+        catalog.activate_candidate(
+            prepared,
+            expected_current_build_id=parent_version,
+        )
+
+    assert runner.activations == []
+    assert fixture.adapter.current_native_build().build_id == parent_version  # type: ignore[union-attr]
+    assert catalog.snapshot().version == parent_version
+
+
+def test_native_catalog_does_not_recover_tampered_committed_candidate(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    candidate_id = "build-77777777777777777777"
+    _clone_native_build(fixture, candidate_id)
+    runner = _ActivatingRunner(fixture, tamper_after_commit=True)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=runner,  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+    prepared = catalog.prepare_candidate(
+        candidate_id,
+        expected_current_build_id=parent_version,
+        changed_document_ids=set(),
+    )
+
+    with pytest.raises(LLMWikiCompatibilityError, match="differs from validation"):
+        catalog.activate_candidate(
+            prepared,
+            expected_current_build_id=parent_version,
+        )
+    with pytest.raises(LLMWikiCompatibilityError, match="validated candidate"):
+        catalog.recover_committed_candidate(prepared)
+
+    assert fixture.adapter.current_native_build().build_id == candidate_id  # type: ignore[union-attr]
+    assert catalog.snapshot().version == parent_version
+
+    restarted = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=runner,  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    with pytest.raises(LLMWikiCompatibilityError, match="persisted validation"):
+        restarted.bootstrap()
+
+
+@pytest.mark.parametrize("fail_completion_once", [False, True])
+def test_native_pipeline_stages_validates_then_activates(
+    tmp_path: Path,
+    fail_completion_once: bool,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    event = _event(
+        fixture,
+        event_id="evt_staged_publish",
+        before_sha256=fixture.before_sha256,
+        after_sha256="a" * 64,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, version: str) -> None:
+            self.version = version
+
+    class Catalog:
+        def __init__(self) -> None:
+            self.repository = Repository("build-0123456789abcdefabcd")
+            self.prepared = object()
+
+        def snapshot(self) -> Repository:
+            return self.repository
+
+        def stage(self) -> str:
+            calls.append("stage")
+            return "build-44444444444444444444"
+
+        def prepare_candidate(self, *_args: object, **_kwargs: object) -> object:
+            calls.append("prepare")
+            return self.prepared
+
+        def activate_candidate(self, prepared: object, **_kwargs: object) -> Repository:
+            assert prepared is self.prepared
+            calls.append("activate")
+            self.repository = Repository("build-44444444444444444444")
+            return self.repository
+
+        def recover_committed_candidate(self, prepared: object) -> bool:
+            assert prepared is self.prepared
+            calls.append("recover")
+            return self.repository.version == "build-44444444444444444444"
+
+        def refresh(self, **_kwargs: object) -> Repository:
+            raise AssertionError("committed publish must recover without refresh")
+
+    state = _PipelineState(event, fail_completion_once=fail_completion_once)
+    catalog = Catalog()
+    pipeline = NativeLLMWikiPipeline(
+        catalog=catalog,  # type: ignore[arg-type]
+        file_store=object(),  # type: ignore[arg-type]
+        state_store=state,  # type: ignore[arg-type]
+        lock_manager=DocumentLockManager(tmp_path / "locks"),
+    )
+    pipeline._apply_inputs = lambda _events: (
+        calls.append("apply")
+        or {  # type: ignore[method-assign]  # noqa: SLF001
+            "REG-100001"
+        }
+    )
+    pipeline._verify_live_sources = (  # type: ignore[method-assign]  # noqa: SLF001
+        lambda _events: calls.append("verify")
+    )
+
+    version = asyncio.run(pipeline.process_pending())
+
+    assert version == "build-44444444444444444444"
+    expected_calls = ["apply", "verify", "stage", "prepare", "verify", "activate"]
+    if fail_completion_once:
+        expected_calls.append("recover")
+    assert calls == expected_calls
+    assert state.completed == (["evt_staged_publish"], version)
 
 
 def test_native_llmwiki_adapter_rejects_symlinked_canonical_file(tmp_path: Path) -> None:

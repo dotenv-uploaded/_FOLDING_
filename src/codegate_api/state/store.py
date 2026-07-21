@@ -71,7 +71,7 @@ class WriteJournal:
     state: str
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class StateStore:
@@ -1181,6 +1181,70 @@ class StateStore:
             ).fetchone()
         return row is not None
 
+    def record_llmwiki_build_digest(
+        self,
+        *,
+        build_id: str,
+        native_digest: str,
+        parent_build_id: str | None,
+        status: str,
+    ) -> None:
+        if status not in {"validated", "active"}:
+            raise ValueError("invalid LLMWIKI build digest status")
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT native_digest, status FROM llmwiki_build_digests
+                WHERE build_id = ?
+                """,
+                (build_id,),
+            ).fetchone()
+            if existing is not None and existing["native_digest"] != native_digest:
+                raise StateConflict(
+                    "LLMWIKI_BUILD_DIGEST_CONFLICT",
+                    "검증된 LLMWIKI 빌드 내용이 변경되었습니다.",
+                )
+            effective_status = (
+                "active"
+                if status == "active" or (existing is not None and existing["status"] == "active")
+                else "validated"
+            )
+            now = _now_text()
+            connection.execute(
+                """
+                INSERT INTO llmwiki_build_digests(
+                    build_id, native_digest, parent_build_id, status, validated_at, activated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(build_id) DO UPDATE SET
+                    parent_build_id = COALESCE(
+                        llmwiki_build_digests.parent_build_id, excluded.parent_build_id
+                    ),
+                    status = excluded.status,
+                    activated_at = COALESCE(
+                        llmwiki_build_digests.activated_at, excluded.activated_at
+                    )
+                """,
+                (
+                    build_id,
+                    native_digest,
+                    parent_build_id,
+                    effective_status,
+                    now,
+                    now if effective_status == "active" else None,
+                ),
+            )
+
+    def llmwiki_build_digest(self, build_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT native_digest FROM llmwiki_build_digests
+                WHERE build_id = ?
+                """,
+                (build_id,),
+            ).fetchone()
+        return str(row["native_digest"]) if row is not None else None
+
     def complete_event_batch(self, event_ids: list[str], graph_version: str) -> None:
         if not event_ids:
             return
@@ -1345,6 +1409,7 @@ class StateStore:
             "processed_events",
             "sync_tasks",
             "llmwiki_input_states",
+            "llmwiki_build_digests",
             "outbox_events",
             "write_journals",
             "file_versions",
@@ -1812,6 +1877,15 @@ CREATE TABLE IF NOT EXISTS llmwiki_input_states (
     event_ids_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY(document_id, active_build_id, content_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS llmwiki_build_digests (
+    build_id TEXT PRIMARY KEY,
+    native_digest TEXT NOT NULL CHECK(length(native_digest) = 64),
+    parent_build_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('validated', 'active')),
+    validated_at TEXT NOT NULL,
+    activated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_versions (

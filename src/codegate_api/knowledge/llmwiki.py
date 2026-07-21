@@ -21,7 +21,7 @@ from uuid import uuid4
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from codegate_api.files.atomic import SafeFileError, SafeSourceFileStore
+from codegate_api.files.atomic import DocumentLockManager, SafeFileError, SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.integrations.doc2md import Doc2MdClient, Doc2MdError
 from codegate_api.knowledge.access import AccessContext
@@ -58,6 +58,7 @@ class LLMWikiCompatibilityError(SyncPipelineError):
 class NativeBuild:
     build_id: str
     build_dir: Path
+    complete: bool
     manifest_by_id: dict[str, dict[str, Any]]
     section_ids_by_document: dict[str, frozenset[str]]
 
@@ -67,6 +68,14 @@ class NativeInputBaseline:
     path: Path
     ingest_sha256: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedNativeBuild:
+    build: NativeBuild
+    compatibility_root: Path
+    repository: KnowledgeRepository
+    native_digest: str
 
 
 class InProcessLLMWikiBuildRunner:
@@ -90,29 +99,57 @@ class InProcessLLMWikiBuildRunner:
         self._actor_id = actor_id
         self._lock = threading.Lock()
 
-    def build(self, *, expected_current_build_id: str | None) -> str:
+    def stage(self) -> str:
         with self._lock:
             config_module, service_module = self._load_modules()
             config = config_module.load_config(self._builder_root / "config/wiki.yaml")
-            request = service_module.WikiBuildRequest(
-                tenant_id=self._tenant_id,
-                wiki_id=self._wiki_id,
-                input_dir=self._input_root,
-                storage_root=self._storage_root,
-                actor_id=self._actor_id,
-                synthetic_corpus=False,
+            request = self._request(service_module, expected_current_build_id=None)
+            service = service_module.WikiBuildService(config)
+            try:
+                result = service.stage(request)
+            except Exception as error:
+                raise LLMWikiCompatibilityError(
+                    f"LLMWIKI stage failed: {type(error).__name__}: {error}"
+                ) from error
+            if result.activated:
+                raise LLMWikiCompatibilityError("LLMWIKI stage unexpectedly activated a build")
+            return str(result.build_id)
+
+    def activate(self, *, build_id: str, expected_current_build_id: str | None) -> None:
+        with self._lock:
+            config_module, service_module = self._load_modules()
+            config = config_module.load_config(self._builder_root / "config/wiki.yaml")
+            request = self._request(
+                service_module,
                 expected_current_build_id=expected_current_build_id,
             )
             service = service_module.WikiBuildService(config)
             try:
-                result = service.build(request, activate_incomplete=True)
+                service.activate_candidate(
+                    request,
+                    build_id,
+                    activate_incomplete=True,
+                )
             except Exception as error:
                 raise LLMWikiCompatibilityError(
-                    f"LLMWIKI build failed: {type(error).__name__}: {error}"
+                    f"LLMWIKI activation failed: {type(error).__name__}: {error}"
                 ) from error
-            if not result.activated:
-                raise LLMWikiCompatibilityError("LLMWIKI build was not activated")
-            return str(result.build_id)
+
+    def _request(
+        self,
+        service_module: ModuleType,
+        *,
+        expected_current_build_id: str | None,
+    ) -> Any:
+        return service_module.WikiBuildRequest(
+            tenant_id=self._tenant_id,
+            wiki_id=self._wiki_id,
+            input_dir=self._input_root,
+            storage_root=self._storage_root,
+            actor_id=self._actor_id,
+            synthetic_corpus=False,
+            expected_current_build_id=expected_current_build_id,
+        )
 
     def _load_modules(self) -> tuple[ModuleType, ModuleType]:
         source_root = self._builder_root / "src"
@@ -187,12 +224,20 @@ class LLMWikiCompatibilityAdapter:
             or not isinstance(pointer.get("complete"), bool)
         ):
             raise LLMWikiCompatibilityError("LLMWIKI current.json is invalid")
-        build_dir = _safe_directory_child(self.wiki_root, f"builds/{build_id}")
+        build = self.native_build(build_id)
         _raise_schema_errors(
-            _native_validator(build_dir, "current"),
+            _native_validator(build.build_dir, "current"),
             pointer,
             "current.json",
         )
+        if pointer["complete"] != build.complete:
+            raise LLMWikiCompatibilityError("LLMWIKI current completeness does not match build")
+        return build
+
+    def native_build(self, build_id: str) -> NativeBuild:
+        if re.fullmatch(r"build-[0-9a-f]{20}", build_id) is None:
+            raise LLMWikiCompatibilityError("LLMWIKI build ID is invalid")
+        build_dir = _safe_directory_child(self.wiki_root, f"builds/{build_id}")
         meta = _read_json_object(_safe_child(build_dir, "build-meta.json"))
         _raise_schema_errors(
             _native_validator(build_dir, "build-meta"),
@@ -220,6 +265,7 @@ class LLMWikiCompatibilityAdapter:
         return NativeBuild(
             build_id=build_id,
             build_dir=build_dir,
+            complete=bool(meta["complete"]),
             manifest_by_id=manifest_by_id,
             section_ids_by_document={
                 document_id: frozenset(section_ids)
@@ -418,10 +464,12 @@ class NativeLLMWikiCatalog:
         adapter: LLMWikiCompatibilityAdapter,
         runner: InProcessLLMWikiBuildRunner,
         source_resolver: SourceUriResolver,
+        state_store: StateStore,
     ) -> None:
         self._adapter = adapter
         self._runner = runner
         self._source_resolver = source_resolver
+        self._state = state_store
         self._repository: KnowledgeRepository | None = None
         self._native_build: NativeBuild | None = None
         self._lock = threading.RLock()
@@ -437,10 +485,30 @@ class NativeLLMWikiCatalog:
         with self._lock:
             build = self._adapter.current_native_build()
             if build is None:
-                self._runner.build(expected_current_build_id=None)
-                build = self._adapter.current_native_build()
-            if build is None:
-                raise LLMWikiCompatibilityError("LLMWIKI did not publish a current build")
+                build_id = self._runner.stage()
+                prepared = self._prepare(
+                    self._adapter.native_build(build_id),
+                    validate_sources=not allow_stale_sources,
+                )
+                self._record_digest(prepared, parent_build_id=None, status="validated")
+                try:
+                    self._runner.activate(build_id=build_id, expected_current_build_id=None)
+                except LLMWikiCompatibilityError:
+                    current = self._adapter.current_native_build()
+                    if current is None:
+                        raise
+                    self._load(current, validate_sources=not allow_stale_sources)
+                    return
+                current = self._adapter.current_native_build()
+                if current is None or current.build_id != build_id:
+                    raise LLMWikiCompatibilityError("LLMWIKI bootstrap activation did not persist")
+                if _native_build_digest(current) != prepared.native_digest:
+                    raise LLMWikiCompatibilityError(
+                        "bootstrapped LLMWIKI build differs from validation"
+                    )
+                self._promote(current, prepared.repository)
+                self._record_digest(prepared, parent_build_id=None, status="active")
+                return
             self._load(build, validate_sources=not allow_stale_sources)
 
     def snapshot(self) -> KnowledgeRepository:
@@ -475,21 +543,177 @@ class NativeLLMWikiCatalog:
                 raise LLMWikiCompatibilityError("LLMWIKI catalog is not bootstrapped")
             return self._adapter.input_baseline(self._native_build, document_id)
 
-    def build(self, *, expected_current_build_id: str) -> str:
-        return self._runner.build(expected_current_build_id=expected_current_build_id)
+    def stage(self) -> str:
+        return self._runner.stage()
+
+    def prepare_candidate(
+        self,
+        build_id: str,
+        *,
+        expected_current_build_id: str,
+        changed_document_ids: set[str],
+    ) -> PreparedNativeBuild:
+        with self._lock:
+            active = self.current_native_build()
+            if active.build_id != expected_current_build_id:
+                raise LLMWikiCompatibilityError("active LLMWIKI build changed before validation")
+        candidate = self._adapter.native_build(build_id)
+        if set(candidate.manifest_by_id) != set(active.manifest_by_id):
+            raise LLMWikiCompatibilityError("LLMWIKI candidate document set changed")
+        if not changed_document_ids <= set(candidate.manifest_by_id):
+            raise LLMWikiCompatibilityError("LLMWIKI candidate lacks a changed document")
+        for document_id, candidate_manifest in candidate.manifest_by_id.items():
+            candidate_ingest = _native_ingest_sha256(candidate_manifest, document_id)
+            active_ingest = _native_ingest_sha256(active.manifest_by_id[document_id], document_id)
+            if document_id in changed_document_ids:
+                if not self._state.is_known_llmwiki_input_state(
+                    document_id=document_id,
+                    active_build_id=expected_current_build_id,
+                    content_sha256=candidate_ingest,
+                ):
+                    raise LLMWikiCompatibilityError(
+                        f"LLMWIKI candidate contains an unapproved input: {document_id}"
+                    )
+            elif candidate_ingest != active_ingest:
+                raise LLMWikiCompatibilityError(
+                    f"LLMWIKI candidate changed an unrelated input: {document_id}"
+                )
+        prepared = self._prepare(candidate)
+        with self._lock:
+            if self.current_native_build().build_id != expected_current_build_id:
+                raise LLMWikiCompatibilityError("active LLMWIKI build changed during validation")
+        self._record_digest(
+            prepared,
+            parent_build_id=expected_current_build_id,
+            status="validated",
+        )
+        return prepared
+
+    def activate_candidate(
+        self,
+        prepared: PreparedNativeBuild,
+        *,
+        expected_current_build_id: str,
+    ) -> KnowledgeRepository:
+        self._verify_persisted_digest(prepared)
+        with self._lock:
+            active = self.current_native_build()
+            if active.build_id != expected_current_build_id:
+                raise LLMWikiCompatibilityError("active LLMWIKI build changed before activation")
+        prepared.repository.load(validate_sources=True)
+        if _native_build_digest(prepared.build) != prepared.native_digest:
+            raise LLMWikiCompatibilityError("LLMWIKI candidate changed after validation")
+        try:
+            self._runner.activate(
+                build_id=prepared.build.build_id,
+                expected_current_build_id=expected_current_build_id,
+            )
+        except LLMWikiCompatibilityError:
+            current = self._adapter.current_native_build()
+            if current is None or current.build_id != prepared.build.build_id:
+                raise
+        current = self._adapter.current_native_build()
+        if current is None or current.build_id != prepared.build.build_id:
+            raise LLMWikiCompatibilityError("LLMWIKI candidate activation did not persist")
+        if _native_build_digest(current) != prepared.native_digest:
+            raise LLMWikiCompatibilityError("activated LLMWIKI build differs from validation")
+        with self._lock:
+            latest = self._adapter.current_native_build()
+            if latest is None or latest.build_id != prepared.build.build_id:
+                raise LLMWikiCompatibilityError("LLMWIKI current changed before catalog promotion")
+            self._promote(current, prepared.repository)
+        self._record_digest(
+            prepared,
+            parent_build_id=expected_current_build_id,
+            status="active",
+        )
+        return prepared.repository
+
+    def recover_committed_candidate(self, prepared: PreparedNativeBuild) -> bool:
+        self._verify_persisted_digest(prepared)
+        current = self._adapter.current_native_build()
+        if current is None or current.build_id != prepared.build.build_id:
+            return False
+        if _native_build_digest(current) != prepared.native_digest:
+            raise LLMWikiCompatibilityError(
+                "committed LLMWIKI build differs from the validated candidate"
+            )
+        prepared.repository.load(validate_sources=True)
+        with self._lock:
+            latest = self._adapter.current_native_build()
+            if latest is None or latest.build_id != prepared.build.build_id:
+                return False
+            if _native_build_digest(latest) != prepared.native_digest:
+                raise LLMWikiCompatibilityError("committed LLMWIKI build changed during recovery")
+            self._promote(latest, prepared.repository)
+        self._record_digest(prepared, parent_build_id=None, status="active")
+        return True
 
     def _load(self, build: NativeBuild, *, validate_sources: bool) -> None:
+        expected_digest = self._state.llmwiki_build_digest(build.build_id)
+        actual_digest = _native_build_digest(build)
+        if expected_digest is not None and actual_digest != expected_digest:
+            raise LLMWikiCompatibilityError(
+                "current LLMWIKI build differs from its persisted validation"
+            )
+        prepared = self._prepare(build, validate_sources=validate_sources)
+        self._record_digest(prepared, parent_build_id=None, status="active")
+        self._promote(build, prepared.repository)
+
+    def _record_digest(
+        self,
+        prepared: PreparedNativeBuild,
+        *,
+        parent_build_id: str | None,
+        status: str,
+    ) -> None:
+        try:
+            self._state.record_llmwiki_build_digest(
+                build_id=prepared.build.build_id,
+                native_digest=prepared.native_digest,
+                parent_build_id=parent_build_id,
+                status=status,
+            )
+        except Exception as error:
+            raise LLMWikiCompatibilityError(
+                "LLMWIKI validated build digest could not be persisted"
+            ) from error
+
+    def _verify_persisted_digest(self, prepared: PreparedNativeBuild) -> None:
+        expected_digest = self._state.llmwiki_build_digest(prepared.build.build_id)
+        if expected_digest != prepared.native_digest:
+            raise LLMWikiCompatibilityError(
+                "LLMWIKI candidate lacks its persisted validation digest"
+            )
+
+    def _prepare(
+        self,
+        build: NativeBuild,
+        *,
+        validate_sources: bool = True,
+    ) -> PreparedNativeBuild:
+        native_digest = _native_build_digest(build)
         compatibility_root = self._adapter.materialize(build)
         repository = KnowledgeRepository(compatibility_root, self._source_resolver)
         repository.load(validate_sources=validate_sources)
         if repository.version != build.build_id:
             raise LLMWikiCompatibilityError("compatibility cache version mismatch")
+        if _native_build_digest(build) != native_digest:
+            raise LLMWikiCompatibilityError("LLMWIKI candidate changed during validation")
+        return PreparedNativeBuild(
+            build=build,
+            compatibility_root=compatibility_root,
+            repository=repository,
+            native_digest=native_digest,
+        )
+
+    def _promote(self, build: NativeBuild, repository: KnowledgeRepository) -> None:
         self._native_build = build
         self._repository = repository
 
 
 class NativeLLMWikiPipeline:
-    """Update normalized Markdown and let WikiBuildService atomically publish current.json."""
+    """Stage, validate, and atomically activate native LLMWIKI builds."""
 
     def __init__(
         self,
@@ -497,11 +721,13 @@ class NativeLLMWikiPipeline:
         catalog: NativeLLMWikiCatalog,
         file_store: SafeSourceFileStore,
         state_store: StateStore,
+        lock_manager: DocumentLockManager,
         doc2md: Doc2MdClient | None = None,
     ) -> None:
         self._catalog = catalog
         self._files = file_store
         self._state = state_store
+        self._locks = lock_manager
         self._doc2md = doc2md
         self._lock = asyncio.Lock()
 
@@ -513,6 +739,9 @@ class NativeLLMWikiPipeline:
             event_ids = [event.event_id for event in events]
             self._state.begin_event_batch(event_ids)
             parent_version = self._catalog.snapshot().version
+            new_version: str | None = None
+            document_ids: set[str] = set()
+            prepared: PreparedNativeBuild | None = None
             try:
                 self._state.record_sync_task(event_ids, stage="convert", status="running")
                 document_ids = await asyncio.to_thread(self._apply_inputs, events)
@@ -522,28 +751,29 @@ class NativeLLMWikiPipeline:
                     self._state.complete_event_batch(event_ids, parent_version)
                     return parent_version
                 self._state.record_sync_task(event_ids, stage="publish", status="running")
-                await asyncio.to_thread(self._verify_live_sources, events)
-                new_version = await asyncio.to_thread(
-                    self._catalog.build,
-                    expected_current_build_id=parent_version,
-                )
-                await asyncio.to_thread(self._verify_live_sources, events)
-                repository = await asyncio.to_thread(self._catalog.refresh)
+                async with self._locks.acquire_publish():
+                    await asyncio.to_thread(self._verify_live_sources, events)
+                    new_version = await asyncio.to_thread(self._catalog.stage)
+                    prepared = await asyncio.to_thread(
+                        self._catalog.prepare_candidate,
+                        new_version,
+                        expected_current_build_id=parent_version,
+                        changed_document_ids=document_ids,
+                    )
+                    await asyncio.to_thread(self._verify_live_sources, events)
+                    repository = await asyncio.to_thread(
+                        self._catalog.activate_candidate,
+                        prepared,
+                        expected_current_build_id=parent_version,
+                    )
                 if repository.version != new_version:
                     raise LLMWikiCompatibilityError("published LLMWIKI version was not loaded")
-                self._state.record_sync_task(
-                    event_ids,
-                    stage="publish",
-                    status="succeeded",
-                    output={"graph_version": new_version, "document_ids": sorted(document_ids)},
-                )
-                self._state.record_knowledge_version(
-                    version=new_version,
-                    parent_version=parent_version,
+                self._complete_published(
                     event_ids=event_ids,
-                    status="active",
+                    document_ids=document_ids,
+                    parent_version=parent_version,
+                    new_version=new_version,
                 )
-                self._state.complete_event_batch(event_ids, new_version)
                 return new_version
             except Exception as error:
                 error_code = "KNOWLEDGE_SYNC_FAILED"
@@ -553,6 +783,31 @@ class NativeLLMWikiPipeline:
                     error_code = error.code
                     error_message = str(error)
                     error_retryable = error.retryable
+                committed = False
+                if prepared is not None:
+                    try:
+                        async with self._locks.acquire_publish():
+                            committed = await asyncio.to_thread(
+                                self._catalog.recover_committed_candidate,
+                                prepared,
+                            )
+                    except Exception as integrity_error:
+                        raise LLMWikiCompatibilityError(
+                            "LLMWIKI publish committed with an invalid candidate"
+                        ) from integrity_error
+                if committed and new_version is not None:
+                    try:
+                        self._complete_published(
+                            event_ids=event_ids,
+                            document_ids=document_ids,
+                            parent_version=parent_version,
+                            new_version=new_version,
+                        )
+                    except Exception as completion_error:
+                        raise LLMWikiCompatibilityError(
+                            "LLMWIKI publish committed but state completion must be retried"
+                        ) from completion_error
+                    return new_version
                 with suppress(Exception):
                     await asyncio.to_thread(
                         self._catalog.refresh,
@@ -565,6 +820,28 @@ class NativeLLMWikiPipeline:
                     retryable=error_retryable,
                 )
                 raise LLMWikiCompatibilityError(str(error)) from error
+
+    def _complete_published(
+        self,
+        *,
+        event_ids: list[str],
+        document_ids: set[str],
+        parent_version: str,
+        new_version: str,
+    ) -> None:
+        self._state.record_sync_task(
+            event_ids,
+            stage="publish",
+            status="succeeded",
+            output={"graph_version": new_version, "document_ids": sorted(document_ids)},
+        )
+        self._state.record_knowledge_version(
+            version=new_version,
+            parent_version=parent_version,
+            event_ids=event_ids,
+            status="active",
+        )
+        self._state.complete_event_batch(event_ids, new_version)
 
     def _apply_inputs(self, events: list[PendingEvent]) -> set[str]:
         payloads_by_document: dict[str, list[ContentChangedPayload]] = defaultdict(list)
@@ -770,6 +1047,32 @@ class NativeLLMWikiPipeline:
             ) from error
         if snapshot.sha256 != expected_sha256:
             raise LLMWikiCompatibilityError(f"live source changed before publish: {document_id}")
+
+
+def _native_ingest_sha256(manifest: dict[str, Any], document_id: str) -> str:
+    ingest = manifest.get("ingest")
+    digest = ingest.get("sha256") if isinstance(ingest, dict) else None
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise LLMWikiCompatibilityError(f"LLMWIKI ingest checksum is invalid: {document_id}")
+    return digest
+
+
+def _native_build_digest(build: NativeBuild) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(build.build_dir.rglob("*")):
+        if path.is_symlink():
+            raise LLMWikiCompatibilityError("LLMWIKI candidate contains a symlink")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise LLMWikiCompatibilityError("LLMWIKI candidate contains a non-regular file")
+        relative = path.relative_to(build.build_dir).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def _convert_chunks(

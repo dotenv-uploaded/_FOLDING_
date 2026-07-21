@@ -109,6 +109,7 @@ def build_container(settings: Settings) -> AppContainer:
         backup_root=settings.resolved_backup_root(),
         max_bytes=settings.max_edit_bytes,
     )
+    locks = DocumentLockManager(settings.resolved_runtime_root() / "locks")
     doc2md = None
     if settings.doc2md_base_url:
         doc2md = Doc2MdClient(
@@ -148,12 +149,14 @@ def build_container(settings: Settings) -> AppContainer:
             adapter=adapter,
             runner=runner,
             source_resolver=resolver,
+            state_store=state,
         )
         catalog: KnowledgeCatalog | NativeLLMWikiCatalog = native_catalog
         pipeline: LocalKnowledgePipeline | NativeLLMWikiPipeline = NativeLLMWikiPipeline(
             catalog=native_catalog,
             file_store=files,
             state_store=state,
+            lock_manager=locks,
             doc2md=doc2md,
         )
     else:
@@ -170,7 +173,6 @@ def build_container(settings: Settings) -> AppContainer:
             doc2md=doc2md,
         )
     sync_worker = KnowledgeSyncWorker(pipeline=pipeline, state_store=state)
-    locks = DocumentLockManager(settings.resolved_runtime_root() / "locks")
     plan_service = ChangePlanService(settings=settings, file_store=files, state_store=state)
     execution_service = ChangeExecutionService(
         catalog=catalog,

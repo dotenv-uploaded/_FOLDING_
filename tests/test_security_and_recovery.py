@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import threading
@@ -11,10 +12,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from codegate_api.config import Settings
-from codegate_api.files.atomic import FileHashConflict, SafeFileError, SafeSourceFileStore
+from codegate_api.files.atomic import (
+    DocumentLockManager,
+    FileHashConflict,
+    SafeFileError,
+    SafeSourceFileStore,
+)
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.main import create_app
-from codegate_api.state.store import StateStore
+from codegate_api.state.store import StateConflict, StateStore
 
 
 def test_state_store_migrates_retryable_sync_error_column(tmp_path: Path) -> None:
@@ -83,6 +89,55 @@ def test_state_store_migrates_retryable_sync_error_column(tmp_path: Path) -> Non
         ).fetchone()
     assert "error_retryable" in columns
     assert retryable == (1,)
+
+
+def test_state_store_rejects_changed_validated_llmwiki_digest(tmp_path: Path) -> None:
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    state.record_llmwiki_build_digest(
+        build_id="build-0123456789abcdefabcd",
+        native_digest="a" * 64,
+        parent_build_id="build-fedcba9876543210abcd",
+        status="validated",
+    )
+
+    with pytest.raises(StateConflict, match="변경"):
+        state.record_llmwiki_build_digest(
+            build_id="build-0123456789abcdefabcd",
+            native_digest="b" * 64,
+            parent_build_id="build-fedcba9876543210abcd",
+            status="active",
+        )
+
+    assert state.llmwiki_build_digest("build-0123456789abcdefabcd") == "a" * 64
+
+
+def test_publish_barrier_waits_for_source_write(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = DocumentLockManager(tmp_path / "locks")
+        source_entered = asyncio.Event()
+        release_source = asyncio.Event()
+        publish_entered = asyncio.Event()
+
+        async def hold_source_write() -> None:
+            async with manager.acquire("REG-000001"):
+                source_entered.set()
+                await release_source.wait()
+
+        async def publish() -> None:
+            async with manager.acquire_publish():
+                publish_entered.set()
+
+        source_task = asyncio.create_task(hold_source_write())
+        await source_entered.wait()
+        publish_task = asyncio.create_task(publish())
+        await asyncio.sleep(0)
+        assert not publish_entered.is_set()
+        release_source.set()
+        await asyncio.gather(source_task, publish_task)
+        assert publish_entered.is_set()
+
+    asyncio.run(scenario())
 
 
 def _preview(client: TestClient, headers: dict[str, str]) -> dict[str, str]:

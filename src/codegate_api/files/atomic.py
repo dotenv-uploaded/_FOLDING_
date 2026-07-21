@@ -45,6 +45,16 @@ class DocumentLockManager:
         self._lock_root = lock_root.resolve()
         self._locks: dict[str, asyncio.Lock] = {}
         self._guard = asyncio.Lock()
+        self._publish_barrier = _AsyncReaderWriterLock()
+
+    @asynccontextmanager
+    async def acquire_publish(self) -> AsyncIterator[None]:
+        """Exclude all source writes while publishing one validated wiki build."""
+        async with (
+            self._publish_barrier.write(),
+            self._file_lock(".wiki-publish.lock", fcntl.LOCK_EX),
+        ):
+            yield
 
     @asynccontextmanager
     async def acquire(self, document_id: str) -> AsyncIterator[None]:
@@ -54,16 +64,63 @@ class DocumentLockManager:
             raise SafeFileError("INVALID_DOCUMENT_ID", "문서 ID 형식이 안전하지 않습니다.")
         async with self._guard:
             local_lock = self._locks.setdefault(document_id, asyncio.Lock())
-        async with local_lock:
-            self._lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            lock_path = self._lock_root / f"{document_id}.lock"
-            descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        async with (
+            self._publish_barrier.read(),
+            self._file_lock(".wiki-publish.lock", fcntl.LOCK_SH),
+            local_lock,
+            self._file_lock(f"{document_id}.lock", fcntl.LOCK_EX),
+        ):
+            yield
+
+    @asynccontextmanager
+    async def _file_lock(self, filename: str, operation: int) -> AsyncIterator[None]:
+        self._lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(self._lock_root / filename, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            await asyncio.to_thread(fcntl.flock, descriptor, operation)
+            yield
+        finally:
+            await asyncio.to_thread(fcntl.flock, descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+
+class _AsyncReaderWriterLock:
+    """Writer-preferring async barrier for source writes and wiki publication."""
+
+    def __init__(self) -> None:
+        self._condition = asyncio.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    @asynccontextmanager
+    async def read(self) -> AsyncIterator[None]:
+        async with self._condition:
+            await self._condition.wait_for(lambda: not self._writer and self._waiting_writers == 0)
+            self._readers += 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._condition.notify_all()
+
+    @asynccontextmanager
+    async def write(self) -> AsyncIterator[None]:
+        async with self._condition:
+            self._waiting_writers += 1
             try:
-                await asyncio.to_thread(fcntl.flock, descriptor, fcntl.LOCK_EX)
-                yield
+                await self._condition.wait_for(lambda: not self._writer and self._readers == 0)
+                self._writer = True
             finally:
-                await asyncio.to_thread(fcntl.flock, descriptor, fcntl.LOCK_UN)
-                os.close(descriptor)
+                self._waiting_writers -= 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._writer = False
+                self._condition.notify_all()
 
 
 class SafeSourceFileStore:
