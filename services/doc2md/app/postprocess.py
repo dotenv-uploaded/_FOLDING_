@@ -29,6 +29,7 @@ from app import structure
 #   - other punctuation (e.g. the "[" in "[BIM]"): 6+, and never -,|,= which
 #     markdown rules/table separators are built from
 #   - spaces: 6+  — collapse only the extreme runs the garble produces
+_FENCE = re.compile(r"^\s*(```|~~~)")
 _GLYPH_LETTER = re.compile(r"([가-힣ㄱ-ㅎㅏ-ㅣA-Za-z])\1{3,}")
 _GLYPH_PUNCT = re.compile(r"([^\w\s\-|=])\1{5,}")
 _SPACE_RUN = re.compile(r" {6,}")
@@ -97,6 +98,67 @@ def strip_empty_tables(text: str) -> str:
             out.append(lines[i])
             i += 1
     return "\n".join(out)
+
+
+MAX_LINE_CHARS = 500
+
+# Break points in falling order of preference. A wrap should land where the
+# reader would already have paused, so meaning survives the break.
+_SENTENCE_END = re.compile(r"(?<=[.!?。？！])\s|(?<=다\.)\s|(?<=음\.)\s|(?<=임\.)\s")
+_CLAUSE_END = re.compile(r"(?<=[,;:，、·])\s|(?<=하여)\s|(?<=하고)\s|(?<=되며)\s")
+_ANY_SPACE = re.compile(r"\s")
+
+
+def wrap_long_lines(text: str, limit: int = MAX_LINE_CHARS) -> str:
+    """Hard-cap every line at ``limit`` characters, breaking where it reads best.
+
+    Downstream evidence extraction works in quotes of a few hundred characters,
+    so a single 700-character line either overflows that budget or gets cut at an
+    arbitrary offset. Breaking it here, at a sentence boundary, means the cut
+    lands where a reader would already have paused.
+
+    **Table rows and fenced code are left alone.** A markdown row split across
+    two lines stops being a table, which would undo repair_tables; code is
+    whitespace-significant. Both are structural units that a line break destroys.
+    """
+    out: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        m = _FENCE.match(line)
+        if m:
+            token = m.group(1)
+            fence = None if fence and line.strip().startswith(fence) else fence or token
+            out.append(line)
+            continue
+        if fence is not None or len(line) <= limit or _is_table_row(line):
+            out.append(line)
+            continue
+        out.extend(_wrap_one(line, limit))
+    return "\n".join(out)
+
+
+def _wrap_one(line: str, limit: int) -> list[str]:
+    pieces: list[str] = []
+    rest = line
+    while len(rest) > limit:
+        cut = _best_cut(rest, limit)
+        pieces.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        pieces.append(rest)
+    return pieces or [line]
+
+
+def _best_cut(s: str, limit: int) -> int:
+    """Rightmost acceptable break at or before ``limit``."""
+    window = s[: limit + 1]
+    for pattern in (_SENTENCE_END, _CLAUSE_END, _ANY_SPACE):
+        found = [m.end() for m in pattern.finditer(window)]
+        # Ignore breaks so early that they leave a stub line.
+        usable = [p for p in found if p >= limit // 4]
+        if usable:
+            return usable[-1]
+    return limit  # one unbroken run of characters — cut it
 
 
 def repair_tables(text: str) -> str:
@@ -235,6 +297,8 @@ def clean(body: str) -> CleanResult:
     # removed as empty rather than left as a husk of separators.
     body = repair_tables(body)
     body = strip_empty_tables(body)
+    # Last, so wrapping sees the final text and nothing re-joins the lines.
+    body = wrap_long_lines(body)
     titled = promote_title(body)
     # Title discovery only guarantees the *first* line is a heading. Enforcing
     # the invariants the wiki builder needs (one H1, a non-empty H2, no level
