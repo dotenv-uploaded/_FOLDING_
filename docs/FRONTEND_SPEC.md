@@ -1,4 +1,4 @@
-# 프론트엔드 구현 스펙 v2.2 — 실제 구현 정합
+# 프론트엔드 구현 스펙 v2.3 — 실제 구현 정합
 
 - 담당: 우창 · 레포 `codegate-2026-local` (Electron + React/shadcn, pnpm 워크스페이스)
 - 이 문서는 **현재 코드베이스를 서술**한다. 코드와 다르면 코드가 우선이며 이 문서를 고친다.
@@ -41,9 +41,26 @@
                                         LLM 제공자 — enrichment
 ```
 
-**소유 경계**: 위키 빌드(변환·enrichment·조립)는 **Electron이 소유**한다. 문서는 자사 서버로 나가지
-않으며, 서버에 묻는 것은 로그인·구독뿐이고 빌드 시작 전에 한 번 확인한다. 대화·변경 승인·실행은
-sidecar에 위임한다.
+**소유 경계**: 문서는 자사 서버로 나가지 않는다. 서버에 묻는 것은 로그인·구독뿐이고 빌드 시작 전에
+한 번 확인한다. 대화·변경 승인·실행은 sidecar에 위임한다.
+
+### 빌더 2개는 공존이 정상이다
+
+Electron `build/`는 로직 재구현이 아니라 **오케스트레이터**다 — 변환은 `@codegate/convert`(민규),
+조립은 `@codegate/wiki-builder`(용휘)를 동적 import 한다(환경변수로 교체 가능). sidecar의
+`WikiBuildService`도 같은 용휘 빌더다. **같은 코어, 다른 트리거**다.
+
+| 트리거 | 소유 | 이유 |
+|---|---|---|
+| 초기·대량 빌드 (온보딩·폴더 추가) | **Electron** | 진행률 UI, enrichment 동시성·재시도·비용 통제가 여기 있음 |
+| 승인 편집 후 재빌드 (문서 1건) | **sidecar** | backup→atomic replace→재변환→빌드→outbox/Undo가 한 트랜잭션 |
+
+ADR 0004도 이를 상정한다 — *"**외부 build가 CAS에서 먼저 이기거나** publish 뒤 process가 중단돼도
+native current를 다시 읽고 이미 반영된 event를 멱등 완료할 수 있다."* 경합은 CAS 빌드 ID +
+current 재읽기 + 멱등 완료로 흡수된다.
+
+**공존 조건 3가지**: ① 같은 저장소 루트·레이아웃 ② `current.json` 승격 규약(CAS ID 비교 후 재읽기)
+③ enrichment 해시 캐시(`PreviousBuild.reusable`) 공유 — sidecar 재빌드도 존중해야 비용 중복이 없다.
 
 ## 1. 모듈 현황
 
@@ -153,7 +170,7 @@ Supabase 미설정 시 `client=null`로 앱은 계속 동작한다.
 
 | 항목 | 내용 |
 |---|---|
-| **빌드 이중화** ⚠️ | Electron `build/`가 위키를 만들고, sidecar도 LLMWIKI `WikiBuildService`를 in-process로 돈다. **어느 쪽이 정본 빌더인지 성주와 확정 필요** — 중복이면 한쪽 제거 |
+| **빌드 저장소 정합** ⚠️ | 두 빌더는 **공존이 맞다**(§0 하단). 다만 현재 저장 경로가 달라 서로 다른 위키를 만든다 — Electron `~/.codegate/wiki/{builds,current.json}` vs sidecar `<llmwiki-storage-root>/tenants/<t>/wikis/<w>/current.json`. **루트·레이아웃 통일 + 승격 규약 합의 필요** (성주) |
 | README 갱신 | 아직 "codegate-2026-web / Next.js 풀스택" — Electron 앱으로 수정 |
 | 계약 표기 | 팀 계약 v0.3의 "우창 = Next.js UI" → Electron으로 갱신 협의 |
 | 옛 레포명 핀 | 계약·ADR이 `codegate-2026-api@360ff41` 참조 → `codegate-2026-convert` |
