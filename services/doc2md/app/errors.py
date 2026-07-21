@@ -50,6 +50,11 @@ _CATALOG: dict[str, tuple[Severity, bool, str]] = {
         "제목 외에 본문이 없어 비어있지 않은 H2를 만들 수 없었습니다",
     ),
     "no_page_mapping": ("info", False, "이 형식은 페이지 정보를 제공하지 않습니다"),
+    "hwp_images_unsupported": (
+        "info",
+        False,
+        "구형 .hwp는 이미지 추출이 불가능해 본문 텍스트만 변환했습니다",
+    ),
     "token_budget_exceeded": ("warning", False, "토큰 예산을 초과해 예외로 분류했습니다"),
 }
 

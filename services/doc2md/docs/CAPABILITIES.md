@@ -7,9 +7,10 @@ truth이고, 이 문서는 계약 검토용 사본이다.
 
 | format | parse | ocr | page_mapping | **write_back** | library |
 |---|:---:|:---:|:---:|:---:|---|
-| pdf | ✅ | ✅ | ✅ | ❌ | markitdown (페이지 단위) + PaddleOCR |
-| pptx / ppt | ✅ | ✅ | ✅ 슬라이드 번호 | ❌ | markitdown + PowerPoint COM + PaddleOCR |
-| hwp / hwpx | ✅ | ❌ | ❌ | ❌ | pyhwp2md |
+| pdf | ✅ | ✅ 내장 이미지 | ✅ | ❌ | markitdown (페이지 단위) + PaddleOCR |
+| pptx / ppt | ✅ | ✅ 내장 이미지 | ✅ 슬라이드 번호 | ❌ | markitdown + PaddleOCR |
+| hwpx | ✅ | ✅ 내장 이미지 | ❌ | ❌ | pyhwp2md + PaddleOCR |
+| hwp (구형) | ✅ | ❌ 추출 불가 | ❌ | ❌ | pyhwp2md |
 | docx / xlsx / csv / html / md / txt | ✅ | ❌ | ❌ | ❌ | markitdown |
 
 ## write_back이 전부 ❌인 이유
@@ -67,6 +68,15 @@ PyMuPDF의 `get_text()`로 직접 뽑으면 PDF 코퍼스가 66.3초 → 1.4초(
 
 HWP/HWPX는 본문에 페이지 개념 자체가 없다 — 이건 선택이 아니라 형식의 성질이라
 `source_page`가 항상 null이다.
+
+## OCR 범위
+
+OCR은 **그림 안에 구워진 글자만** 읽는다. 문서의 본문 텍스트는 각 형식의 변환기가 읽고,
+그게 정본이다. 인식된 글자는 그림이 있던 자리에 삽입되며, 변환기가 이미 뽑은 줄과
+겹치면(공백 무시 비교) 버려진다.
+
+구형 `.hwp`만 예외로 이미지를 아예 읽을 수 없다 — 바이너리 CFB 컨테이너라 pyhwp2md가
+이미지 데이터를 노출하지 않는다. 이 경우 `hwp_images_unsupported` diagnostic을 남긴다.
 
 ## OCR 요건
 

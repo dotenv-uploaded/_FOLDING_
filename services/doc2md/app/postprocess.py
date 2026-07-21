@@ -99,6 +99,87 @@ def strip_empty_tables(text: str) -> str:
     return "\n".join(out)
 
 
+def repair_tables(text: str) -> str:
+    """Drop all-empty columns and make every row the same width.
+
+    Merged cells defeat the converters: a HWP budget table with rowspans came
+    through as 19 rows of 33 columns that were 3% filled, and a header row of 4
+    cells above a separator declaring 20. Markdown renderers mangle that, it
+    reads as a table while carrying almost nothing, and the empty scaffolding
+    (``|  |  |  |`` repeated) costs more tokens than the content.
+
+    This is lossless: a column is removed only when *every* cell in it is empty,
+    so no text can be dropped. A block left with one column is not a table at
+    all and becomes plain lines instead.
+
+    Well-formed tables come out byte-identical.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if not _is_table_row(lines[i]):
+            out.append(lines[i])
+            i += 1
+            continue
+
+        j = i
+        block: list[str] = []
+        while j < n and _is_table_row(lines[j]):
+            block.append(lines[j])
+            j += 1
+        i = j
+        out.extend(_repair_block(block))
+    return "\n".join(out)
+
+
+def _repair_block(block: list[str]) -> list[str]:
+    rows = [(_cells(r), _is_separator_row(r)) for r in block]
+    data = [c for c, sep in rows if not sep]
+    if len(data) < 2:
+        return block
+
+    width = max(len(c) for c in data)
+    padded = [c + [""] * (width - len(c)) for c in data]
+    header, body_rows = padded[0], padded[1:]
+
+    # Judge a column by its *data*, not its header. A column whose header has
+    # text but whose every data cell is empty is not a column at all: the HWP
+    # converter merged consecutive paragraphs into one row, so that "header"
+    # holds whole sections of the document (8. 성과활용방안, 9. 소요예산 …).
+    keep = [k for k in range(width) if any(r[k].strip() for r in body_rows)]
+
+    if not keep:
+        return block  # nothing but a header; strip_empty_tables decides
+    if len(keep) == width and all(len(c) == width for c, _ in rows):
+        return block  # already consistent — leave it exactly as it was
+
+    # Header text over a dataless column is prose. Keep it, above the table.
+    stray = [
+        header[k].strip() for k in range(width) if k not in keep and header[k].strip()
+    ]
+
+    if len(keep) == 1:
+        # One real column is a list, not a table.
+        kept_lines = [r[keep[0]].strip() for r in padded if r[keep[0]].strip()]
+        return _spaced(stray + kept_lines)
+
+    had_separator = any(sep for _, sep in rows)
+    table = ["| " + " | ".join(r[k] for k in keep) + " |" for r in padded]
+    if had_separator and len(table) > 1:
+        table.insert(1, "| " + " | ".join("---" for _ in keep) + " |")
+    return _spaced(stray) + table if stray else table
+
+
+def _spaced(lines: list[str]) -> list[str]:
+    """Blank-line separate paragraphs so markdown does not run them together."""
+    out: list[str] = []
+    for line in lines:
+        out.append(line)
+        out.append("")
+    return out
+
+
 _BRACKET_TITLE = re.compile(r"^\s*[<〈《\[]\s*(.+?)\s*[>〉》\]]\s*$")
 
 
@@ -150,6 +231,9 @@ class CleanResult:
 def clean(body: str) -> CleanResult:
     body = strip_image_refs(body)
     body = collapse_glyph_runs(body)
+    # Repair before stripping: a table that collapses to nothing here is then
+    # removed as empty rather than left as a husk of separators.
+    body = repair_tables(body)
     body = strip_empty_tables(body)
     titled = promote_title(body)
     # Title discovery only guarantees the *first* line is a heading. Enforcing
