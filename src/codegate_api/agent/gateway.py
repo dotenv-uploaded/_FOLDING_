@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 from pydantic import BaseModel, ConfigDict, Field
 
+from codegate_api.agent.instructions import build_turn_prompt
 from codegate_api.agent.runtime import build_claude_agent_options
 from codegate_api.config import Settings
 from codegate_api.knowledge.access import AccessContext
@@ -126,13 +127,9 @@ class ClaudeAgentGateway:
             session_id=None if resume_session_id else session_id,
             resume=resume_session_id,
         )
-        prompt = (
-            "Classify this user turn as locate or change. Use the CODEGATE read tools when needed. "
-            "For a change, return exactly one replace_exact operation only when the requested new "
-            "value is clear and the exact old text is verified from the current source. Never "
-            "claim a write occurred.\n\n"
-            f"selected_document_id={selected_document_id or 'none'}\n"
-            f"user_message={message}"
+        prompt = build_turn_prompt(
+            user_message=message,
+            selected_document_id=selected_document_id,
         )
         try:
             async with asyncio.timeout(self._settings.claude_timeout_seconds):

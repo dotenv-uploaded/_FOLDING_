@@ -1,3 +1,4 @@
+import json
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -162,6 +163,11 @@ def test_claude_gateway_uses_server_owned_session_and_structured_output(
     assert captured["options"].resume is None
     assert captured["options"].output_format["type"] == "json_schema"
     assert "AGENT_GUIDE.md" in str(captured["options"].system_prompt)
+    assert json.loads(captured["prompt"]) == {
+        "contract_version": "1.0",
+        "selected_document_id": "REG-000001",
+        "untrusted_user_message": '"1년"을 "3년"으로 변경',
+    }
 
 
 def test_claude_gateway_resumes_the_stored_sdk_session(
