@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { FileRow } from '@main/db/store';
 import { ensureDir, sha256, writeFileAtomic, writeJsonAtomic } from '@main/util/fsx';
+import { crossLinkCorpus, type CrossLinkDoc } from './crosslink';
 
 const GENERATED_ID_RE = /^DOC-[0-9A-F]{16}$/;
 const LANGUAGE_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
@@ -229,7 +230,49 @@ export async function syncNormalizedInputs(options: InputSyncOptions): Promise<I
     owner: 'codegate-local',
     documents: nextDocuments,
   } satisfies OwnershipManifest);
+  // 문서를 전부 쓴 뒤에야 코퍼스 전체를 볼 수 있다 — 링크는 그때 넣는다.
+  await applyCrossLinks(options.inputRoot, nextDocuments);
   return { converted, unchanged, removed };
+}
+
+/**
+ * 문서끼리의 텍스트 참조를 마크다운 링크로 바꿔 준다.
+ *
+ * LLMWIKI 빌더는 `[제목](DOC-xxxx.md)` 링크에서만 관계(그래프 간선)를 뽑는다. 변환된
+ * office 문서에는 그런 링크가 없고 `GBX-ONB-001` 같은 문서 번호를 글로 적을 뿐이라,
+ * 상호 참조가 140군데 있어도 링크 후보가 0이 되어 간선이 하나도 생기지 않았다.
+ *
+ * 관계를 **만들어 내지 않는다.** 이미 본문에 적혀 있는 참조를 빌더가 알아볼 수 있는
+ * 형태로 표기만 바꾼다. 어느 문서를 가리키는지 모호하면 손대지 않는다.
+ */
+async function applyCrossLinks(
+  inputRoot: string,
+  documents: OwnershipManifest['documents'],
+): Promise<void> {
+  const loaded: CrossLinkDoc[] = [];
+  for (const document of documents) {
+    const file = path.join(inputRoot, `${document.id}.md`);
+    const raw = await fs.readFile(file, 'utf8').catch(() => null);
+    if (raw === null) continue;
+    // frontmatter 는 계약이다. 본문(두 번째 `---` 뒤)만 바꾼다.
+    const end = raw.indexOf('\n---\n', raw.indexOf('---') + 3);
+    if (end < 0) continue;
+    loaded.push({
+      id: document.id,
+      label: document.relativePath,
+      body: raw.slice(end + 5),
+    });
+  }
+
+  const changed = crossLinkCorpus(loaded);
+  for (const [id, body] of changed) {
+    const file = path.join(inputRoot, `${id}.md`);
+    const raw = await fs.readFile(file, 'utf8').catch(() => null);
+    if (raw === null) continue;
+    const end = raw.indexOf('\n---\n', raw.indexOf('---') + 3);
+    if (end < 0) continue;
+    await writeFileAtomic(file, raw.slice(0, end + 5) + body);
+  }
 }
 
 async function loadOwnership(inputRoot: string): Promise<OwnershipManifest> {
