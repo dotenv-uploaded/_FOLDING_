@@ -29,18 +29,36 @@ export const INTERNAL_KEY_ENV = [
 ] as const;
 
 /**
- * 내부 키는 Anthropic 하나로 고정한다.
- * sidecar 의 Claude Agent SDK 가 Anthropic 을 요구하므로, enrichment 만 다른 제공자를
- * 쓰면 키를 두 벌 관리하게 된다. 한 벌로 둘 다 덮는다.
+ * 내부 키의 기본 제공자.
+ *
+ * sidecar 의 Claude Agent SDK 는 Anthropic 만 받는다. 다만 **위키 enrichment(문서 사이
+ * 관계 = 그래프 간선)는 Gemini 를 쓴다** — 빌더가 그렇게 만들어져 있다. 그래서 제공자별로
+ * 따로 읽는다. 하나로 뭉치면 "키를 넣었는데 간선이 안 생긴다"가 된다.
  */
 const INTERNAL_PROVIDER: LlmProvider = 'anthropic';
 
-export function readInternalApiKey(env: NodeJS.ProcessEnv): string | null {
-  for (const name of INTERNAL_KEY_ENV) {
+/** 제공자별 환경변수. 앞에 있는 것이 이긴다. */
+const PROVIDER_ENV: Record<LlmProvider, readonly string[]> = {
+  anthropic: INTERNAL_KEY_ENV,
+  gemini: ['CODEGATE_GEMINI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+  openai: ['CODEGATE_OPENAI_API_KEY', 'OPENAI_API_KEY'],
+};
+
+function readEnvKey(env: NodeJS.ProcessEnv, names: readonly string[]): string | null {
+  for (const name of names) {
     const value = env[name]?.trim();
     if (value) return value;
   }
   return null;
+}
+
+export function readInternalApiKey(env: NodeJS.ProcessEnv): string | null {
+  return readEnvKey(env, INTERNAL_KEY_ENV);
+}
+
+/** 제공자별 내부 키. 위키 enrichment 처럼 Anthropic 이 아닌 경로가 쓴다. */
+export function readInternalKeyFor(env: NodeJS.ProcessEnv, provider: LlmProvider): string | null {
+  return readEnvKey(env, PROVIDER_ENV[provider] ?? []);
 }
 
 /**
@@ -86,7 +104,8 @@ export class ManagedLlmKeyStore implements LlmKeyStore {
 
   async get(provider: LlmProvider): Promise<string | null> {
     if (this.internalKey && provider === INTERNAL_PROVIDER) return this.internalKey;
-    return this.inner.get(provider);
+    // Anthropic 외 제공자도 환경변수를 먼저 본다 — 위키 enrichment 는 Gemini 를 쓴다.
+    return readInternalKeyFor(process.env, provider) ?? this.inner.get(provider);
   }
 
   async resolve(): Promise<ResolvedLlmKey | null> {

@@ -164,6 +164,9 @@ export class AppServices {
       externalUrl: process.env.CODEGATE_SIDECAR_URL,
       binary: sidecarBinary(options),
       resolveAnthropicApiKey: () => llmKeys.get('anthropic'),
+      // 위키 enrichment(그래프 간선)는 Gemini 로 만들어져 있다 — 이 키가 없으면 관계가
+      // 하나도 생기지 않아 그래프에 점만 남는다.
+      resolveGeminiApiKey: () => llmKeys.get('gemini'),
       onState: (state) => options.send(IPC_EVENTS.sidecarState, state),
     });
     const initialRoot = store.listRoots()[0];

@@ -36,7 +36,13 @@ async function* run(
   if (response.assistant_text) {
     yield { type: 'text_delta', text: response.assistant_text };
   }
-  if (response.error) {
+  /*
+   * 오류 문구가 `assistant_text` 와 **같은 경우가 흔하다.** sidecar 가 사용자에게 할 말을
+   * 두 필드에 같이 담아 보내기 때문인데, 그대로 이어 붙이면 화면에 같은 문장이 두 번 뜬다
+   * ("수정할 문서와 변경 전후 텍스트를 명확히 적어주세요." 가 두 번 나오던 원인).
+   * 이미 말한 내용이면 다시 말하지 않는다.
+   */
+  if (response.error && !response.assistant_text.includes(response.error.message)) {
     yield { type: 'text_delta', text: `\n\n${response.error.message}` };
   }
 

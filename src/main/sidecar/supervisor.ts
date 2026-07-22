@@ -40,6 +40,11 @@ export interface SidecarSupervisorOptions {
   extraEnv?: Record<string, string>;
   /** 앱이 안전하게 복호화한 Anthropic 키. 없으면 process 환경변수를 사용한다. */
   resolveAnthropicApiKey?: () => Promise<string | null>;
+  /**
+   * 위키 enrichment(문서 사이 관계 = 그래프 간선)용 Gemini 키.
+   * 빌더가 Gemini 로 만들어져 있어 Anthropic 키만으로는 간선이 생기지 않는다.
+   */
+  resolveGeminiApiKey?: () => Promise<string | null>;
   /** 테스트에서 health 확인을 갈아끼우기 위한 구멍 */
   fetchImpl?: typeof fetch;
   /** 테스트에서 실제 process 대신 제어 가능한 child를 주입한다. */
@@ -103,6 +108,7 @@ export function buildSidecarEnvironment(
   corsOrigin: string,
   runtime: SidecarRuntimePaths,
   anthropicApiKey: string,
+  geminiApiKey: string,
   extraEnv: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
   return {
@@ -133,6 +139,9 @@ export function buildSidecarEnvironment(
     NO_PROXY: '127.0.0.1,localhost,::1',
     // Supabase token은 넘기지 않는다. Anthropic 키만 sidecar process에 한정한다.
     ANTHROPIC_API_KEY: anthropicApiKey,
+    // 위키 enrichment(간선)는 Gemini 를 쓴다. 없으면 관계가 만들어지지 않아 그래프가
+    // 점만 남는다 — 실제로 links.jsonl 이 0바이트로 나왔던 원인이다.
+    ...(geminiApiKey ? { GEMINI_API_KEY: geminiApiKey, GOOGLE_API_KEY: geminiApiKey } : {}),
   };
 }
 
@@ -299,8 +308,12 @@ export class SidecarSupervisor {
     try {
       await prepareRuntimePaths(this.runtime);
       const storedKey = await this.options.resolveAnthropicApiKey?.();
+      const geminiKey = await this.options.resolveGeminiApiKey?.();
       this.spawnError = null;
-      this.spawnChild(storedKey ?? process.env.ANTHROPIC_API_KEY ?? '');
+      this.spawnChild(
+        storedKey ?? process.env.ANTHROPIC_API_KEY ?? '',
+        geminiKey ?? process.env.GEMINI_API_KEY ?? '',
+      );
       await this.waitForHealth(readiness.signal);
       if (
         this.managed &&
@@ -337,7 +350,7 @@ export class SidecarSupervisor {
     });
   }
 
-  private spawnChild(anthropicApiKey: string): void {
+  private spawnChild(anthropicApiKey: string, geminiApiKey: string): void {
     const bin = this.options.binary ?? process.env.CODEGATE_SIDECAR_BIN ?? 'codegate-local';
     const runtime = this.runtime;
     if (!runtime) throw new Error('sidecar runtime paths are not configured');
@@ -350,6 +363,7 @@ export class SidecarSupervisor {
         this.options.corsOrigin,
         runtime,
         anthropicApiKey,
+        geminiApiKey,
         this.options.extraEnv,
       ),
     });

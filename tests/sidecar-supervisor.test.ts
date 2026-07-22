@@ -65,6 +65,7 @@ describe('SidecarSupervisor contract', () => {
       'app://codegate',
       runtime,
       'test-anthropic-key',
+      'test-gemini-key',
       { CODEGATE_BOOTSTRAP_DEMO: 'true' },
     );
 
