@@ -187,14 +187,22 @@ function ChangedFileBar({ path }: { path: string }) {
   );
 }
 
+/**
+ * 답변을 기다리는 동안 점 셋이 **왼쪽부터 하나씩** 뛰어오른다.
+ *
+ * 시차(`0.14s`)가 한 주기(`1.1s`)보다 훨씬 짧아야 물결로 보인다. 시차를 주기의 1/3까지
+ * 벌리면 셋이 각자 따로 노는 것처럼 흩어진다.
+ *
+ * 점이 뛰는 만큼 위쪽 여백을 둔다 — 없으면 올라간 점이 위 문단에 닿는다.
+ */
 function ThinkingDots() {
   return (
-    <div className="flex items-center gap-1 py-1.5" aria-label="생각하는 중">
+    <div className="flex items-center gap-1.5 pb-1.5 pt-2.5" aria-label="답변을 생각하는 중">
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className="h-1.5 w-1.5 rounded-full bg-ink-300"
-          style={{ animation: `fold-caret 1.2s ease-in-out ${i * 0.16}s infinite` }}
+          className="h-1.5 w-1.5 rounded-full bg-blue-500"
+          style={{ animation: `fold-dot-bounce 1.1s ease-in-out ${i * 0.14}s infinite` }}
         />
       ))}
     </div>
