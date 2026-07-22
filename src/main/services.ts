@@ -233,7 +233,12 @@ export class AppServices {
     // 자격증명 ① 백엔드 토큰(auth)과 ② Anthropic 키(환경변수)는 여기서도 섞이지 않는다.
     const agentRoots: string[] = [];
     const deps: AgentDeps = {
-      config: { roots: agentRoots, backendUrl: sidecarUrl, wikiDir },
+      config: {
+        roots: agentRoots,
+        backendUrl: sidecarUrl,
+        wikiDir,
+        wikiInputRoot: sidecarRuntimePaths(options, initialRoot?.path ?? '').llmwikiInputRoot,
+      },
       auth: {
         getToken: () => auth.getToken(),
         canWrite: () => {

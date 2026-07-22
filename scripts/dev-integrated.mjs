@@ -145,6 +145,9 @@ function safeProcessEnvironment(baseEnv) {
     'SSL_CERT_DIR',
     'UV_CACHE_DIR',
     'XDG_CACHE_HOME',
+    // doc2md 가 한글 본문을 kordoc 으로 읽는 데 쓴다. 이게 안 넘어가면 대체 변환기로
+    // 내려가고, 병합된 표의 내용이 빠진 채 변환된다 (경고는 남지만 내용은 이미 없다).
+    'CODEGATE_KORDOC_DIR',
   ]) {
     if (baseEnv[name] !== undefined) safe[name] = baseEnv[name];
   }

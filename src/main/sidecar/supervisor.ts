@@ -155,6 +155,14 @@ export function buildSidecarEnvironment(
     // 한글(HWP/HWPX) 원본 수정에 쓰는 kordoc(Node 라이브러리)이 설치된 디렉터리.
     // 없으면 sidecar 가 cwd 에서 찾다 실패하고 "kordoc 을 찾지 못했습니다" 로 멈춘다.
     ...(baseEnv.CODEGATE_KORDOC_DIR ? { CODEGATE_KORDOC_DIR: baseEnv.CODEGATE_KORDOC_DIR } : {}),
+    // 이 코퍼스가 시연·개발용 가상 문서인가.
+    //
+    // 위키 빌더는 **비공개 문서를 무료(학습 가능) 등급 LLM 으로 보내는 것을 거부한다.**
+    // 실제 사용자 문서를 다루는 기본값은 그래서 꺼짐이고, 켜는 것은 코퍼스가 진짜 가상일
+    // 때뿐이다 — 가드를 끄는 스위치가 아니라 코퍼스가 무엇인지 적는 자리다.
+    ...(baseEnv.CODEGATE_LLMWIKI_SYNTHETIC_CORPUS
+      ? { CODEGATE_LLMWIKI_SYNTHETIC_CORPUS: baseEnv.CODEGATE_LLMWIKI_SYNTHETIC_CORPUS }
+      : {}),
   };
 }
 
