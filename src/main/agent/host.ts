@@ -98,6 +98,18 @@ export class ChatService {
     return { messageId };
   }
 
+  /**
+   * 대화를 지운다 — 목록에서 빼는 게 아니라 메시지까지 없앤다.
+   *
+   * 답변이 흐르는 중일 수 있으므로 **먼저 중단한다.** 그냥 지우면 LLM 호출은 계속
+   * 돌면서 비용만 나가고, 그 답이 갈 곳은 이미 없다. 중단 뒤 스트림의 `finally` 가
+   * 남긴 행에 UPDATE 를 시도하지만 행이 이미 사라져 아무 일도 일어나지 않는다.
+   */
+  remove(conversationId: string): void {
+    this.abort(conversationId);
+    this.options.store.deleteConversation(conversationId);
+  }
+
   /** 스트리밍 중단 — `AbortController` 로 루프를 빠져나온다. */
   abort(conversationId: string): void {
     this.aborters.get(conversationId)?.abort();

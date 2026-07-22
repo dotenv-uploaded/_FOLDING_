@@ -125,6 +125,9 @@ export function registerIpcHandlers(
   handle(IPC.chatAbort, '응답을 중단하지 못했습니다.', (conversationId: string) => {
     services.chat.abort(conversationId);
   });
+  handle(IPC.chatDelete, '채팅을 삭제하지 못했습니다.', (conversationId: string) => {
+    services.chat.remove(conversationId);
+  });
 
   handle(
     IPC.executionRetry,

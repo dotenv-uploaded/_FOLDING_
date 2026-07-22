@@ -88,6 +88,8 @@ export interface AgentDeps {
     backendUrl: string;
     /** L2가 관리하는 로컬 위키 경로 (`~/.codegate/wiki`) */
     wikiDir: string;
+    /** 정규화된 문서(마크다운)가 놓인 곳 — 양식을 채울 근거로 읽는다 */
+    wikiInputRoot?: string;
   };
   /** L4 — keychain(safeStorage) 기반, 갱신 포함 */
   auth: { getToken(): Promise<string>; canWrite(): boolean };
@@ -332,6 +334,8 @@ export const IPC = {
   chatMessages: 'chat:messages',
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
+  /** 대화 하나를 기록째 지운다 — 되돌릴 수 없다. */
+  chatDelete: 'chat:delete',
 
   executionRetry: 'execution:retry',
   executionUndo: 'execution:undo',

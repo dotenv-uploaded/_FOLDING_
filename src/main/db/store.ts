@@ -342,6 +342,21 @@ export class Store {
     }
   }
 
+  /**
+   * 대화를 기록째 지운다.
+   *
+   * `messages` 에는 `conversations` 로 향하는 외래키가 없다. 대화만 지우면 메시지가
+   * 주인 없이 남아 목록에는 안 보이면서 DB 에는 계속 쌓인다 — "지웠다"고 말해 놓고
+   * 원문이 남아 있는 셈이라, 지우는 김에 한 트랜잭션으로 같이 지운다.
+   */
+  deleteConversation(id: string): void {
+    const tx = this.db.transaction((conversationId: string) => {
+      this.db.prepare(`DELETE FROM messages WHERE conversation_id = ?`).run(conversationId);
+      this.db.prepare(`DELETE FROM conversations WHERE id = ?`).run(conversationId);
+    });
+    tx(id);
+  }
+
   getConversation(id: string): Conversation | null {
     const row = this.db
       .prepare(`SELECT id, title, updated_at AS updatedAt FROM conversations WHERE id = ?`)

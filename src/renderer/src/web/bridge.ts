@@ -270,6 +270,12 @@ export function createWebBridge(): CodegateApi {
         const current = messages.get(conversationId) ?? [];
         for (const message of current) message.streaming = false;
       },
+      async remove(conversationId: string): Promise<void> {
+        clearConversationTimers(conversationId);
+        messages.delete(conversationId);
+        const index = conversations.findIndex((item) => item.id === conversationId);
+        if (index >= 0) conversations.splice(index, 1);
+      },
       onAgentEvent(callback: Listener<AgentEventEnvelope>): () => void {
         return subscribe(agentListeners, callback);
       },

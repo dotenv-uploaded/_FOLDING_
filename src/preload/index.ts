@@ -79,6 +79,8 @@ const api: CodegateApi = {
       ipcRenderer.invoke(IPC.chatSend, conversationId, text),
     abort: (conversationId: string): Promise<void> =>
       ipcRenderer.invoke(IPC.chatAbort, conversationId),
+    remove: (conversationId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.chatDelete, conversationId),
     onAgentEvent: (cb: (e: AgentEventEnvelope) => void) =>
       subscribe<AgentEventEnvelope>(IPC_EVENTS.agentEvent, cb),
   },

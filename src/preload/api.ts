@@ -53,6 +53,8 @@ export interface CodegateApi {
     messages(conversationId: string): Promise<ChatMessage[]>;
     send(conversationId: string, text: string): Promise<{ messageId: string }>;
     abort(conversationId: string): Promise<void>;
+    /** 대화와 그 안의 메시지를 지운다. 되돌릴 수 없다. */
+    remove(conversationId: string): Promise<void>;
     onAgentEvent(callback: (event: AgentEventEnvelope) => void): () => void;
   };
   execution: {

@@ -22,6 +22,10 @@ export function useChat() {
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
 
+  // 삭제 콜백이 매번 새로 만들어지지 않게 목록도 ref 로 들고 본다.
+  const conversationsRef = useRef<Conversation[]>([]);
+  conversationsRef.current = conversations;
+
   // 대화 목록 최초 로드 — 없으면 하나 만든다.
   useEffect(() => {
     let alive = true;
@@ -148,6 +152,32 @@ export function useChat() {
     setMessages([]);
   }, []);
 
+  /**
+   * 대화를 지운다.
+   *
+   * 지운 것이 보고 있던 대화면 **다음 대화로 옮겨 앉는다.** 빈 화면을 남기면 사용자가
+   * "지운 건지 앱이 멈춘 건지" 알 수 없다. 하나도 안 남으면 최초 로드와 똑같이 새로
+   * 하나 만든다 — 채팅 없는 상태는 이 화면에 존재하지 않는다.
+   */
+  const deleteConversation = useCallback(async (id: string) => {
+    await window.codegate.chat.remove(id);
+
+    const remaining = conversationsRef.current.filter((c) => c.id !== id);
+    setConversations(remaining);
+    if (activeIdRef.current !== id) return;
+
+    // 지운 대화가 스트리밍 중이었다면 그 표시도 함께 내린다.
+    setStreaming(false);
+    setMessages([]);
+    if (remaining.length > 0) {
+      setActiveId(remaining[0].id);
+      return;
+    }
+    const created = await window.codegate.chat.create();
+    setConversations([created]);
+    setActiveId(created.id);
+  }, []);
+
   return {
     conversations,
     activeId,
@@ -159,5 +189,6 @@ export function useChat() {
     send,
     abort,
     createConversation,
+    deleteConversation,
   };
 }
