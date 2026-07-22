@@ -24,6 +24,16 @@ const HEALTH_INTERVAL_MS = 300;
 const MAX_RESTARTS = 3;
 /** 종료 신호 뒤 이만큼 기다렸다가 강제 종료. */
 const KILL_GRACE_MS = 3_000;
+/** 기동 실패 원인을 판단할 만큼만 stderr 를 남긴다. */
+const STDERR_TAIL_LIMIT = 8_192;
+
+/**
+ * 위키가 지금 등록 폴더와 어긋났을 때 sidecar 가 내는 신호.
+ *
+ * 활성 빌드가 참조하는 원본이 사라지면(폴더를 바꾸거나 파일을 지우면) sidecar 는 기동
+ * 자체를 거부한다. 이 경우 앱은 **못 뜬 채로 남고 사용자가 손쓸 방법이 없다.**
+ */
+const STALE_WIKI_SIGNATURE = /source document is missing|KnowledgePackageError/;
 
 export interface SidecarSupervisorOptions {
   /** 렌더러 오리진 — sidecar CORS 를 여기로 좁힌다 */
@@ -203,6 +213,7 @@ export class SidecarSupervisor {
   private generation = 0;
   private disposed = false;
   private readinessAbort: AbortController | null = null;
+  private stderrTail = '';
 
   constructor(private readonly options: SidecarSupervisorOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -214,6 +225,20 @@ export class SidecarSupervisor {
       restarts: 0,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  /** 마지막 기동에서 sidecar 가 남긴 stderr 꼬리. */
+  get recentStderr(): string {
+    return this.stderrTail;
+  }
+
+  /** 위키가 지금 폴더와 어긋나 기동하지 못한 것인가 — 그렇다면 다시 만들면 살아난다. */
+  get failedOnStaleWiki(): boolean {
+    return STALE_WIKI_SIGNATURE.test(this.stderrTail);
+  }
+
+  clearRecentStderr(): void {
+    this.stderrTail = '';
   }
 
   getState(): SidecarLifecycleState {
@@ -372,7 +397,13 @@ export class SidecarSupervisor {
     });
 
     child.stdout?.on('data', (b: Buffer) => console.info('[sidecar]', b.toString().trimEnd()));
-    child.stderr?.on('data', (b: Buffer) => console.warn('[sidecar]', b.toString().trimEnd()));
+    child.stderr?.on('data', (b: Buffer) => {
+      const text = b.toString();
+      console.warn('[sidecar]', text.trimEnd());
+      // 흘려보내지 않고 꼬리를 남긴다. 기동에 실패했을 때 **왜** 실패했는지가 여기에만 있고,
+      // 그걸 알아야 스스로 고칠지(위키 재생성) 그냥 포기할지 판단할 수 있다.
+      this.stderrTail = (this.stderrTail + text).slice(-STDERR_TAIL_LIMIT);
+    });
 
     child.on('error', (err) => {
       if (this.child !== child) return;

@@ -2,6 +2,7 @@
  * 메인 프로세스 서비스 컨테이너 — L2·L3·L4 와 에이전트 호스트를 한 곳에서 조립한다.
  * IPC 핸들러(`ipc.ts`)와 앱 부트스트랩(`index.ts`)은 이 객체만 본다.
  */
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AgentDeps,
@@ -568,7 +569,7 @@ export class AppServices {
         phase: { name: 'assemble', done: 0, total: 1 },
         message: '검색 엔진을 준비하는 중',
       });
-      await this.supervisor.restart();
+      await this.restartSidecarSelfHealing(runtime);
       if (!this.isCurrentRootGeneration(root, generation)) return;
       const sidecarState = this.supervisor.getState();
       if (!['ready', 'external'].includes(sidecarState.status)) {
@@ -610,6 +611,45 @@ export class AppServices {
    * 폴더가 없으면 조용히 아무 일도 안 하지 않고 이유를 말한다 — 버튼을 눌렀는데
    * 아무 반응이 없으면 고장으로 보인다.
    */
+  /**
+   * sidecar 를 띄우되, **위키가 지금 폴더와 어긋나 못 뜨는 경우엔 스스로 고친다.**
+   *
+   * 활성 빌드가 참조하는 원본이 사라지면(폴더를 바꾸거나 파일을 지우면) sidecar 는 기동
+   * 자체를 거부한다. 그러면 앱은 못 뜬 채로 남고, 되살릴 방법이 화면에 없다. 실제로
+   * 등록 폴더를 바꿨더니 "source document is missing" 으로 죽어 손쓸 수 없는 상태가 됐다.
+   *
+   * 위키 빌드는 **원본에서 다시 만들 수 있는 파생물**이다. 어긋났으면 붙들고 있을 이유가
+   * 없으므로 지우고 다시 만든다. 정규화 입력(source-md)은 지우지 않는다 — 그건 doc2md 로
+   * 오래 걸려 만든 것이고, 사라진 문서는 다음 입력 동기화가 알아서 걷어낸다.
+   *
+   * 다른 이유로 실패한 것이면 **건드리지 않는다.** 원인을 모르면서 데이터를 지우지 않는다.
+   */
+  private async restartSidecarSelfHealing(runtime: SidecarRuntimePaths): Promise<void> {
+    this.supervisor.clearRecentStderr();
+    try {
+      await this.supervisor.restart();
+      if (['ready', 'external'].includes(this.supervisor.getState().status)) return;
+    } catch (err) {
+      if (!this.supervisor.failedOnStaleWiki) throw err;
+    }
+    if (!this.supervisor.failedOnStaleWiki) return;
+
+    logError(
+      'sidecar:stale-wiki',
+      new Error('위키가 등록 폴더와 어긋나 기동하지 못했습니다. 위키를 다시 만듭니다.'),
+    );
+    this.emitKnowledgeBuildState({
+      status: 'assembling',
+      progress: 60,
+      phase: { name: 'assemble', done: 0, total: 1 },
+      message: '문서 목록이 바뀌어 위키를 다시 만드는 중',
+    });
+    await fs.rm(runtime.llmwikiStorageRoot, { recursive: true, force: true });
+    await ensureDir(runtime.llmwikiStorageRoot);
+    this.supervisor.clearRecentStderr();
+    await this.supervisor.restart();
+  }
+
   /** 저장 대화상자의 기본 위치로 쓸 첫 등록 폴더. 없으면 null. */
   primaryRootPath(): string | null {
     return this.store.listRoots()[0]?.path ?? null;
