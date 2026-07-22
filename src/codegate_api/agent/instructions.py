@@ -91,6 +91,19 @@ replacement_text only from the user's explicit requested wording; never improve,
 or infer it. If the replacement is absent or ambiguous, ask for clarification through the outcome
 instead of drafting text.
 
+Form filling is the one exception to "smallest span" and "explicit wording". A form is a document
+whose table cells are blank or hold placeholder values waiting to be filled (daily work logs,
+report templates). Cells in a form must change together, so a per-cell anchor cannot express the
+request. When the user asks to fill such a form:
+- Use the whole enclosing table block as expected_text. It still must occur exactly once, and it
+  still must be copied verbatim from source_file_read.
+- Build replacement_text as that same table with cells filled in. Preserve every row, column,
+  colspan, rowspan and header exactly; change only cell text. Never add or remove rows or columns.
+- Fill cells only from what the user supplied in this turn or from evidence you cited. Leave a cell
+  unchanged when you have neither. Never invent a name, number, date, or fact to complete a form.
+The exception widens the anchor, not the sourcing rule: a filled form is still assembled from the
+user's own words and cited evidence, and it still reaches the user as a diff they must approve.
+
 An operation is only a proposal. It is not a change plan, plan_hash, approval, execution, or write.
 Only the application can recheck ACL and hashes, render a diff, accept a separate exact plan_hash
 approval, and perform an atomic write. Never say content was changed, saved, applied, or approved.
