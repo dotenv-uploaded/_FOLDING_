@@ -41,6 +41,19 @@ _CATALOG: dict[str, tuple[Severity, bool, str]] = {
     "pptx_ocr_skipped": ("warning", True, "슬라이드 이미지 OCR을 건너뛰었습니다"),
     "slide_render_unavailable": ("warning", True, "슬라이드를 렌더링할 수 없어 내장 이미지로 대체했습니다"),
     "pdf_page_extract_failed": ("warning", True, "페이지 단위 추출에 실패해 통합 추출로 대체했습니다"),
+    # kordoc 없이 변환한 한글 문서는 **병합된 표의 내용이 빠져 있을 수 있다.** 대체
+    # 변환기(pyhwp2md)가 거기서 조용히 내용을 잃는다 — app/kordoc.py 의 측정 참고.
+    # 호스트에 Node 를 놓으면 같은 파일이 온전히 변환되므로 retryable 이다.
+    "hwp_kordoc_unavailable": (
+        "warning",
+        True,
+        "kordoc(Node)을 쓸 수 없어 대체 변환기를 썼습니다 — 병합된 표의 내용이 빠졌을 수 있습니다",
+    ),
+    "hwp_kordoc_failed": (
+        "warning",
+        True,
+        "kordoc 변환에 실패해 대체 변환기를 썼습니다 — 병합된 표의 내용이 빠졌을 수 있습니다",
+    ),
     # Inherent to the document — retrying changes nothing.
     "empty_output": ("warning", False, "변환 결과 본문이 비어 있습니다"),
     "heading_normalized": ("info", False, "heading 구조를 계약 요건에 맞게 보정했습니다"),

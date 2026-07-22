@@ -64,8 +64,12 @@ _TABLE: list[FormatCapability] = [
         ocr=False,
         page_mapping=False,
         write_back=False,
-        library="pyhwp2md",
-        notes="HWP 본문에 페이지 개념이 없어 source_page는 항상 null이다.",
+        library="kordoc (fallback: pyhwp2md)",
+        notes=(
+            "HWP 본문에 페이지 개념이 없어 source_page는 항상 null이다. "
+            "본문은 kordoc(Node)으로 읽는다 — pyhwp2md 는 병합된 셀의 내용을 잃는다. "
+            "Node 가 없으면 pyhwp2md 로 대체하고 hwp_kordoc_unavailable 경고를 남긴다."
+        ),
     ),
     FormatCapability(
         format="hwpx",
@@ -73,8 +77,12 @@ _TABLE: list[FormatCapability] = [
         ocr=False,
         page_mapping=False,
         write_back=False,
-        library="pyhwp2md",
-        notes="HWPX 본문에 페이지 개념이 없어 source_page는 항상 null이다.",
+        library="kordoc (fallback: pyhwp2md)",
+        notes=(
+            "HWPX 본문에 페이지 개념이 없어 source_page는 항상 null이다. "
+            "본문은 kordoc(Node)으로 읽는다 — pyhwp2md 는 병합된 셀의 내용을 잃는다. "
+            "Node 가 없으면 pyhwp2md 로 대체하고 hwp_kordoc_unavailable 경고를 남긴다."
+        ),
     ),
     FormatCapability(
         format="docx",

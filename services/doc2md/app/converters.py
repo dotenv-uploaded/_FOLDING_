@@ -28,7 +28,7 @@ from pathlib import Path
 import pyhwp2md
 from markitdown import MarkItDown, MarkItDownException
 
-from app import images, ocr, progress, render
+from app import images, kordoc, ocr, progress, render
 from app.errors import Diagnostic, diagnostic
 from app.schemas import RawConversion
 
@@ -97,28 +97,51 @@ def _join_pages(pages: dict[int, str] | list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _read_hwp_body(path: Path, warnings: list[Diagnostic]) -> tuple[str, str]:
+    """Return ``(body, library)``, preferring kordoc over pyhwp2md.
+
+    pyhwp2md silently drops the contents of merged table cells — on one 사업계획서
+    양식 it kept 133 of 4,026 characters and reported no warning at all. Korean
+    official forms are almost entirely merged-cell tables, so that is the common
+    case, not an edge case. See app/kordoc.py for the measurements.
+
+    kordoc needs Node. When it is missing we still convert, because a partial
+    body beats no body — but we say so, so nobody reads a form-shaped hole as a
+    faithful conversion.
+    """
+    bridge = kordoc.KordocBridge()
+    try:
+        return bridge.to_markdown(path), "kordoc"
+    except kordoc.KordocUnavailableError as e:
+        warnings.append(diagnostic("hwp_kordoc_unavailable", detail=str(e)))
+    except kordoc.KordocFailedError as e:
+        warnings.append(diagnostic("hwp_kordoc_failed", detail=str(e)))
+
+    try:
+        return pyhwp2md.convert(path), "pyhwp2md"
+    except pyhwp2md.Pyhwp2mdError as e:
+        raise ConversionFailedError(f"hwp/hwpx conversion failed: {e}") from e
+
+
 def _convert_hwp(
     path: Path, ext: str, warnings: list[Diagnostic], job=None
 ) -> RawConversion:
     progress.update(job, phase="convert", total=1, current=0, message="hwp 변환 중")
-    try:
-        body = pyhwp2md.convert(path)
-    except pyhwp2md.Pyhwp2mdError as e:
-        raise ConversionFailedError(f"hwp/hwpx conversion failed: {e}") from e
+    body, library = _read_hwp_body(path, warnings)
 
     if ext != ".hwpx":
-        # Legacy .hwp is a binary CFB container and pyhwp2md exposes no image
+        # Legacy .hwp is a binary CFB container and neither reader exposes image
         # data, so pictures in it cannot be read at all. Say so rather than
         # letting the text-only result look complete.
         warnings.append(diagnostic("hwp_images_unsupported"))
-        return _finish(body, ext, "pyhwp2md", warnings)
+        return _finish(body, ext, library, warnings)
 
     found = images.from_hwpx(path)
     texts = _read_images(found, warnings, body, job, ocr.detect_lang(body))
     if texts:
         body = _splice_by_anchor(body, found, texts)
-        return _finish(body, ext, "pyhwp2md+ocr", warnings)
-    return _finish(body, ext, "pyhwp2md", warnings)
+        return _finish(body, ext, f"{library}+ocr", warnings)
+    return _finish(body, ext, library, warnings)
 
 
 def _convert_pptx(
