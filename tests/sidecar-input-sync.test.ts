@@ -103,6 +103,51 @@ describe('sidecar normalized input sync', () => {
     expect(secondFetch).not.toHaveBeenCalled();
   });
 
+  /**
+   * 재변환 여부를 원본 sha256 으로만 판단하면, 변환기를 고쳐도 원본이 그대로인 문서는
+   * 영원히 옛 결과를 쓴다. 고친 변환기가 **한 번도 실행되지 않는다.**
+   *
+   * 실제로 doc2md 가 한글 표를 제대로 읽도록 고친 뒤에도 등록 문서 12개가 전부
+   * `unchanged` 로 넘어갔다. 그 침묵을 여기서 막는다.
+   */
+  it('변환기 판이 바뀌면 원본이 그대로여도 다시 변환한다', async () => {
+    const root = await temporaryRoot();
+    const inputRoot = path.join(root, 'source-md');
+    const row = fileRow(root, 'manual.md', 'c'.repeat(64));
+
+    await syncNormalizedInputs({
+      files: [row],
+      inputRoot,
+      doc2mdUrl: 'http://127.0.0.1:8123',
+      fetchImpl: conversionFetch(row.sha256),
+    });
+
+    // 앞선 판으로 만들어진 것처럼 소유 manifest 를 되돌린다.
+    const marker = path.join(inputRoot, '.codegate-input-owner.json');
+    const ownership = JSON.parse(await fs.readFile(marker, 'utf8'));
+    expect(ownership.converterGeneration).toBeTruthy();
+    delete ownership.converterGeneration;
+    await fs.writeFile(marker, JSON.stringify(ownership));
+
+    const refetch = conversionFetch(row.sha256);
+    await expect(
+      syncNormalizedInputs({
+        files: [row],
+        inputRoot,
+        doc2mdUrl: 'http://127.0.0.1:8123',
+        fetchImpl: refetch,
+      }),
+    ).resolves.toEqual({ converted: 1, unchanged: 0, removed: 0 });
+    expect(refetch).toHaveBeenCalled();
+
+    // 다시 변환한 뒤에는 현재 판이 기록돼, 다음 빌드는 건너뛴다.
+    const settled = vi.fn();
+    await expect(
+      syncNormalizedInputs({ files: [row], inputRoot, fetchImpl: settled as typeof fetch }),
+    ).resolves.toEqual({ converted: 0, unchanged: 1, removed: 0 });
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('원본 SHA가 바뀌면 revision을 올리고 ownership manifest의 stale 입력만 제거한다', async () => {
     const root = await temporaryRoot();
     const inputRoot = path.join(root, 'source-md');

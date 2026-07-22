@@ -17,6 +17,23 @@ const OWNER_FILE = '.codegate-input-owner.json';
 const LLMWIKI_SECTION_MAX_CHARS = 2_200;
 const LLMWIKI_MAX_SECTIONS = 500;
 
+/**
+ * 변환 결과의 판 번호.
+ *
+ * 재변환 여부는 **원본 파일의 sha256** 으로만 판단했다. 그래서 doc2md 가 같은 파일을
+ * 다르게(더 잘) 변환하게 되어도, 원본이 안 변했으니 전부 `unchanged` 로 건너뛰고 옛
+ * 결과가 그대로 남았다. 변환기를 고쳐도 위키는 영원히 옛 본문을 본다.
+ *
+ * 실제로 한글 본문을 kordoc 으로 읽도록 doc2md 를 고친 뒤에도 12개 문서가 전부 그대로였다.
+ * 같은 함정을 llmwiki 호환 렌더와 doc2md 캐시에서도 하나씩 만났다 — 캐시 키에 **무엇으로
+ * 만들었는지**가 빠지면 어디서든 같은 일이 생긴다.
+ *
+ * doc2md 의 출력이 달라지면 이 번호를 올린다. 그러면 다음 빌드에서 전부 다시 변환된다.
+ *
+ * v2 — 한글(HWP/HWPX)을 kordoc 으로 읽는다. 병합된 셀의 표 내용이 살아났다.
+ */
+const CONVERTER_GENERATION = 'v2';
+
 interface Doc2MdResult {
   body?: unknown;
   source_sha256?: unknown;
@@ -51,6 +68,11 @@ interface OwnershipManifest {
   schemaVersion: 1;
   owner: 'codegate-local';
   documents: OwnedDocument[];
+  /**
+   * 이 문서들을 만든 변환기 판 번호. 없으면 `CONVERTER_GENERATION` 이전에 만들어진 것이다.
+   * 현재 판과 다르면 원본이 그대로여도 전부 다시 변환한다.
+   */
+  converterGeneration?: string;
 }
 
 export interface InputSyncOptions {
@@ -124,6 +146,9 @@ export async function syncNormalizedInputs(options: InputSyncOptions): Promise<I
       renameByPath.set(file.relPath, candidates[0]!);
     }
   }
+  // 변환기가 바뀌었으면 원본이 그대로여도 전부 다시 변환한다. 옛 결과를 재사용하면
+  // 고친 변환기가 한 번도 실행되지 않는다.
+  const converterChanged = ownership.converterGeneration !== CONVERTER_GENERATION;
   let converted = 0;
   let unchanged = 0;
 
@@ -142,6 +167,7 @@ export async function syncNormalizedInputs(options: InputSyncOptions): Promise<I
 
     const existing = await readIdentity(target);
     if (
+      !converterChanged &&
       existing?.id === id &&
       existing.uri === uri &&
       existing.sourceSha256.toLowerCase() === file.sha256.toLowerCase() &&
@@ -225,10 +251,13 @@ export async function syncNormalizedInputs(options: InputSyncOptions): Promise<I
       removed += 1;
     }
   }
+  // 새 판 번호는 **전부 변환한 뒤에야** 기록한다. 도중에 죽으면 옛 번호가 남아 다음
+  // 실행에서 다시 전부 변환된다 — 반쯤 새 문서를 완료로 표시하는 것보다 낫다.
   await writeJsonAtomic(path.join(options.inputRoot, OWNER_FILE), {
     schemaVersion: 1,
     owner: 'codegate-local',
     documents: nextDocuments,
+    converterGeneration: CONVERTER_GENERATION,
   } satisfies OwnershipManifest);
   // 문서를 전부 쓴 뒤에야 코퍼스 전체를 볼 수 있다 — 링크는 그때 넣는다.
   await applyCrossLinks(options.inputRoot, nextDocuments);
@@ -303,6 +332,10 @@ function isOwnershipManifest(value: unknown): value is OwnershipManifest {
   return (
     manifest.schemaVersion === 1 &&
     manifest.owner === 'codegate-local' &&
+    // 이 필드가 생기기 전에 만들어진 manifest 도 읽을 수 있어야 한다 — 없으면 옛 판으로
+    // 보고 전부 다시 변환하면 된다. 있는데 문자열이 아니면 손상된 것이다.
+    (manifest.converterGeneration === undefined ||
+      typeof manifest.converterGeneration === 'string') &&
     Array.isArray(manifest.documents) &&
     manifest.documents.every(
       (document) =>
