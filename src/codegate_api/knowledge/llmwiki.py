@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import importlib
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -45,9 +46,39 @@ from codegate_api.knowledge.schemas import (
 from codegate_api.state.store import PendingEvent, StateStore
 from codegate_api.changes.kordoc import is_hwp
 
+logger = logging.getLogger(__name__)
+
+#: 이 코퍼스가 시연·개발용 가상 문서인지.
+#:
+#: 빌더는 **비공개 문서를 무료(학습 가능) 등급 LLM 으로 보내는 것을 거부한다.** 옳은
+#: 동작이다 — 매출이나 고객 정보가 담긴 문서가 학습에 쓰이면 되돌릴 수 없다. 실제
+#: 사용자 문서를 다루는 기본값은 그래서 `False` 여야 한다.
+#:
+#: 다만 시연·개발용으로 만들어 낸 가상 문서까지 막으면 요약을 한 번도 볼 수 없다. 그럴
+#: 때만 켠다. 이건 가드를 우회하는 스위치가 아니라 **코퍼스가 무엇인지 적는 자리**이므로,
+#: 실제 문서를 다루면서 켜면 안 된다.
+#:
+#:     CODEGATE_LLMWIKI_SYNTHETIC_CORPUS=1
+SYNTHETIC_CORPUS_ENV = "CODEGATE_LLMWIKI_SYNTHETIC_CORPUS"
+
+
+def _synthetic_corpus() -> bool:
+    return os.environ.get(SYNTHETIC_CORPUS_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
 _STANDALONE_NATIVE_ANCHOR = re.compile(
     r'^\s*<a\s+id=["\'](?P<id>[0-9A-Za-z][0-9A-Za-z._:-]{0,127})["\']\s*></a>\s*$'
 )
+
+# 호환 렌더 결과의 캐시 키에 들어가는 판 번호.
+#
+# `materialize()` 는 build_id 만 보고 이미 렌더된 디렉터리를 그대로 돌려준다. 그래서
+# `_render()` 가 **무엇을 쓰는지** 바뀌어도, 같은 build_id 로 이미 렌더해 둔 것이 있으면
+# 옛 결과가 계속 쓰인다. 실제로 한글 문서를 editable 로 여는 수정을 하고도 이미 렌더된
+# 빌드에서는 read_only 가 그대로 남아 "수정 가능한 대상을 찾지 못했습니다" 가 났다.
+#
+# `_render()` 의 출력이 달라지면 이 번호를 올린다. 그러면 캐시 키가 달라져 다시 렌더된다.
+COMPAT_RENDER_VERSION = "v4"
 
 
 class LLMWikiCompatibilityError(SyncPipelineError):
@@ -122,6 +153,38 @@ class InProcessLLMWikiBuildRunner:
         self._actor_id = actor_id
         self._lock = threading.Lock()
 
+    def enrich(self) -> None:
+        """문서 요약·키워드·관계를 만들어 둔다. **빌드 전에** 불러야 한다.
+
+        빌드는 `enrichment/approved/*.json` 을 읽어 담을 뿐, 스스로 만들지 않는다. 그래서
+        이걸 부르지 않으면 위키는 영원히 `enrichments: 0` 이고, 요약을 요구하는 답변은
+        근거를 찾지 못한다. 실제로 이 호출이 없어서 요약이 한 건도 없었다.
+
+        결과는 문서 단위로 캐시되므로 **새 문서에만** 비용이 든다. 처음 한 번은 문서당
+        몇 초씩 걸린다(14개에 약 80초).
+
+        실패해도 올리지 않는다. 요약이 없다고 앱이 못 뜰 이유는 없다 — 검색·인용·그래프는
+        요약 없이도 동작한다. 대신 **왜 못 만들었는지 반드시 남긴다**(키가 없다, 정책에
+        막혔다, 제공자가 죽었다는 서로 완전히 다른 상황이다).
+        """
+        with self._lock:
+            config_module, service_module = self._load_modules()
+            del service_module  # 여기서는 enrichment 모듈만 필요하다
+            config = config_module.load_config(self._builder_root / "config/wiki.yaml")
+            request = self._request(
+                importlib.import_module("wiki_builder.service"),
+                expected_current_build_id=None,
+            )
+            try:
+                enrichment_module = importlib.import_module("wiki_builder.enrichment")
+                run = enrichment_module.enrich_documents(config, scope=request.to_scope())
+            except Exception as error:
+                logger.warning(
+                    "LLMWIKI enrichment skipped: %s: %s", type(error).__name__, error
+                )
+                return
+            logger.info("LLMWIKI enrichment done: %s", getattr(run, "counts", run))
+
     def stage(self) -> str:
         with self._lock:
             config_module, service_module = self._load_modules()
@@ -170,7 +233,7 @@ class InProcessLLMWikiBuildRunner:
             input_dir=self._input_root,
             storage_root=self._storage_root,
             actor_id=self._actor_id,
-            synthetic_corpus=False,
+            synthetic_corpus=_synthetic_corpus(),
             expected_current_build_id=expected_current_build_id,
         )
 
@@ -297,7 +360,7 @@ class LLMWikiCompatibilityAdapter:
         )
 
     def materialize(self, build: NativeBuild) -> Path:
-        destination = self._compatibility_root / f"{build.build_id}-codegate-v3"
+        destination = self._compatibility_root / f"{build.build_id}-codegate-{COMPAT_RENDER_VERSION}"
         with self._lock:
             if destination.is_dir():
                 return destination
@@ -515,6 +578,10 @@ class NativeLLMWikiCatalog:
         with self._lock:
             build = self._adapter.current_native_build()
             if build is None:
+                # enrichment 는 **여기서 부르지 않는다.** 문서당 몇 초씩 걸려서, 부팅 경로에
+                # 넣었더니 헬스 체크가 먼저 만료되어 sidecar 가 통째로 죽었다(14개 중 4개
+                # 만들다 강제 종료). 위키를 먼저 띄워 앱을 쓸 수 있게 하고, 요약은
+                # `enrich_in_background()` 가 뒤따라 붙인다.
                 build_id = self._runner.stage()
                 prepared = self._prepare(
                     self._adapter.native_build(build_id),
