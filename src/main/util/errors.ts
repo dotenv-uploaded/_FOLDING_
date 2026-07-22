@@ -26,8 +26,24 @@ export function toUserMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/** 디버깅용 상세 로그 — 사용자에게는 절대 보이지 않는다. */
+/**
+ * 디버깅용 상세 로그 — 사용자에게는 절대 보이지 않는다.
+ *
+ * **`cause` 사슬을 끝까지 따라간다.** 이 앱은 오류를 한국어 문장으로 감싸서 올리는데,
+ * 감싼 것만 찍으면 로그에 남는 건 "Google 로그인에 실패했습니다" 뿐이고 진짜 이유(HTTP
+ * 몇 번인지, 어느 요청이 죽었는지)는 사라진다. 실제로 그 한 줄만 보고 원인을 찾느라
+ * 한참 헤맸다 — `cause` 에 이미 담겨 있었는데 출력에서 버리고 있었다.
+ *
+ * 순환 참조가 있어도 멈추도록 깊이를 제한한다.
+ */
 export function logError(scope: string, err: unknown): void {
-  const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
-  console.error(`[codegate:${scope}] ${detail}`);
+  const lines: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; current !== undefined && current !== null && depth < 5; depth += 1) {
+    const detail =
+      current instanceof Error ? (current.stack ?? current.message) : String(current);
+    lines.push(depth === 0 ? detail : `  caused by: ${detail}`);
+    current = current instanceof Error ? (current.cause as unknown) : undefined;
+  }
+  console.error(`[codegate:${scope}] ${lines.join('\n')}`);
 }

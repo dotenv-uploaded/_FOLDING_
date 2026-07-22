@@ -4,7 +4,7 @@
  * (스펙 v1.3 §5 — 401/402 UX, silent fail 금지).
  */
 import { AUTH_ERROR_MESSAGE, AuthError, authErrorKindFromStatus } from '@contracts';
-import { UserFacingError } from '@main/util/errors';
+import { logError, UserFacingError } from '@main/util/errors';
 
 export interface HttpOptions {
   method?: 'GET' | 'POST';
@@ -53,6 +53,15 @@ export async function httpRequest(url: string, options: HttpOptions): Promise<Re
   if (!response.ok) {
     const serverMessage = await responseMessage(response);
     const kind = authErrorKindFromStatus(response.status);
+    /*
+     * 어떤 요청이 몇 번으로 떨어졌는지 남긴다.
+     *
+     * 사용자에게 보이는 문장은 서버가 준 한국어를 그대로 쓰는데, 그러면 **상태 코드가
+     * 사라진다.** 로그인 실패를 쫓을 때 "Google 로그인을 완료하지 못했습니다" 만 남고
+     * 그게 401 인지 400 인지 알 수 없어 원인 특정이 막혔다. 사용자 문장은 그대로 두고
+     * 진단 정보만 로그로 뺀다.
+     */
+    logError('http', new Error(`${options.method ?? 'GET'} ${url} → HTTP ${response.status}`));
     if (kind) throw new AuthError(kind, serverMessage ?? AUTH_ERROR_MESSAGE[kind]);
     throw new UserFacingError(
       serverMessage ?? `${options.failureMessage} (서버 응답 ${response.status})`,
