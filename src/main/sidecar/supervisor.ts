@@ -142,6 +142,9 @@ export function buildSidecarEnvironment(
     // 위키 enrichment(간선)는 Gemini 를 쓴다. 없으면 관계가 만들어지지 않아 그래프가
     // 점만 남는다 — 실제로 links.jsonl 이 0바이트로 나왔던 원인이다.
     ...(geminiApiKey ? { GEMINI_API_KEY: geminiApiKey, GOOGLE_API_KEY: geminiApiKey } : {}),
+    // 한글(HWP/HWPX) 원본 수정에 쓰는 kordoc(Node 라이브러리)이 설치된 디렉터리.
+    // 없으면 sidecar 가 cwd 에서 찾다 실패하고 "kordoc 을 찾지 못했습니다" 로 멈춘다.
+    ...(baseEnv.CODEGATE_KORDOC_DIR ? { CODEGATE_KORDOC_DIR: baseEnv.CODEGATE_KORDOC_DIR } : {}),
   };
 }
 
