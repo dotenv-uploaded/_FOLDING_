@@ -608,6 +608,36 @@ class NativeLLMWikiCatalog:
                 return
             self._load(build, validate_sources=not allow_stale_sources)
 
+    def enrich_in_background(self) -> None:
+        """요약·키워드·관계를 **뒤따라** 만든다. 활성 빌드는 건드리지 않는다.
+
+        왜 뒤따라 하는가
+        ----------------
+        enrichment 은 문서당 몇 초씩 걸린다(14개에 약 80초). 이걸 부팅 경로에 넣었더니
+        헬스 체크가 먼저 만료되어 sidecar 가 통째로 죽었다 — 14개 중 4개를 만든 시점에
+        강제 종료됐고 앱이 아예 못 떴다. 위키를 먼저 띄워 앱을 쓸 수 있게 하는 편이 낫다.
+        요약이 없어도 검색·인용·그래프는 그대로 동작한다.
+
+        무엇을 하지 않는가
+        ------------------
+        **만든 요약을 활성 빌드에 밀어 넣지 않는다.** 살아 있는 위키를 교체하는 길은
+        `prepare_candidate`/`activate_candidate` 인데, 그건 *승인된 문서 편집* 전용으로
+        설계돼 있다(바뀐 문서는 승인 이력이 있어야 하고 나머지는 descriptor 가 같아야
+        한다). enrichment 는 입력을 바꾸지 않으니 통과시킬 수는 있지만, 그 경로는 이
+        서비스에서 가장 민감한 불변식을 지키는 자리라 추론으로 손대지 않는다.
+
+        그래서 결과는 캐시(`enrichment/approved/*.json`)에만 남고, **다음 빌드**가 담아
+        간다. 문서 단위로 캐시되므로 그때는 비용이 들지 않는다.
+        """
+
+        def run() -> None:
+            try:
+                self._runner.enrich()
+            except Exception:  # noqa: BLE001 - 배경 작업은 절대 서비스를 죽이지 않는다
+                logger.exception("LLMWIKI background enrichment failed")
+
+        threading.Thread(target=run, name="llmwiki-enrichment", daemon=True).start()
+
     def snapshot(self) -> KnowledgeRepository:
         with self._lock:
             if self._repository is None:

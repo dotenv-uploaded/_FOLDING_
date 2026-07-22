@@ -70,6 +70,11 @@ class AppContainer:
             status="active",
         )
         self.sync_worker.start()
+        # 요약은 뒤따라 만든다. 부팅 경로에 넣으면 헬스 체크가 만료돼 sidecar 가 죽는다.
+        # 결과는 캐시에만 남고 다음 빌드가 담아 간다 — 자세한 이유는 메서드 주석 참고.
+        # LLMWIKI 모드에만 있는 기능이라 타입을 확인하고 부른다.
+        if isinstance(self.catalog, NativeLLMWikiCatalog):
+            self.catalog.enrich_in_background()
 
     async def shutdown(self) -> None:
         await self.sync_worker.stop()
