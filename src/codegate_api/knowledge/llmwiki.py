@@ -43,6 +43,7 @@ from codegate_api.knowledge.schemas import (
     SourceReference,
 )
 from codegate_api.state.store import PendingEvent, StateStore
+from codegate_api.changes.kordoc import is_hwp
 
 _STANDALONE_NATIVE_ANCHOR = re.compile(
     r'^\s*<a\s+id=["\'](?P<id>[0-9A-Za-z][0-9A-Za-z._:-]{0,127})["\']\s*></a>\s*$'
@@ -367,7 +368,12 @@ class LLMWikiCompatibilityAdapter:
             source_sha256 = str(source["sha256"]).lower()
             source_path = self._source_resolver.resolve(source_uri)
             media_type = _media_type(str(source["filename"]))
-            editable = media_type in {"text/markdown", "text/plain"} and ingest.supports_atomic_edit
+            # 한글(HWP/HWPX)도 고칠 수 있다 — kordoc 이 서식을 보존한 채 텍스트만 갈아끼운다.
+            # 여기가 md/txt 제한이 남아 있던 마지막 자리였다. 쓰기 경로와 에이전트 읽기 경로를
+            # 열어 놓고도 문서가 read_only 로 표시돼 "수정 가능한 대상을 찾지 못했습니다" 가 났다.
+            editable = (
+                media_type in {"text/markdown", "text/plain"} or is_hwp(source_uri)
+            ) and ingest.supports_atomic_edit
             file_version_id = f"fv_{source_sha256}"
             file_versions[document_id] = file_version_id
             manifests.append(
