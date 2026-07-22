@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { ClipboardPen, FileDown } from 'lucide-react';
 import type { ChatMessage } from '@contracts';
 import { NOT_FOUND_IN_WIKI } from '@contracts';
 import { Mark } from '@/ui/Wordmark';
@@ -99,17 +98,6 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           </div>
         )}
 
-        {/*
-          답변을 한글 문서로 저장.
-
-          에이전트가 파일을 만드는 게 아니라 **사용자가 이 답변을 문서로 남기겠다고 결정**한다.
-          그래서 승인 모달이 아니라 저장 대화상자를 띄운다 — 무엇이 어디에 생기는지 보인다.
-          스트리밍 중에는 내용이 아직 자라는 중이라 내보내지 않는다.
-        */}
-        {message.text && !message.streaming && !unresolved && (
-          <SaveAsHwpx markdown={message.text} />
-        )}
-
         {message.changedPath && !message.streaming && (
           <ChangedFileBar path={message.changedPath} />
         )}
@@ -160,77 +148,6 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
  * 파일을 직접 찾아가야 한다. 여는 것과 폴더에서 보는 것을 나눠 둔 이유는 **백업** 때문이다 —
  * 되돌리려면 옆에 생긴 `.bak` 을 봐야 하는데, 파일을 여는 것만으로는 그게 보이지 않는다.
  */
-/**
- * 답변을 한글 문서(HWPX)로 저장하는 버튼.
- *
- * 한글 2010 이상은 hwpx 를 그대로 연다. HWP 5.x 바이너리 생성은 지원 도구가 없어서
- * 만들지 못한다 — "한글 파일"이라고 뭉뚱그리지 않고 형식을 밝힌다.
- */
-function SaveAsHwpx({ markdown }: { markdown: string }) {
-  const [state, setState] = useState<'idle' | 'saving' | 'saved'>('idle');
-  const [error, setError] = useState<string | null>(null);
-  const [savedPath, setSavedPath] = useState<string | null>(null);
-
-  async function save(how: 'saveHwpx' | 'fillTemplate') {
-    if (state === 'saving') return;
-    setState('saving');
-    setError(null);
-    try {
-      const saved = await window.codegate.document[how](markdown);
-      // 취소는 실패가 아니다 — 조용히 원래대로 돌아간다.
-      if (!saved) return setState('idle');
-      setSavedPath(saved);
-      setState('saved');
-    } catch (err) {
-      setState('idle');
-      setError(err instanceof Error ? err.message : '한글 문서를 저장하지 못했습니다.');
-    }
-  }
-
-  if (state === 'saved' && savedPath) {
-    return (
-      <div className="mt-3 flex items-center gap-2 text-xs text-ink-500">
-        <FileDown size={14} className="shrink-0 text-green-500" />
-        <span className="truncate" title={savedPath}>
-          저장했습니다 — {savedPath.split('/').pop()}
-        </span>
-        <button
-          onClick={() => void window.codegate.shell.revealOriginal(savedPath)}
-          className="shrink-0 font-semibold text-blue-600 hover:text-blue-700"
-        >
-          폴더에서 보기
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
-      <button
-        onClick={() => void save('saveHwpx')}
-        disabled={state === 'saving'}
-        className="inline-flex items-center gap-1.5 rounded-md border border-ink-150 px-2.5 py-1.5 text-xs font-semibold text-ink-600 transition-colors hover:bg-ink-50 disabled:opacity-60 fold-focus"
-      >
-        <FileDown size={14} />
-        {state === 'saving' ? '만드는 중…' : '한글 문서로 저장'}
-      </button>
-      {/*
-        양식 채우기는 새로 만드는 것과 다르다. 원본 양식의 표·글꼴을 그대로 두고 글자만
-        갈아끼우므로 .hwp 그대로 나온다. 원본 양식은 건드리지 않는다.
-      */}
-      <button
-        onClick={() => void save('fillTemplate')}
-        disabled={state === 'saving'}
-        className="inline-flex items-center gap-1.5 rounded-md border border-ink-150 px-2.5 py-1.5 text-xs font-semibold text-ink-600 transition-colors hover:bg-ink-50 disabled:opacity-60 fold-focus"
-      >
-        <ClipboardPen size={14} />
-        양식 채워서 저장
-      </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
-    </div>
-  );
-}
-
 function ChangedFileBar({ path }: { path: string }) {
   const [error, setError] = useState<string | null>(null);
   const name = path.split('/').pop() || path;
