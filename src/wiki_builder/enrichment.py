@@ -23,6 +23,33 @@ from wiki_builder.schemas import load_schema, validate_record
 
 NUMBER_RE = re.compile(r"(?<![0-9A-Za-z])[0-9]+(?:[.,][0-9]+)*(?![0-9A-Za-z])")
 SENTENCE_END_RE = re.compile(r"[.!?][\"'”’)]?(?:\s|$)")
+
+#: 마크다운 강조 기호. 인용 대조에서만 걷어낸다.
+_MARKDOWN_EMPHASIS = re.compile(r"[*_`]+")
+
+
+def normalize_quote(text: str) -> str:
+    """인용 대조용 정규화 — **서식만** 걷어내고 글자는 그대로 둔다.
+
+    표 안의 문장을 인용할 때 걸린다. 원문이
+
+        | **회의 목적** | GBX-ONB-001 개선 계획의 실행 방식과 책임 확정 |
+
+    일 때 모델은 자연스럽게
+
+        회의 목적 | GBX-ONB-001 개선 계획의 실행 방식과 책임 확정
+
+    처럼 적는다. 굵게 표시와 앞뒤 칸 구분자가 빠졌을 뿐 내용은 같은데, 원시
+    부분문자열 대조는 이것을 "원문에 없는 인용"으로 보고 문서를 통째로 검토 대기로
+    보낸다. 실제로 킥오프 회의록이 세 번 모두 같은 이유로 막혀 빌드가 활성화되지 않았다.
+
+    지어내기 방지는 그대로다 — 글자를 바꾸거나 채워 넣지 않는다. 강조 기호와 칸
+    구분자를 공백으로 바꾸고 공백만 정리할 뿐이라, 원문에 없는 낱말을 쓰면 여전히 걸린다.
+    """
+    text = unicodedata.normalize("NFC", text)
+    text = _MARKDOWN_EMPHASIS.sub("", text)
+    text = text.replace("|", " ")
+    return re.sub(r"\s+", " ", text).strip()
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 FORBIDDEN_OUTPUT = ("```", "<think>", "</think>", "analysis:", "사고 과정")
 
@@ -181,7 +208,9 @@ def validate_grounding(
         quote = evidence.get("quote")
         if section_id not in section_text:
             errors.append(f"존재하지 않는 section_id: {section_id}")
-        elif not isinstance(quote, str) or quote not in section_text[section_id]:
+        elif not isinstance(quote, str) or normalize_quote(quote) not in normalize_quote(
+            section_text[section_id]
+        ):
             errors.append(f"원문에 정확히 존재하지 않는 인용문: {quote!r}")
     source_text = _document_source_text(document)
     for keyword in record.get("keywords", []):
