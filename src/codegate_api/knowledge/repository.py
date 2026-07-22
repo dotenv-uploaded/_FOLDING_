@@ -14,6 +14,7 @@ from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.evidence import CanonicalEvidenceError, build_section_index
 from codegate_api.knowledge.schemas import AgentGuide, Chunk, Link, ManifestEntry, SourceReference
 from codegate_api.models import DocumentResult, Evidence, Relation
+from codegate_api.changes.kordoc import KordocBridge, KordocError, is_hwp
 
 
 class KnowledgePackageError(RuntimeError):
@@ -282,13 +283,25 @@ class KnowledgeRepository:
             document is None
             or not self._is_retrievable(document, access_context)
             or not self._source_is_current(document)
-            or document.source.media_type not in {"text/markdown", "text/plain"}
         ):
+            return None
+        hwp_source = is_hwp(document.source.uri)
+        if not hwp_source and document.source.media_type not in {"text/markdown", "text/plain"}:
             return None
         source = self._source_resolver.resolve(document.source.uri)
         content = source.read_bytes()
         if len(content) > max_bytes:
             raise KnowledgePackageError("source document exceeds the agent read limit")
+        if hwp_source:
+            # 한글은 바이너리라 그대로 디코딩할 수 없다. kordoc 이 뽑아낸 마크다운을 준다.
+            #
+            # **쓰기 경로와 같은 파서여야 한다.** 에이전트는 여기서 본 글자를 그대로
+            # expected_text 로 복사하고, 변경 적용은 changes/service.py 가 같은 kordoc
+            # 마크다운 위에서 앵커를 찾는다. 파서가 다르면 앵커가 영원히 맞지 않는다.
+            try:
+                return document.model_copy(deep=True), KordocBridge().to_markdown(content)
+            except KordocError as error:
+                raise KnowledgePackageError(str(error)) from error
         try:
             return document.model_copy(deep=True), content.decode("utf-8")
         except UnicodeDecodeError as error:

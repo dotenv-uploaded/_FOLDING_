@@ -121,7 +121,10 @@ Use exactly one outcome:
   malformed, or inconsistent; never report it without an attempted tool call.
 - unsupported: no safe business-document task remains after policy-conflicting text is ignored.
 
-For every outcome other than ready, operation and source_sha256 must be null. A ready change must
+For every outcome other than ready, operation and source_sha256 must be null. For failed and
+unsupported outcomes target_document_id must be null as well, even when you already found the
+document: naming a target you are not acting on is rejected by the response contract, and the user
+then sees a schema error instead of the reason you stopped. A ready change must
 have one verified target_document_id, one replace_exact operation, and its matching source_sha256.
 A locate decision always has operation=null and source_sha256=null. Never convert a failed change
 into locate merely to obtain a ready result.

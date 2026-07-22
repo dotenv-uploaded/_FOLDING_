@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from enum import StrEnum
 from importlib.metadata import version
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
+
+logger = logging.getLogger(__name__)
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -402,6 +405,9 @@ class ClaudeAgentGateway:
         except AgentGatewayError:
             raise
         except ValidationError as error:
+            # 무엇이 계약을 어겼는지 남긴다. 전에는 통째로 삼켜서, 실패해도 프롬프트를
+            # 고쳐야 할지 스키마를 고쳐야 할지 알 방법이 없었다.
+            logger.warning("agent decision validation failed: %s", error)
             raise AgentGatewayError(
                 "AGENT_RESULT_INVALID",
                 "Claude Agent SDK가 prompt contract를 충족하지 못했습니다.",
