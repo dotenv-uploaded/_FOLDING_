@@ -310,6 +310,8 @@ export const IPC = {
 
   // L2 — 답변을 한글 문서(HWPX)로 저장
   documentSaveHwpx: 'document:saveHwpx',
+  // L2 — 한글 양식을 복사해 채운 사본 만들기 (원본 양식은 건드리지 않는다)
+  documentFillTemplate: 'document:fillTemplate',
 
   // L2 — 로컬 빌드
   buildTrigger: 'build:trigger',

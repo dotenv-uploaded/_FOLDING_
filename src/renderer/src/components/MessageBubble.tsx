@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FileDown } from 'lucide-react';
+import { ClipboardPen, FileDown } from 'lucide-react';
 import type { ChatMessage } from '@contracts';
 import { NOT_FOUND_IN_WIKI } from '@contracts';
 import { Mark } from '@/ui/Wordmark';
@@ -171,12 +171,12 @@ function SaveAsHwpx({ markdown }: { markdown: string }) {
   const [error, setError] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
 
-  async function save() {
+  async function save(how: 'saveHwpx' | 'fillTemplate') {
     if (state === 'saving') return;
     setState('saving');
     setError(null);
     try {
-      const saved = await window.codegate.document.saveHwpx(markdown);
+      const saved = await window.codegate.document[how](markdown);
       // 취소는 실패가 아니다 — 조용히 원래대로 돌아간다.
       if (!saved) return setState('idle');
       setSavedPath(saved);
@@ -205,14 +205,26 @@ function SaveAsHwpx({ markdown }: { markdown: string }) {
   }
 
   return (
-    <div className="mt-3 flex items-center gap-2">
+    <div className="mt-3 flex flex-wrap items-center gap-2">
       <button
-        onClick={() => void save()}
+        onClick={() => void save('saveHwpx')}
         disabled={state === 'saving'}
         className="inline-flex items-center gap-1.5 rounded-md border border-ink-150 px-2.5 py-1.5 text-xs font-semibold text-ink-600 transition-colors hover:bg-ink-50 disabled:opacity-60 fold-focus"
       >
         <FileDown size={14} />
         {state === 'saving' ? '만드는 중…' : '한글 문서로 저장'}
+      </button>
+      {/*
+        양식 채우기는 새로 만드는 것과 다르다. 원본 양식의 표·글꼴을 그대로 두고 글자만
+        갈아끼우므로 .hwp 그대로 나온다. 원본 양식은 건드리지 않는다.
+      */}
+      <button
+        onClick={() => void save('fillTemplate')}
+        disabled={state === 'saving'}
+        className="inline-flex items-center gap-1.5 rounded-md border border-ink-150 px-2.5 py-1.5 text-xs font-semibold text-ink-600 transition-colors hover:bg-ink-50 disabled:opacity-60 fold-focus"
+      >
+        <ClipboardPen size={14} />
+        양식 채워서 저장
       </button>
       {error && <span className="text-xs text-red-600">{error}</span>}
     </div>

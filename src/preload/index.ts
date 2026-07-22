@@ -107,6 +107,9 @@ const api: CodegateApi = {
     /** 답변을 한글 문서(HWPX)로 저장. 취소하면 null, 저장하면 그 경로. */
     saveHwpx: (markdown: string): Promise<string | null> =>
       ipcRenderer.invoke(IPC.documentSaveHwpx, markdown),
+    /** 한글 양식을 복사해 채운 사본을 만든다. 원본 양식은 건드리지 않는다. */
+    fillTemplate: (markdown: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.documentFillTemplate, markdown),
   },
 
   shell: {

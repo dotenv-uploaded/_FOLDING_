@@ -10,6 +10,7 @@ import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { IPC, type LlmKeyInput, type LlmProvider, type LoginRequest } from '@contracts';
 import type { AppServices } from '@main/services';
 import { GENERATED_EXTENSION, titleFromMarkdown, writeHwpx } from '@main/kordoc/generate';
+import { fillTemplate } from '@main/kordoc/template';
 import { logError, toUserMessage } from '@main/util/errors';
 
 /** 핸들러를 감싸 오류를 한국어 문장으로 정규화한다. */
@@ -188,6 +189,37 @@ export function registerIpcHandlers(
     if (result.canceled || !result.filePath) return null;
     await writeHwpx({ targetPath: result.filePath, markdown });
     return result.filePath;
+  });
+
+  /*
+   * 양식을 복사해 채운다.
+   *
+   * 원본 양식은 읽기만 한다 — 일일업무일지처럼 빈 양식을 두고 매번 새 사본을 채우는
+   * 문서가 있어서, 원본을 고치면 다음에 쓸 양식이 사라진다. 저장 경로도 사용자가 고른다.
+   */
+  handle(IPC.documentFillTemplate, '양식을 채우지 못했습니다.', async (markdown: string) => {
+    const window = getWindow();
+    const picked = await dialog.showOpenDialog(window ?? undefined!, {
+      title: '채울 한글 양식 선택',
+      buttonLabel: '이 양식 사용',
+      defaultPath: services.primaryRootPath() ?? app.getPath('documents'),
+      filters: [{ name: '한글 양식', extensions: ['hwp', 'hwpx'] }],
+      properties: ['openFile'],
+    });
+    const templatePath = picked.canceled ? null : (picked.filePaths[0] ?? null);
+    if (!templatePath) return null;
+
+    const extension = path.extname(templatePath);
+    const suggested = `${path.basename(templatePath, extension)}_작성본${extension}`;
+    const target = await dialog.showSaveDialog(window ?? undefined!, {
+      title: '채운 사본 저장',
+      defaultPath: path.join(path.dirname(templatePath), suggested),
+      filters: [{ name: '한글 문서', extensions: [extension.replace('.', '')] }],
+    });
+    if (target.canceled || !target.filePath) return null;
+
+    await fillTemplate({ templatePath, filledMarkdown: markdown, targetPath: target.filePath });
+    return target.filePath;
   });
 }
 
