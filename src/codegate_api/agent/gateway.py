@@ -374,9 +374,21 @@ class ClaudeAgentGateway:
                         if not isinstance(response, ResultMessage):
                             continue
                         if response.subtype != "success" or response.structured_output is None:
+                            # SDK 는 호출이 실패해도 예외 대신 **실패한 ResultMessage** 를
+                            # 돌려준다. 그 subtype 을 버리면 남는 건 "결과를 반환하지
+                            # 못했습니다" 한 줄뿐이라, 프롬프트 문제인지 계정 문제인지
+                            # 알 수가 없다. 실제로 API 크레딧이 바닥난 것을 이 문구만 보고는
+                            # 못 찾아, Anthropic API 를 따로 찔러 보고서야 알았다.
+                            logger.warning(
+                                "agent result unusable: subtype=%s structured_output=%s result=%s",
+                                response.subtype,
+                                response.structured_output is not None,
+                                getattr(response, "result", None),
+                            )
                             raise AgentGatewayError(
                                 "AGENT_RESULT_INVALID",
-                                "Claude Agent SDK가 검증된 구조화 결과를 반환하지 못했습니다.",
+                                "Claude Agent SDK가 검증된 구조화 결과를 반환하지 못했습니다."
+                                f" (subtype={response.subtype})",
                             )
                         returned_session_id = _canonical_session_id(response.session_id)
                         if returned_session_id != effective_session_id:
@@ -413,8 +425,13 @@ class ClaudeAgentGateway:
                 "Claude Agent SDK가 prompt contract를 충족하지 못했습니다.",
             ) from error
         except Exception as error:
+            # 원인을 반드시 남긴다. 여기서 통째로 삼키는 바람에 "Claude Agent SDK 호출에
+            # 실패했습니다"만 보였고, 실제 원인(API 크레딧 소진)을 찾으려고 Anthropic API를
+            # 직접 찔러 봐야 했다. 로그 한 줄이면 바로 알 수 있는 일이었다.
+            logger.exception("agent gateway call failed: %s", error)
             raise AgentGatewayError(
-                "AGENT_UNAVAILABLE", "Claude Agent SDK 호출에 실패했습니다."
+                "AGENT_UNAVAILABLE",
+                f"Claude Agent SDK 호출에 실패했습니다. ({type(error).__name__})",
             ) from error
         raise AgentGatewayError("AGENT_RESULT_MISSING", "Claude 최종 응답을 받지 못했습니다.")
 
