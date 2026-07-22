@@ -14,6 +14,8 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import JSZip from 'jszip';
+import { patchDocument, PatchType, TextRun } from 'docx';
 import { UserFacingError } from '@main/util/errors';
 
 /** 양식 안의 자리 표시 — `{{이름}}` */
@@ -52,7 +54,6 @@ export async function readPlaceholders(templatePath: string): Promise<string[]> 
   if (!isDocxTemplate(templatePath)) {
     throw new UserFacingError('Word 양식(.docx)만 열 수 있습니다.');
   }
-  const { default: JSZip } = await import('jszip');
   const zip = await JSZip.loadAsync(await fs.readFile(templatePath));
   const xml = await zip.file('word/document.xml')?.async('string');
   if (!xml) throw new UserFacingError('Word 양식에서 본문을 찾지 못했습니다.');
@@ -86,7 +87,6 @@ export async function fillDocxTemplate({
   const filled = required.filter((name) => (values[name] ?? '').trim().length > 0);
   const missing = required.filter((name) => !filled.includes(name));
 
-  const { patchDocument, PatchType, TextRun } = await import('docx');
   const patches = Object.fromEntries(
     required.map((name) => [
       name,
