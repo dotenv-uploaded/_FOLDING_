@@ -133,7 +133,11 @@ def _link_evidence_quote(section: Section, target: str) -> str:
     raise ValidationError(f"링크 근거 행을 찾지 못했습니다: {target}")
 
 
-def extract_links(documents: Iterable[Document]) -> list[Link]:
+def extract_links(
+    documents: Iterable[Document],
+    *,
+    allowed_missing_targets: frozenset[str] = frozenset(),
+) -> list[Link]:
     document_list = list(documents)
     known = {document.doc_id for document in document_list}
     links: list[Link] = []
@@ -147,6 +151,8 @@ def extract_links(documents: Iterable[Document]) -> list[Link]:
                     continue
                 to_doc_id = Path(target).stem
                 if to_doc_id not in known:
+                    if to_doc_id in allowed_missing_targets:
+                        continue
                     raise ValidationError(
                         f"{document.doc_id} {section.section_id}: 깨진 내부 링크 {target}"
                     )
@@ -210,6 +216,7 @@ def current_enrichments(
     config: WikiConfig, documents: Iterable[Document]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     approved_dir = config.resolve_path("enrichment_dir") / "approved"
+    missing_targets = allowed_missing_link_targets(config)
     approved: dict[str, dict[str, Any]] = {}
     status: dict[str, str] = {}
     for document in documents:
@@ -228,6 +235,7 @@ def current_enrichments(
                 record["source_sha256"] == document.original_sha256,
                 record["prompt_version"] == config.prompt_version,
                 compatible_model_fingerprint(config, record["model_fingerprint"]),
+                not enrichment_references_missing_targets(record, missing_targets),
             )
         )
         if is_current:
@@ -241,7 +249,11 @@ def current_enrichments(
         if review_path.is_file() and status.get(document.doc_id) != "approved":
             try:
                 review = json.loads(review_path.read_text(encoding="utf-8"))
-                if review.get("source_sha256") == document.original_sha256:
+                if review.get(
+                    "source_sha256"
+                ) == document.original_sha256 and not enrichment_references_missing_targets(
+                    review, missing_targets
+                ):
                     status[document.doc_id] = "needs-review"
             except json.JSONDecodeError:
                 status[document.doc_id] = "needs-review"
@@ -319,7 +331,10 @@ def build_manifest(
 
 def assemble_build_data(config: WikiConfig, documents: list[Document]) -> BuildData:
     approved, statuses = current_enrichments(config, documents)
-    explicit_links = extract_links(documents)
+    explicit_links = extract_links(
+        documents,
+        allowed_missing_targets=allowed_missing_link_targets(config),
+    )
     chunks = build_chunks(config, documents)
     aliases = build_aliases(config, documents)
     links = build_links(config, explicit_links, approved)
@@ -331,6 +346,26 @@ def assemble_build_data(config: WikiConfig, documents: list[Document]) -> BuildD
         links=links,
         manifest=manifest,
         enrichments=[approved[key] for key in sorted(approved)],
+    )
+
+
+def allowed_missing_link_targets(config: WikiConfig) -> frozenset[str]:
+    value = config.scope.get("allowed_missing_link_targets", [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValidationError("allowed missing link targets가 올바르지 않습니다")
+    return frozenset(value)
+
+
+def enrichment_references_missing_targets(
+    record: dict[str, Any],
+    missing_targets: frozenset[str],
+) -> bool:
+    if not missing_targets:
+        return False
+    relations = record.get("relations", [])
+    return isinstance(relations, list) and any(
+        isinstance(relation, dict) and relation.get("to_doc_id") in missing_targets
+        for relation in relations
     )
 
 

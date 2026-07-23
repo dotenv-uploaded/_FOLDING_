@@ -25,6 +25,7 @@ class WikiBuildRequest:
     actor_id: str
     synthetic_corpus: bool = False
     expected_current_build_id: str | None | object = CURRENT_NOT_CHECKED
+    allowed_missing_link_targets: frozenset[str] = frozenset()
 
     def to_scope(self) -> WikiScope:
         return WikiScope(
@@ -34,6 +35,7 @@ class WikiBuildRequest:
             storage_root=self.storage_root,
             synthetic_corpus=self.synthetic_corpus,
             actor_id=self.actor_id,
+            allowed_missing_link_targets=self.allowed_missing_link_targets,
         )
 
 

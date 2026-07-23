@@ -758,3 +758,52 @@ Agent가 `delete_file`과 `create_file`을 typed decision으로 선택하고 현
 새 lifecycle intent는 typed schema와 tool trace test, prompt eval case를 함께 추가한다. 모델 출력은 여전히
 proposal일 뿐 write authority가 아니다. 실제 사용자 corpus에서 보고서가 여러 개면 임의 선택하지 않고
 clarification으로 닫히며, 서명된 설치본의 Kordoc packaging은 release gate에서 다시 확인한다.
+
+## 2026-07-23 — Monorepo 병합 뒤 지식 빌드가 sidecar 시작 단계에서 실패
+
+### 상황, 기대와 영향
+
+`folding_ghdtjdwn` main에서 Electron integrated runtime을 시작하면 doc2md는 등록 문서를 정상 변환했지만
+지식 빌드가 실패하고 검색 엔진이 준비되지 않았다. 기대 동작은 같은 monorepo의 Backend와 bundled
+LLMWIKI가 하나의 요청 계약으로 시작해 immutable build를 공개하는 것이었다. 원본 문서 write는 없었고
+기존 active 위키와 backup은 유지됐지만, sidecar가 없어서 채팅 검색·삭제 승인·HWPX 생성 흐름을 사용할
+수 없었다.
+
+### 재현, 증거와 원인
+
+- integrated doc2md의 `POST /v2/convert`는 반복해서 HTTP 200을 반환했다.
+- sidecar stderr의 최초 예외는
+  `TypeError: WikiBuildRequest.__init__() got an unexpected keyword argument 'allowed_missing_link_targets'`
+  였다.
+- 새 Backend는 승인된 삭제 tombstone을 native build에 전달하도록 request 인자를 추가했지만, monorepo
+  snapshot의 LLMWIKI request model에는 짝이 되는 필드가 없었다.
+- Backend 단위 테스트는 fake runner로 pipeline scope를 검증했고 Electron 테스트는 child lifecycle을
+  모사했기 때문에 실제 sibling package 생성자 불일치를 실행하지 않았다.
+
+따라서 원인은 OCR, 사용자 문서, OAuth나 GitHub build가 아니라 Backend만 새 deletion contract로 올라가고
+bundled LLMWIKI가 이전 생성자에 남은 cross-package version skew였다.
+
+### 검토한 대안과 해결
+
+Backend가 인자를 모를 때 생략하는 signature fallback은 최초 기동만 통과시키고 실제 삭제 build에서
+broken-link와 stale enrichment 검증을 잃으므로 제외했다. 모든 missing link를 전역 허용하는 방법도 오타와
+손상된 관계를 숨기므로 제외했다.
+
+Bundled LLMWIKI의 `WikiBuildRequest`와 `WikiScope`가 exact
+`allowed_missing_link_targets`를 전달하고 identifier를 검증하게 했다. Corpus와 enrichment는 그 집합에
+포함된 삭제 target을 참조하는 기록만 stale로 제외하며, target 복원 뒤 다시 포함한다. Backend에는 실제
+monorepo sibling module을 불러 request를 구성하는 contract test를 추가했다.
+
+### 검증, 재발 방지와 남은 위험
+
+LLMWIKI Ruff와 전체 pytest 43개, Backend Ruff·mypy·전체 pytest 279개, Electron sidecar 회귀 테스트
+15개·typecheck·production build가 통과했다. 실패 당시 사용자 데이터의 격리 복사본과 같은 input snapshot
+hash로 sidecar를 직접 시작해 application startup, 새 native build와 index load를 확인했다. 이어서
+real OAuth integrated runtime의 실제 managed sidecar에서 health `ok`, converter·graph·index·worker·agent
+준비와 pending/failed/stale sync event 0건을 확인했다.
+
+앞으로 bundled dependency의 요청 필드를 바꿀 때는 fake adapter 테스트만으로 완료하지 않고 실제 sibling
+package 생성자와 integrated sidecar startup을 함께 실행한다. 서명 installer의 bundled resource 조합은
+release smoke가 별도로 필요하다. 면접에서는 “하위 package version skew를 어떤 executable contract로
+막는가”, “삭제 때문에 broken-link 검증을 전역 완화하지 않고 exact scope로 제한한 이유는 무엇인가”를
+이 증거로 설명할 수 있다.

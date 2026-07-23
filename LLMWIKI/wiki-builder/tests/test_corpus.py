@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from collections import Counter
 
+import pytest
+
 from wiki_builder.builder import prepare_build_data
 from wiki_builder.config import WikiConfig
-from wiki_builder.corpus import split_section_text, verify_expected_corpus
+from wiki_builder.corpus import extract_links, split_section_text, verify_expected_corpus
+from wiki_builder.errors import ValidationError
+from wiki_builder.markdown import load_documents
 
 
 def test_corpus_acceptance_counts(
@@ -65,3 +69,18 @@ def test_every_link_target_exists(config: WikiConfig) -> None:
         == ("explicit" if link["relation_type"] == "references" else "llm-classified")
         for link in data.links
     )
+
+
+def test_only_explicitly_allowed_missing_targets_are_omitted(config: WikiConfig) -> None:
+    documents = list(load_documents(config))
+    target = extract_links(documents)[0].to_doc_id
+    without_target = [document for document in documents if document.doc_id != target]
+
+    with pytest.raises(ValidationError, match="깨진 내부 링크"):
+        extract_links(without_target)
+
+    links = extract_links(
+        without_target,
+        allowed_missing_targets=frozenset({target}),
+    )
+    assert all(link.to_doc_id != target for link in links)

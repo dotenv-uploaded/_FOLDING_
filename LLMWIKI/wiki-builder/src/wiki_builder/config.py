@@ -21,6 +21,7 @@ class WikiScope:
     storage_root: Path
     synthetic_corpus: bool = False
     actor_id: str = "system"
+    allowed_missing_link_targets: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -30,6 +31,9 @@ class WikiScope:
         ):
             if not SCOPE_ID_RE.fullmatch(value):
                 raise ValidationError(f"잘못된 {label}: {value!r}")
+        for target in self.allowed_missing_link_targets:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", target):
+                raise ValidationError(f"잘못된 missing link target: {target!r}")
 
     @property
     def wiki_root(self) -> Path:
@@ -126,6 +130,7 @@ def scoped_config(config: WikiConfig, scope: WikiScope) -> WikiConfig:
         "synthetic_corpus": scope.synthetic_corpus,
         "actor_id": scope.actor_id,
         "storage_root": str(scope.storage_root.resolve()),
+        "allowed_missing_link_targets": sorted(scope.allowed_missing_link_targets),
     }
     return WikiConfig(path=config.path, raw=raw)
 

@@ -32,7 +32,8 @@
 
 ## `llm-wiki` acceptance 계약
 
-실제 연동 기준은 `LLMWIKI@acf94f7`이다. native package의
+실제 연동 기준은 upstream `LLMWIKI@acf94f7`을 기준으로 deletion tombstone의
+`allowed_missing_link_targets` 계약을 포함한 monorepo bundled LLMWIKI다. native package의
 `tenants/<tenant>/wikis/<wiki>/current.json`이 유일한 active pointer이며
 `builds/build-<20 hex>`는 불변이다. Backend는 native manifest/chunks/links/aliases와 schema를
 검증한 뒤 build ID별 compatibility read cache를 만들지만 두 번째 active pointer를 만들지 않는다.
@@ -180,7 +181,9 @@ quote와 구조화 evidence에 `[document_id rev.N §section_id]` citation을 �
 `change_plans`에 최대 20개의 파일별 plan을 반환하며 Frontend는 각 plan을 별도 승인 또는 거부해야
 한다. 하나의 승인으로 나머지 plan을 대신 승인해서는 안 된다. 삭제 완료 뒤 문서는 active knowledge
 version에서 제외되고, execution Undo는 immutable backup의 원래 bytes와 mode를 복원해 새 knowledge
-version으로 다시 게시한다.
+version으로 다시 게시한다. LLMWIKI build request는 durable tombstone의 정확한 document ID만
+`allowed_missing_link_targets`로 받는다. 이 ID를 참조하던 enrichment는 삭제 중 stale로 제외되고 Undo로
+대상이 복원되면 다시 검증된다. 전역 broken-link 완화는 허용하지 않는다.
 
 Approve와 Undo는 `202 Accepted`, `Location: /api/v1/executions/{id}`를 반환한다. Frontend는 `recommended_poll_after_ms`를 사용해 `terminal`까지 polling한다.
 

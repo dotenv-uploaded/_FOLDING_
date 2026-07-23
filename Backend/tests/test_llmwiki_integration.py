@@ -17,6 +17,7 @@ from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.integrations.doc2md import ConversionResult
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.llmwiki import (
+    InProcessLLMWikiBuildRunner,
     LLMWikiCompatibilityAdapter,
     LLMWikiCompatibilityError,
     NativeDocumentInputBaseline,
@@ -44,6 +45,30 @@ class NativeFixture:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def test_bundled_llmwiki_request_contract_accepts_deletion_scope(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[2] / "LLMWIKI"
+    if not (project_root / "wiki-builder/src/wiki_builder").is_dir():
+        pytest.skip("bundled LLMWIKI is not present outside the monorepo")
+    runner = InProcessLLMWikiBuildRunner(
+        project_root=project_root,
+        input_root=tmp_path / "input",
+        storage_root=tmp_path / "storage",
+        tenant_id="local",
+        wiki_id="workspace",
+        actor_id="contract-test",
+    )
+    _, service_module = runner._load_modules()  # noqa: SLF001
+
+    request = runner._request(  # noqa: SLF001
+        service_module,
+        expected_current_build_id=None,
+        allowed_missing_link_targets={"DOC-0123456789ABCDEF"},
+    )
+
+    assert request.allowed_missing_link_targets == frozenset({"DOC-0123456789ABCDEF"})
+    assert request.to_scope().allowed_missing_link_targets == frozenset({"DOC-0123456789ABCDEF"})
 
 
 def test_native_link_conversion_rejects_edges_outside_current_corpus() -> None:
