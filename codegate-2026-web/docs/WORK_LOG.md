@@ -14,7 +14,9 @@
 - 영향: 루트 README와 공개 설명만 변경한다. runtime 배치, 네트워크 요청과 사용자 데이터는
   변경하지 않는다.
 - 검증과 전달: 현재 launcher·OAuth·sidecar 환경·agent tool 계약과 문구를 대조하고 GitHub GFM
-  렌더링, 로컬 링크, staged 공개 트리의 비밀정보를 확인한 뒤 `ghdtjdwn_complete` main에 반영한다.
+  렌더링, 로컬 링크 19개와 staged 공개 트리의 비밀정보를 확인했다. commit `b979f52`를 공개
+  `ghdtjdwn_complete` main에 push했으며 GitHub Contents API와 commit 고정 raw README, 세
+  트러블슈팅 문서의 비로그인 HTTP 200 응답으로 반영 결과를 확인했다.
 
 ## 2026-07-23 — README Backend·Agent Runtime 담당 영역 보강
 
