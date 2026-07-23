@@ -41,9 +41,18 @@ export function registerIpcHandlers(
 ): void {
   /* ------------------------------------------------------------- L4 인증 */
 
-  handle(IPC.authLogin, '로그인에 실패했습니다.', (request: LoginRequest) =>
-    services.auth.login(request),
-  );
+  handle(IPC.authLogin, '로그인에 실패했습니다.', async (request: LoginRequest) => {
+    const session = await services.auth.login(request);
+    const window = getWindow();
+    if (window && !window.isDestroyed()) {
+      if (window.isMinimized()) window.restore();
+      window.show();
+      // Google 인증은 시스템 브라우저에서 진행되므로 성공 후 앱을 다시 앞으로 가져온다.
+      if (process.platform === 'darwin') app.focus({ steal: true });
+      window.focus();
+    }
+    return session;
+  });
   handle(IPC.authLogout, '로그아웃에 실패했습니다.', () => services.auth.logout());
   handle(IPC.authSession, '세션 정보를 불러오지 못했습니다.', () => services.auth.getSession());
 

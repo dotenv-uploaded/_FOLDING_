@@ -169,7 +169,11 @@ Base path는 `/api/v1`이다.
 - `POST /executions/{execution_id}/undo`
 - `POST /demo/reset`, non-production only
 
-현재 Chat `response_type`은 `location_result`, `target_selection`, `change_preview`, `error` 중 하나다. 실행 상태는 chat 응답이 아니라 execution API로 조회한다. 위치 응답의 사실 문장은 canonical quote 그대로이며 각 quote와 구조화 evidence에 `[document_id rev.N §section_id]` citation을 붙인다.
+현재 Chat `response_type`은 `location_result`, `target_selection`, `change_preview`,
+`document_creation_preview`, `error` 중 하나다. 생성 preview는 검증한 source document ID, 경로 없는
+HWPX filename과 canonical 근거 기반 Markdown을 반환하며 source write를 수행하지 않는다. 실행 상태는
+chat 응답이 아니라 execution API로 조회한다. 위치 응답의 사실 문장은 canonical quote 그대로이며 각
+quote와 구조화 evidence에 `[document_id rev.N §section_id]` citation을 붙인다.
 
 정확한 원본 파일명 삭제 요청은 agent write tool을 사용하지 않고 `delete_file` change preview를 반환한다.
 `change_plan` 하나의 exact `plan_hash`를 승인하기 전에는 source write가 없다. `계약서 전부` 요청은

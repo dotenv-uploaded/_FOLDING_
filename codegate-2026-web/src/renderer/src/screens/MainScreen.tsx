@@ -90,7 +90,12 @@ export function MainScreen({
               tab === 'chat' ? '' : 'hidden',
             )}
           >
-            <ChatPane chat={chat} build={workspace.build} />
+            <ChatPane
+              chat={chat}
+              build={workspace.build}
+              tree={workspace.tree}
+              roots={workspace.roots}
+            />
           </div>
           {tab === 'graph' && (
             <div className="col-start-1 row-start-1 min-h-0 min-w-0">

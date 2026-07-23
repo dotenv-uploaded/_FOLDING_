@@ -59,6 +59,8 @@ _VALIDATION_LOCATION_PARTS = frozenset(
         "NeedsClarificationOutput",
         "NotFoundOutput",
         "ReadyChangeOutput",
+        "ReadyCreateFileOutput",
+        "ReadyDeleteFileOutput",
         "ReadyLocateOutput",
         "ReplaceExactOperation",
         "ToolErrorOutput",
@@ -74,7 +76,9 @@ _VALIDATION_LOCATION_PARTS = frozenset(
         "replacement_text",
         "search_query",
         "source_sha256",
+        "target_filename",
         "target_document_id",
+        "document_markdown",
         "type",
     }
 )
@@ -149,7 +153,7 @@ class AgentDecision(BaseModel):
             "fail-closed reason."
         )
     )
-    intent: Literal["locate", "change"] = Field(
+    intent: Literal["locate", "change", "delete_file", "create_file"] = Field(
         description="The user's requested document task, preserved even when outcome is not ready."
     )
     assistant_text: str = Field(
@@ -188,6 +192,19 @@ class AgentDecision(BaseModel):
             "One current-source-grounded replace_exact proposal for a ready change, otherwise null."
         ),
     )
+    target_filename: str | None = Field(
+        default=None,
+        min_length=6,
+        max_length=255,
+        pattern=r'^[^./\\\x00-\x1f<>:"|?*][^/\\\x00-\x1f<>:"|?*]*\.[Hh][Ww][Pp][Xx]$',
+        description="Requested safe HWPX basename for a ready file creation, otherwise null.",
+    )
+    document_markdown: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=65_536,
+        description="Grounded Markdown body for a ready HWPX creation, otherwise null.",
+    )
 
     @model_validator(mode="after")
     def enforce_decision_contract(self) -> AgentDecision:
@@ -197,10 +214,27 @@ class AgentDecision(BaseModel):
             self.operation is not None or self.source_sha256 is not None
         ):
             raise ValueError("locate decisions cannot contain a change operation or source hash")
-        if self.outcome is not AgentOutcome.READY and (
+        if self.intent == "delete_file" and (
             self.operation is not None or self.source_sha256 is not None
         ):
-            raise ValueError("non-ready decisions cannot contain a change operation or source hash")
+            raise ValueError(
+                "file deletion decisions cannot contain content changes or source hash"
+            )
+        if self.intent == "create_file" and (
+            self.operation is not None or self.source_sha256 is not None
+        ):
+            raise ValueError("file creation decisions cannot contain source edits or source hash")
+        if self.intent != "create_file" and (
+            self.target_filename is not None or self.document_markdown is not None
+        ):
+            raise ValueError("only file creation decisions can contain generated document fields")
+        if self.outcome is not AgentOutcome.READY and (
+            self.operation is not None
+            or self.source_sha256 is not None
+            or self.target_filename is not None
+            or self.document_markdown is not None
+        ):
+            raise ValueError("non-ready decisions cannot contain write proposal fields")
         if (
             self.outcome
             in {
@@ -222,6 +256,24 @@ class AgentDecision(BaseModel):
         ):
             raise ValueError(
                 "a ready change requires a target, source hash, and replace_exact operation"
+            )
+        if (
+            self.outcome is AgentOutcome.READY
+            and self.intent == "delete_file"
+            and self.target_document_id is None
+        ):
+            raise ValueError("a ready file deletion requires a verified target")
+        if (
+            self.outcome is AgentOutcome.READY
+            and self.intent == "create_file"
+            and (
+                self.target_document_id is None
+                or self.target_filename is None
+                or self.document_markdown is None
+            )
+        ):
+            raise ValueError(
+                "a ready file creation requires a verified source, HWPX filename, and Markdown"
             )
         if self.operation is not None and self.intent != "change":
             raise ValueError("only a change decision can contain an operation")
@@ -284,8 +336,42 @@ class ReadyChangeOutput(_StructuredDecisionBase):
     )
 
 
+class ReadyDeleteFileOutput(_StructuredDecisionBase):
+    decision_type: Literal["ready_delete_file"] = Field(
+        description=(
+            "Use only when the user requested deletion of one whole source file and the target "
+            "was verified with current-turn document evidence."
+        )
+    )
+    target_document_id: VerifiedDocumentId = Field(
+        description="Stable ID verified by a CODEGATE tool in the current turn."
+    )
+
+
+class ReadyCreateFileOutput(_StructuredDecisionBase):
+    decision_type: Literal["ready_create_file"] = Field(
+        description=(
+            "Use only when one verified source document supports a new HWPX document proposal."
+        )
+    )
+    target_document_id: VerifiedDocumentId = Field(
+        description="Source document ID verified by a CODEGATE tool in the current turn."
+    )
+    target_filename: str = Field(
+        min_length=6,
+        max_length=255,
+        pattern=r'^[^./\\\x00-\x1f<>:"|?*][^/\\\x00-\x1f<>:"|?*]*\.[Hh][Ww][Pp][Xx]$',
+        description="User-requested HWPX basename without any directory component.",
+    )
+    document_markdown: str = Field(
+        min_length=1,
+        max_length=65_536,
+        description="Markdown body grounded in the current canonical source document.",
+    )
+
+
 class _NonReadyOutput(_StructuredDecisionBase):
-    intent: Literal["locate", "change"] = Field(
+    intent: Literal["locate", "change", "delete_file", "create_file"] = Field(
         description="The user's requested document task, preserved on a non-ready result."
     )
 
@@ -317,6 +403,8 @@ class UnsupportedOutput(_NonReadyOutput):
 StructuredDecision = (
     ReadyLocateOutput
     | ReadyChangeOutput
+    | ReadyCreateFileOutput
+    | ReadyDeleteFileOutput
     | NeedsClarificationOutput
     | NotFoundOutput
     | ToolErrorOutput
@@ -349,6 +437,8 @@ class AgentStructuredOutput(BaseModel):
                     "target_document_id": value.target_document_id,
                     "source_sha256": None,
                     "operation": None,
+                    "target_filename": None,
+                    "document_markdown": None,
                 }
             )
         if isinstance(value, ReadyChangeOutput):
@@ -360,6 +450,34 @@ class AgentStructuredOutput(BaseModel):
                     "target_document_id": value.target_document_id,
                     "source_sha256": value.source_sha256,
                     "operation": value.operation,
+                    "target_filename": None,
+                    "document_markdown": None,
+                }
+            )
+        if isinstance(value, ReadyCreateFileOutput):
+            return AgentDecision.model_validate(
+                {
+                    **common,
+                    "outcome": AgentOutcome.READY,
+                    "intent": "create_file",
+                    "target_document_id": value.target_document_id,
+                    "source_sha256": None,
+                    "operation": None,
+                    "target_filename": value.target_filename,
+                    "document_markdown": value.document_markdown,
+                }
+            )
+        if isinstance(value, ReadyDeleteFileOutput):
+            return AgentDecision.model_validate(
+                {
+                    **common,
+                    "outcome": AgentOutcome.READY,
+                    "intent": "delete_file",
+                    "target_document_id": value.target_document_id,
+                    "source_sha256": None,
+                    "operation": None,
+                    "target_filename": None,
+                    "document_markdown": None,
                 }
             )
         outcome = AgentOutcome(value.decision_type)
@@ -371,6 +489,8 @@ class AgentStructuredOutput(BaseModel):
                 "target_document_id": None,
                 "source_sha256": None,
                 "operation": None,
+                "target_filename": None,
+                "document_markdown": None,
             }
         )
 
@@ -434,6 +554,89 @@ class DeterministicAgentGateway:
         conversation_history: list[dict[str, str | None]] | None = None,
     ) -> AgentRunResult:
         del conversation_id, resume_session_id, conversation_history
+        requested_filename = _requested_hwpx_filename(message)
+        if requested_filename is not None and _is_file_creation_request(message):
+            search_query = _creation_search_query(message, requested_filename)
+            document_id = selected_document_id or _extract_document_id(message)
+            if document_id is None:
+                candidates = repository.search(search_query, access_context=access_context)
+                if len(candidates) == 1:
+                    document_id = candidates[0].document_id
+            source = (
+                repository.read_canonical_text(document_id, access_context=access_context)
+                if document_id is not None
+                else None
+            )
+            if source is None:
+                return AgentRunResult(
+                    provider="deterministic",
+                    decision=AgentDecision(
+                        prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                        outcome=AgentOutcome.NEEDS_CLARIFICATION,
+                        intent="create_file",
+                        assistant_text=(
+                            "새 문서에 사용할 근거 문서 하나를 더 명확히 지정해야 합니다."
+                        ),
+                        search_query=search_query,
+                        target_document_id=None,
+                        source_sha256=None,
+                        operation=None,
+                    ),
+                )
+            title = requested_filename.rsplit(".", 1)[0]
+            return AgentRunResult(
+                provider="deterministic",
+                decision=AgentDecision(
+                    prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                    outcome=AgentOutcome.READY,
+                    intent="create_file",
+                    assistant_text="현재 문서 근거로 새 HWPX 생성 미리보기를 준비했습니다.",
+                    search_query=search_query,
+                    target_document_id=document_id,
+                    source_sha256=None,
+                    operation=None,
+                    target_filename=requested_filename,
+                    document_markdown=f"# {title}\n\n{source[1].strip()}",
+                ),
+            )
+        if _is_whole_file_deletion_request(message):
+            document_id = selected_document_id or _extract_document_id(message)
+            if document_id is None:
+                candidates = repository.search(message, access_context=access_context)
+                if len(candidates) == 1:
+                    document_id = candidates[0].document_id
+            document = (
+                repository.get(document_id, access_context=access_context)
+                if document_id is not None
+                else None
+            )
+            if document is None:
+                return AgentRunResult(
+                    provider="deterministic",
+                    decision=AgentDecision(
+                        prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                        outcome=AgentOutcome.NEEDS_CLARIFICATION,
+                        intent="delete_file",
+                        assistant_text="삭제할 원본 파일 하나를 더 명확히 지정해야 합니다.",
+                        search_query=message,
+                        target_document_id=None,
+                        source_sha256=None,
+                        operation=None,
+                    ),
+                )
+            return AgentRunResult(
+                provider="deterministic",
+                decision=AgentDecision(
+                    prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                    outcome=AgentOutcome.READY,
+                    intent="delete_file",
+                    assistant_text="파일 삭제 승인 미리보기를 준비합니다.",
+                    search_query=message,
+                    target_document_id=document.document_id,
+                    source_sha256=None,
+                    operation=None,
+                ),
+            )
         operation = _parse_replace_operation(message)
         document_id = selected_document_id or _extract_document_id(message)
         if operation is not None:
@@ -700,12 +903,14 @@ def _normalize_structured_enum_casing(value: Any) -> Any:
         "decision_type": {
             "ready_locate",
             "ready_change",
+            "ready_create_file",
+            "ready_delete_file",
             "needs_clarification",
             "not_found",
             "tool_error",
             "unsupported",
         },
-        "intent": {"locate", "change"},
+        "intent": {"locate", "change", "delete_file", "create_file"},
     }
     for field, allowed in enum_values.items():
         raw = decision.get(field)
@@ -920,6 +1125,12 @@ def _validate_tool_trace(
         for index in search_indices
         if codegate_tool_uses[index].input.get("query") == decision.search_query
     ]
+    matching_target_search_indices = [
+        index
+        for index in matching_search_indices
+        if target is not None
+        and target in _search_result_document_ids(result_payloads[codegate_tool_uses[index].id])
+    ]
     if search_indices and not matching_search_indices:
         raise AgentGatewayError(
             "AGENT_TOOL_TRACE_INVALID",
@@ -936,22 +1147,53 @@ def _validate_tool_trace(
             target_resolved_in_order = target_get_index == 0
         else:
             target_resolved_in_order = any(
-                search_index < target_get_index
-                and target
-                in _search_result_document_ids(result_payloads[codegate_tool_uses[search_index].id])
-                for search_index in matching_search_indices
+                search_index < target_get_index for search_index in matching_target_search_indices
             )
         if not target_resolved_in_order:
             raise AgentGatewayError(
                 "AGENT_TOOL_TRACE_INVALID",
                 "Claude의 검색과 대상 문서 확인 순서가 현재 routing hint와 일치하지 않습니다.",
             )
+    if decision.intent == "create_file":
+        canonical_tool = "mcp__codegate__knowledge_document_read"
+        canonical_indices = [index for index, name in enumerate(names) if name == canonical_tool]
+        if len(canonical_indices) != 1 or source_tool in names or target is None:
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude가 현재 turn의 새 문서 근거 확인 계약을 지키지 않았습니다.",
+            )
+        canonical_index = canonical_indices[0]
+        canonical_use = codegate_tool_uses[canonical_index]
+        canonical_payload = result_payloads[canonical_use.id]
+        if (
+            canonical_use.input.get("document_id") != target
+            or canonical_payload.get("document_id") != target
+            or target_get_indices[0] >= canonical_index
+            or canonical_index != len(codegate_tool_uses) - 1
+        ):
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude의 새 문서 근거 확인 순서나 대상이 일치하지 않습니다.",
+            )
+        return
     if decision.intent == "locate":
+        post_target_searches_are_scoped = True
+        if target is not None:
+            for index in range(target_get_indices[0] + 1, len(codegate_tool_uses)):
+                tool_use = codegate_tool_uses[index]
+                if (
+                    tool_use.name != "mcp__codegate__knowledge_search"
+                    or tool_use.input.get("query") != decision.search_query
+                    or target not in _search_result_document_ids(result_payloads[tool_use.id])
+                ):
+                    post_target_searches_are_scoped = False
+                    break
         if (
             source_tool in names
             or "mcp__codegate__knowledge_document_read" in names
             or not any(name in resolver_tools for name in names)
-            or (target is not None and target_get_indices[0] != len(codegate_tool_uses) - 1)
+            or not post_target_searches_are_scoped
+            or (target is not None and not matching_target_search_indices)
             or (target is None and not search_indices)
             or (
                 target is None
@@ -964,6 +1206,18 @@ def _validate_tool_trace(
             raise AgentGatewayError(
                 "AGENT_TOOL_TRACE_INVALID",
                 "Claude가 현재 turn의 위치 검색 도구 계약을 지키지 않았습니다.",
+            )
+        return
+
+    if decision.intent == "delete_file":
+        if (
+            target is None
+            or source_tool in names
+            or "mcp__codegate__knowledge_document_read" in names
+        ):
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude가 현재 turn의 파일 삭제 대상 확인 계약을 지키지 않았습니다.",
             )
         return
 
@@ -1216,3 +1470,31 @@ def _parse_replace_operation(message: str) -> ReplaceExactOperation | None:
             replacement_text=unquoted.group("new"),
         )
     return None
+
+
+def _is_whole_file_deletion_request(message: str) -> bool:
+    return (
+        re.search(
+            r"(?:파일|원본)\s*(?:을|를)?\s*(?:전부\s*)?(?:다\s*)?"
+            r"(?:지워|삭제|제거|없애)(?:\s*해)?(?:\s*줘|\s*주세요)?",
+            message,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _requested_hwpx_filename(message: str) -> str | None:
+    match = re.search(r"(?<![/\\\w])([^/\\\s]+\.hwpx)(?![A-Za-z0-9])", message, re.IGNORECASE)
+    return match.group(1) if match is not None else None
+
+
+def _is_file_creation_request(message: str) -> bool:
+    return re.search(r"(?:만들|생성|작성)(?:어|해)?(?:\s*줘|\s*주세요)?", message) is not None
+
+
+def _creation_search_query(message: str, filename: str) -> str:
+    query = message.replace(filename, " ")
+    query = re.sub(r"(?:만들|생성|작성)(?:어|해)?(?:\s*줘|\s*주세요)?", " ", query)
+    query = re.sub(r"\s+", " ", query).strip(" .,!?")
+    return query or "참고 문서"

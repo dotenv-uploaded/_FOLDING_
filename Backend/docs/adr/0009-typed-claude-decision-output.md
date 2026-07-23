@@ -45,9 +45,8 @@ Domain cross-field validator와 current-turn tool trace, source hash, replacemen
 - LangChain 또는 LangGraph 추가: 현재 문제는 workflow checkpoint가 아니라 한 응답의 type contract다.
   추가 orchestration 계층은 보장을 늘리지 않고 운영 표면만 넓혀 제외했다.
 - Claude에 filesystem write/delete tool을 직접 허용: approval hash, immutable backup, atomic replace와 Undo를
-  우회하므로 제외했다. 파일 자체 삭제는 recoverable delete journal과 UI 계약이 생길 때 별도 operation으로
-  설계한다. 그 전에는 앱이 agent 호출 전에 파일 삭제 문장을 차단해 내용 삭제 operation으로 오해할 수
-  없게 한다.
+  우회하므로 제외했다. 이후 ADR 0010과 0011에서 파일 lifecycle operation과 UI 계약을 추가하되 Claude는
+  계속 현재 turn의 근거와 typed proposal만 반환하도록 확장했다.
 
 ## 결과
 

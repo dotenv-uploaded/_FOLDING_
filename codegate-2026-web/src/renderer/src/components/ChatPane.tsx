@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   AlertTriangle,
   ArrowUp,
@@ -8,11 +8,14 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { BuildState } from '@contracts';
+import type { BuildState, FileNode, Root } from '@contracts';
 import { BUILD_PHASE_LABEL } from '@contracts';
 import type { useChat } from '@/state/useChat';
 import { cn } from '@/lib/cn';
-import { SUGGESTED_COMMAND_GROUPS } from './chat-suggestions';
+import {
+  buildSuggestedCommandGroups,
+  type SuggestedCommandGroup,
+} from '@/lib/chat-suggestions';
 import { MessageBubble } from './MessageBubble';
 import { Mark } from '@/ui/Wordmark';
 
@@ -25,7 +28,17 @@ const SUGGESTION_ICONS = {
 } as const;
 
 /** 중앙 패널 — 채팅. 스트리밍 · 인용 · 도구 배지. */
-export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null }) {
+export function ChatPane({
+  chat,
+  build,
+  tree,
+  roots,
+}: {
+  chat: Chat;
+  build: BuildState | null;
+  tree: FileNode[];
+  roots: Root[];
+}) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -41,6 +54,10 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
     build?.buildId === 'knowledge-sync' && build.status !== 'done' && build.status !== 'failed';
   const buildFailed = build?.status === 'failed';
   const building = build && build.status !== 'idle' && build.status !== 'done' && !buildFailed;
+  const suggestedCommandGroups = useMemo(
+    () => buildSuggestedCommandGroups(tree, roots),
+    [tree, roots],
+  );
 
   // 새 내용이 붙으면 바닥으로 따라간다.
   useEffect(() => {
@@ -118,7 +135,10 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-6">
         {chat.messages.length === 0 ? (
-          <EmptyState onPick={(text) => void chat.send(text)} />
+          <EmptyState
+            groups={suggestedCommandGroups}
+            onPick={(text) => void chat.send(text)}
+          />
         ) : (
           <div className="mx-auto flex max-w-[760px] flex-col gap-7 pb-8">
             {chat.messages.map((m) => (
@@ -188,7 +208,13 @@ export function ChatPane({ chat, build }: { chat: Chat; build: BuildState | null
   );
 }
 
-export function EmptyState({ onPick }: { onPick: (text: string) => void }) {
+export function EmptyState({
+  groups,
+  onPick,
+}: {
+  groups: SuggestedCommandGroup[];
+  onPick: (text: string) => void;
+}) {
   return (
     <div className="mx-auto flex h-full max-w-[760px] flex-col items-center justify-center gap-6 pb-16 text-center">
       <Mark size={44} />
@@ -198,8 +224,13 @@ export function EmptyState({ onPick }: { onPick: (text: string) => void }) {
           등록한 폴더의 문서에서 근거를 찾아 답합니다.
         </p>
       </div>
-      <div className="grid w-full grid-cols-1 gap-3 text-left md:grid-cols-3">
-        {SUGGESTED_COMMAND_GROUPS.map((group) => {
+      <div
+        className={cn(
+          'grid w-full grid-cols-1 gap-3 text-left',
+          groups.length >= 3 ? 'md:grid-cols-3' : groups.length === 2 ? 'md:grid-cols-2' : '',
+        )}
+      >
+        {groups.map((group) => {
           const Icon = SUGGESTION_ICONS[group.key];
           return (
             <section

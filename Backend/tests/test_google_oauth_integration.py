@@ -3,11 +3,11 @@ import hashlib
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from codegate_cloud_api.models import GoogleIdentity
 from fastapi.testclient import TestClient
 
 from codegate_api.config import Settings
 from codegate_api.main import create_app
+from codegate_cloud_api.models import GoogleIdentity
 
 
 class FakeGoogleProvider:

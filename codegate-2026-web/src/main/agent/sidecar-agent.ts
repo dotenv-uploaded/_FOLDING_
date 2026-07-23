@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import {
   type Agent,
   type AgentDeps,
@@ -13,6 +14,8 @@ import {
   type ExecutionResponse,
 } from '@main/sidecar/client';
 import { sourceUriToRelativePath } from '@main/util/vpath';
+import { createHwpxFile, validatedHwpxBasename } from '@main/kordoc/create';
+import { uniquePath } from '@main/kordoc/generate';
 
 export function createSidecarAgent(deps: AgentDeps): Agent {
   const client = new SidecarClient(deps.config.backendUrl);
@@ -45,6 +48,43 @@ async function* run(
    */
   if (response.error && !response.assistant_text.includes(response.error.message)) {
     yield { type: 'text_delta', text: `\n\n${response.error.message}` };
+  }
+
+  if (response.response_type === 'document_creation_preview' && response.generated_document) {
+    if (!deps.auth.canWrite()) {
+      yield { type: 'auth_error', kind: 'not_provisioned' };
+      yield { type: 'done', citations };
+      return;
+    }
+    const root = deps.config.roots[0];
+    if (!root) throw new Error('새 문서를 저장할 등록 폴더가 없습니다.');
+    const requested = validatedHwpxBasename(response.generated_document.filename);
+    const extension = path.extname(requested);
+    const target = await uniquePath(root, requested.slice(0, -extension.length), '.hwpx');
+    const diff = createDocumentDiff(path.basename(target), response.generated_document.markdown);
+    yield { type: 'approval_request', diff, target: path.basename(target) };
+    const approved = await deps.approvalHandler({
+      tool: 'create_document',
+      target,
+      diff,
+      rationale: `근거 문서: ${response.generated_document.source_document_ids.join(', ')}`,
+    });
+    if (!approved) {
+      yield { type: 'text_delta', text: '\n\n문서 생성을 취소했습니다. 새 파일은 만들어지지 않았습니다.' };
+      yield { type: 'done', citations };
+      return;
+    }
+    yield { type: 'tool_start', name: 'create_document', summary: '승인된 HWPX 생성 및 재검증' };
+    await createHwpxFile({
+      targetPath: target,
+      markdown: response.generated_document.markdown,
+    });
+    yield {
+      type: 'text_delta',
+      text: `\n\n${path.basename(target)} 파일을 만들었습니다. 문서 감시기가 새 위키 버전에 반영합니다.`,
+    };
+    yield { type: 'done', citations };
+    return;
   }
 
   const plans = response.change_plans?.length
@@ -125,6 +165,16 @@ export function approvalRequest(plan: ChangePlanResponse) {
     changePlanId: plan.change_plan_id,
     planHash: plan.plan_hash,
   };
+}
+
+export function createDocumentDiff(filename: string, markdown: string): string {
+  return [
+    '--- /dev/null',
+    `+++ ${filename}`,
+    '@@ new HWPX document @@',
+    ...markdown.split('\n').map((line) => `+${line}`),
+    '',
+  ].join('\n');
 }
 
 function citationsFrom(response: ChatResponse): Citation[] {

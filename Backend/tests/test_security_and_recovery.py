@@ -136,7 +136,7 @@ def test_state_store_migrates_agent_runtime_fingerprint_without_losing_session(
             "SELECT session_id, runtime_fingerprint FROM agent_runs WHERE id = 'run-legacy'"
         ).fetchone()
         migration = connection.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = 5"
+            "SELECT 1 FROM schema_migrations WHERE version = 6"
         ).fetchone()
 
     assert "runtime_fingerprint" in columns
@@ -164,6 +164,49 @@ def test_state_store_rejects_changed_validated_llmwiki_digest(tmp_path: Path) ->
         )
 
     assert state.llmwiki_build_digest("build-0123456789abcdefabcd") == "a" * 64
+
+
+def test_state_store_persists_exact_llmwiki_deletion_until_matching_undo(
+    tmp_path: Path,
+) -> None:
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    deletion = {
+        "document_id": "REG-000001",
+        "deleted_execution_id": f"exec_{'a' * 32}",
+        "source_uri": "source://regulations/REG-000001.md",
+        "source_sha256": "b" * 64,
+        "graph_version_before": "build-0123456789abcdefabcd",
+        "event_id": "evt_delete_reg_000001",
+    }
+
+    state.record_llmwiki_deleted_document(**deletion)
+    state.record_llmwiki_deleted_document(**deletion)
+
+    assert state.llmwiki_deleted_document_ids() == {"REG-000001"}
+    assert (
+        state.llmwiki_deleted_documents()[0].graph_version_before
+        == deletion["graph_version_before"]
+    )
+    with pytest.raises(StateConflict, match="활성 삭제 기록"):
+        state.record_llmwiki_deleted_document(
+            **{**deletion, "deleted_execution_id": f"exec_{'c' * 32}"}
+        )
+    with pytest.raises(StateConflict, match="Undo 대상"):
+        state.clear_llmwiki_deleted_document(
+            document_id="REG-000001",
+            deleted_execution_id=f"exec_{'d' * 32}",
+        )
+
+    state.clear_llmwiki_deleted_document(
+        document_id="REG-000001",
+        deleted_execution_id=str(deletion["deleted_execution_id"]),
+    )
+    state.clear_llmwiki_deleted_document(
+        document_id="REG-000001",
+        deleted_execution_id=str(deletion["deleted_execution_id"]),
+    )
+    assert state.llmwiki_deleted_document_ids() == set()
 
 
 def test_publish_barrier_waits_for_source_write(tmp_path: Path) -> None:

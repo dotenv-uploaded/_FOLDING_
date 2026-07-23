@@ -317,6 +317,22 @@ def test_package_accepts_revision_bound_ids_for_multiple_chunks_in_one_section(
     repository.load(validate_sources=False)
 
 
+def test_stale_source_recovery_allows_a_missing_source_until_outbox_replay(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "llm-wiki"
+    source_root = tmp_path / "source"
+    shutil.copytree(Path("demo/llm-wiki"), package_root)
+    shutil.copytree(Path("demo/source"), source_root)
+    missing = source_root / "regulations/REG-000001.md"
+    missing.unlink()
+    repository = KnowledgeRepository(package_root, SourceUriResolver(source_root))
+
+    repository.load(validate_sources=False)
+    with pytest.raises(KnowledgePackageError, match="source document is missing"):
+        repository.load(validate_sources=True)
+
+
 def test_search_expands_aliases_and_filters_future_documents(tmp_path: Path) -> None:
     package_root = tmp_path / "llm-wiki"
     shutil.copytree(Path("demo/llm-wiki"), package_root)
@@ -363,6 +379,54 @@ def test_search_prioritizes_an_exact_source_basename_over_semantic_matches() -> 
     assert results[0].document_id == "MAN-000002"
     assert results[0].display_path == "manuals/MAN-000002.md"
     assert results[0].score > results[1].score
+
+
+def test_exact_filename_routing_ranks_requested_fact_over_repeated_filename_tokens() -> None:
+    repository = KnowledgeRepository(
+        Path("demo/llm-wiki"),
+        SourceUriResolver(Path("demo/source")),
+    )
+    repository.load()
+    original = next(
+        chunk
+        for chunk in repository._chunks
+        if chunk.document_id == "MAN-000002"  # noqa: SLF001
+    )
+    repeated_filename = original.model_copy(
+        update={
+            "chunk_id": "MAN-000002@1#filename-noise",
+            "section_id": "filename-noise",
+            "section": "파일 정보",
+            "heading_path": ("보안 사고 대응 매뉴얼", "파일 정보"),
+            "text": "MAN-000002.md MAN-000002.md MAN-000002.md",
+            "embedding_text": "MAN-000002.md MAN-000002.md MAN-000002.md",
+            "ordinal": 0,
+        }
+    )
+    requested_fact = original.model_copy(
+        update={
+            "chunk_id": "MAN-000002@1#schedule-risk",
+            "section_id": "schedule-risk",
+            "section": "일정 위험",
+            "heading_path": ("보안 사고 대응 매뉴얼", "일정 위험"),
+            "text": "지연 일정의 위험 요소와 담당자를 확인한다.",
+            "embedding_text": "지연 일정의 위험 요소와 담당자를 확인한다.",
+            "ordinal": 1,
+        }
+    )
+    repository._chunks = [  # noqa: SLF001
+        chunk
+        for chunk in repository._chunks
+        if chunk.document_id != "MAN-000002"  # noqa: SLF001
+    ] + [repeated_filename, requested_fact]
+
+    results = repository.search(
+        "MAN-000002.md에서 지연 일정, 위험 요소와 담당자를 찾아줘",
+        access_context=AccessContext.anonymous(),
+    )
+
+    assert results[0].document_id == "MAN-000002"
+    assert results[0].evidence[0].section == "일정 위험"
 
 
 def test_search_prefers_regulation_when_policy_relevance_is_nearly_tied() -> None:

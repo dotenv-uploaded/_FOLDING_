@@ -1,5 +1,58 @@
 # Troubleshooting
 
+## 2026-07-23 — converter를 고쳐도 기존 XLSX normalized input이 갱신되지 않음
+
+### 맥락과 원인
+
+XLSX 병합 hidden-cell 중복을 converter에서 제거해도 Electron input sync는 source URI와 SHA가 같으면
+기존 Markdown을 승인된 상태로 보존한다. doc2md raw cache도 pipeline version이 같으면 예전 중복 본문을
+반환한다. 새 문서는 고쳐지지만 이미 등록한 업무기록의 검색 근거는 그대로 남는 부분 마이그레이션
+문제였다.
+
+### 해결과 검증
+
+doc2md raw cache key를 v3로 올리고 Electron ownership manifest는 XLSX normalizer version 1을 요구한다.
+marker가 없는 기존 XLSX만 한 번 재변환해 revision을 올리고, 성공한 marker가 있으면 이후 same-SHA sync는
+다시 원자 보존한다. 모든 형식을 무조건 재변환하거나 구조상 정상인 Markdown을 손상으로 판정하는 방식은
+불필요한 원본 읽기와 승인 결과 덮어쓰기를 일으켜 사용하지 않았다.
+
+marker 제거→재변환→다음 sync unchanged 순서를 회귀 테스트로 고정했다. TypeScript typecheck, 전체
+Vitest 148개가 통과했고 선택적 integration 1개는 기존 설정대로 skip됐다. 실제 XLSX는 source SHA를
+유지하면서 병합 관계 문장 8→1, R-01~R-03 각 1회로 변환됐다.
+
+### 재발 방지와 남은 위험
+
+converter semantics가 같은 source bytes의 normalized output을 바꿀 때는 converter cache key와 해당
+format의 Electron normalizer marker를 함께 올린다. doc2md가 연결되지 않은 상태에서는 stale XLSX를
+조용히 재사용하지 않고 재변환 실패로 닫힌다.
+
+## 2026-07-23 — 문서 삭제 뒤 생성된 crosslink가 사라진 target을 계속 참조
+
+### 맥락과 원인
+
+실제 업무기록 PDF의 승인 삭제에서 원본은 quarantine으로 이동했지만 다른 normalized 문서에 남은
+`[CODE](DOC-….md)` 링크 때문에 Backend의 broken-link validation이 새 지식 버전을 거부했다. 기존
+crosslink는 plain code를 링크하는 추가 방향만 처리하고, corpus에서 문서가 빠졌을 때 과거 생성 링크를
+되돌리지 않았다. validation을 끄면 손상된 graph가 게시되므로 해결책이 될 수 없었다.
+
+### 해결과 검증
+
+각 sync에서 Folding이 생성하는 내부 문서 링크만 plain code로 되돌린 뒤 현재 문서 code index를
+기준으로 다시 링크하는 초기 접근은 수동 DOC 링크와 section anchor의 provenance를 구분할 수 없어
+폐기했다. Electron은 기존 링크를 그대로 보존하고 plain code에만 새 링크를 만든다. Backend가 승인된
+삭제 ID를 LLMWIKI stage·activation에 전달하면 builder가 그 target의 graph edge만 제외하며, Undo 뒤
+원본 링크에서 관계가 다시 생성된다.
+
+기존 내부 section 링크, 외부·사용자 링크 보존을 회귀 테스트로 추가했다. 실제 PDF 삭제 retry에서
+peer normalized input hash 불변과 대상 graph edge 0건, Undo 뒤 38개 관계 링크 복원을 확인했고
+TypeScript typecheck, Vitest 147개 통과·선택적 integration 1개 skip, Electron production build가
+성공했다.
+
+### 재발 방지와 남은 위험
+
+crosslink는 기존 Markdown 링크를 source of truth로 보존한다. 삭제 예외는 UI 추론이 아니라 승인된
+Backend operation의 정확한 document ID에서만 나오며, 다른 깨진 링크는 계속 build 실패한다.
+
 ## 2026-07-22 — 파일 삭제 preview를 일반 문서 수정으로 표시
 
 Backend에 복구 가능한 삭제 plan이 추가돼도 Electron 계약에는 operation type과 복수 plan이 없어 삭제를
@@ -325,3 +378,29 @@ sidecar stdout은 `resume()`으로 계속 비워 child의 pipe backpressure 정�
   `data` listener의 `console.warn`과 Node socket write를 가리켰기 때문이다.
 - 왜 stderr를 완전히 버리지 않았나? stale wiki와 기동 실패를 판별하는 근거이므로 메모리 진단 꼬리는
   유지하되, 사용자 터미널에 의존하는 재출력만 제거했다.
+## 2026-07-23 — 채팅의 HWPX 생성 요청이 파일 쓰기까지 이어지지 않음
+
+### 상황과 영향
+
+사용자가 기존 주간 자료를 근거로 `주간업무보고서.hwpx` 생성을 요청해도 Backend가 unsupported를
+반환했고 Electron에는 생성 action이 없었다. 별도의 “답변을 HWPX로 저장” IPC와 Kordoc 변환 코드는
+존재했지만 sidecar chat result와 연결되지 않아 실제 채팅 workflow에서는 도달할 수 없었다.
+
+### 원인과 대안
+
+기존 change plan은 이미 존재하는 document ID, file version과 base hash를 전제로 해 새 파일을 표현할 수
+없었다. 이 필드를 가짜 값으로 채우는 대안은 plan hash 의미를 훼손해 제외했다. Agent에 직접 write tool을
+주는 대안도 등록 경로와 사용자 승인을 우회해 제외했다.
+
+### 해결과 검증
+
+Backend의 grounded creation preview를 Electron sidecar가 받아 등록 폴더 안의 실제 target을 정하고 전체
+`/dev/null` diff로 승인받는다. 승인 후 npm에 설치된 실제 Kordoc으로 candidate를 생성·재파싱하고 같은
+directory의 hard link로 no-overwrite 게시한다. 실 Kordoc round-trip, sidecar HTTP response부터 승인과
+실제 HWPX 생성까지의 통합 테스트, 이름 충돌·잘못된 filename·재파싱 실패 회귀 테스트가 통과했다.
+
+### 재발 방지와 남은 위험
+
+생성 성공은 단순 파일 존재가 아니라 non-empty HWPX, Kordoc 재파싱과 원자 no-replace까지 확인한다.
+Watcher가 감지한 뒤 새 위키 publish는 비동기이므로 생성 완료 문구가 publish 완료를 주장하지 않게 했다.
+서명된 설치본에서 npm Kordoc asset이 ASAR/resource와 함께 로드되는지는 release smoke gate로 유지한다.

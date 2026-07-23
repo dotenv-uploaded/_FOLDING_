@@ -73,7 +73,17 @@ class WriteJournal:
     state: str
 
 
-SCHEMA_VERSION = 5
+@dataclass(frozen=True, slots=True)
+class LLMWikiDeletedDocument:
+    document_id: str
+    deleted_execution_id: str
+    source_uri: str
+    source_sha256: str
+    graph_version_before: str
+    event_id: str
+
+
+SCHEMA_VERSION = 6
 _CHANGE_OPERATION_ADAPTER: TypeAdapter[ChangeOperation] = TypeAdapter(ChangeOperation)
 
 
@@ -1278,6 +1288,140 @@ class StateStore:
             ).fetchone()
         return row is not None
 
+    def execution_graph_version_before(self, execution_id: str, document_id: str) -> str:
+        """Return the approved graph baseline for a document lifecycle execution."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT graph_version_before FROM executions
+                WHERE id = ? AND document_id = ?
+                """,
+                (execution_id, document_id),
+            ).fetchone()
+        if row is None:
+            raise StateNotFound(execution_id)
+        return str(row["graph_version_before"])
+
+    def record_llmwiki_deleted_document(
+        self,
+        *,
+        document_id: str,
+        deleted_execution_id: str,
+        source_uri: str,
+        source_sha256: str,
+        graph_version_before: str,
+        event_id: str,
+    ) -> None:
+        """Persist one approved deletion until its exact Undo is published."""
+
+        expected = (
+            deleted_execution_id,
+            source_uri,
+            source_sha256,
+            graph_version_before,
+            event_id,
+        )
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT deleted_execution_id, source_uri, source_sha256,
+                    graph_version_before, event_id
+                FROM llmwiki_deleted_documents WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+            if existing is not None:
+                actual = tuple(
+                    str(existing[key])
+                    for key in (
+                        "deleted_execution_id",
+                        "source_uri",
+                        "source_sha256",
+                        "graph_version_before",
+                        "event_id",
+                    )
+                )
+                if actual != expected:
+                    raise StateConflict(
+                        "LLMWIKI_DELETION_CONFLICT",
+                        "문서의 활성 삭제 기록이 승인된 실행과 다릅니다.",
+                    )
+                return
+            connection.execute(
+                """
+                INSERT INTO llmwiki_deleted_documents(
+                    document_id, deleted_execution_id, source_uri, source_sha256,
+                    graph_version_before, event_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    deleted_execution_id,
+                    source_uri,
+                    source_sha256,
+                    graph_version_before,
+                    event_id,
+                    _now_text(),
+                    _now_text(),
+                ),
+            )
+
+    def clear_llmwiki_deleted_document(
+        self,
+        *,
+        document_id: str,
+        deleted_execution_id: str,
+    ) -> None:
+        """Clear only the tombstone owned by the deletion being undone."""
+
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT deleted_execution_id FROM llmwiki_deleted_documents
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+            if existing is None:
+                return
+            if str(existing["deleted_execution_id"]) != deleted_execution_id:
+                raise StateConflict(
+                    "LLMWIKI_DELETION_CONFLICT",
+                    "Undo 대상과 활성 삭제 기록이 다릅니다.",
+                )
+            connection.execute(
+                """
+                DELETE FROM llmwiki_deleted_documents
+                WHERE document_id = ? AND deleted_execution_id = ?
+                """,
+                (document_id, deleted_execution_id),
+            )
+
+    def llmwiki_deleted_documents(self) -> tuple[LLMWikiDeletedDocument, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT document_id, deleted_execution_id, source_uri, source_sha256,
+                    graph_version_before, event_id
+                FROM llmwiki_deleted_documents ORDER BY document_id
+                """
+            ).fetchall()
+        return tuple(
+            LLMWikiDeletedDocument(
+                document_id=str(row["document_id"]),
+                deleted_execution_id=str(row["deleted_execution_id"]),
+                source_uri=str(row["source_uri"]),
+                source_sha256=str(row["source_sha256"]),
+                graph_version_before=str(row["graph_version_before"]),
+                event_id=str(row["event_id"]),
+            )
+            for row in rows
+        )
+
+    def llmwiki_deleted_document_ids(self) -> set[str]:
+        return {record.document_id for record in self.llmwiki_deleted_documents()}
+
     def record_llmwiki_build_digest(
         self,
         *,
@@ -1507,6 +1651,7 @@ class StateStore:
             "sync_tasks",
             "llmwiki_input_states",
             "llmwiki_build_digests",
+            "llmwiki_deleted_documents",
             "outbox_events",
             "write_journals",
             "file_versions",
@@ -1984,6 +2129,17 @@ CREATE TABLE IF NOT EXISTS llmwiki_build_digests (
     status TEXT NOT NULL CHECK(status IN ('validated', 'active')),
     validated_at TEXT NOT NULL,
     activated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS llmwiki_deleted_documents (
+    document_id TEXT PRIMARY KEY,
+    deleted_execution_id TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK(length(source_sha256) = 64),
+    graph_version_before TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_versions (

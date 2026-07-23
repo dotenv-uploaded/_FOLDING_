@@ -252,15 +252,25 @@ class KnowledgeRepository:
             score = coverage * 2.0 + weighted_score / normalizer
             document = self._documents[document_id]
             score += DOCUMENT_TYPE_AUTHORITY_PRIOR.get(document.doc_type, 0.0)
-            if self._query_names_source(query, document.source.filename):
+            query_names_source = self._query_names_source(query, document.source.filename)
+            if query_names_source:
                 score += 4.0
+            chunk_ranking_tokens = tokens
+            if query_names_source:
+                filename_tokens = set(self._tokens(document.source.filename))
+                requested_fact_tokens = [token for token in tokens if token not in filename_tokens]
+                if requested_fact_tokens and any(
+                    any(token in content for token in requested_fact_tokens)
+                    for _, content in chunks
+                ):
+                    chunk_ranking_tokens = requested_fact_tokens
             best_chunk = max(
                 chunks,
                 key=lambda item: (
                     sum(
                         inverse_document_frequency[token]
                         * (1.0 + min(math.log1p(item[1].count(token)) * 0.2, 0.5))
-                        for token in tokens
+                        for token in chunk_ranking_tokens
                         if token in item[1]
                     ),
                     -item[0].ordinal,
@@ -553,9 +563,9 @@ class KnowledgeRepository:
                     f"canonical section index is invalid: {document.canonical_path}: {error}"
                 ) from error
             source = self._source_resolver.resolve(document.source.uri)
-            if not source.is_file():
+            if validate_sources and not source.is_file():
                 raise KnowledgePackageError(f"source document is missing: {document.source.uri}")
-            if validate_sources:
+            if validate_sources and source.is_file():
                 source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
                 if source_sha256 != document.source.sha256:
                     raise KnowledgePackageError(f"source checksum mismatch: {document.source.uri}")

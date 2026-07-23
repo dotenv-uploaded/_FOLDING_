@@ -84,6 +84,17 @@ describe('linkBody', () => {
     );
   });
 
+  it('기존 내부 section 링크와 외부·수동 링크를 그대로 보존한다', () => {
+    const body = [
+      '[GBX-ONB-001](DOC-1111111111111111.md#sec-approved)',
+      '[외부 문서](https://example.com/report)',
+      '[수동 링크](manual.md)',
+    ].join(' / ');
+
+    expect(linkBody(body, new Map(), 'DOC-3')).toBe(body);
+    expect(linkBody(body, index, 'DOC-3')).toBe(body);
+  });
+
   it('표 안의 참조도 연결한다 — 변환 문서는 대부분 표다', () => {
     expect(linkBody('| 근거 | GBX-ONB-001 |', index, 'DOC-2')).toBe(
       '| 근거 | [GBX-ONB-001](DOC-1.md) |',

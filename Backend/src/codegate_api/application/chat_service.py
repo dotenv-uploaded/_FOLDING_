@@ -14,6 +14,7 @@ from codegate_api.models import (
     ChatMessageRequest,
     ChatMessageResponse,
     DocumentResult,
+    GeneratedDocument,
     ReplaceExactOperation,
     ResponseType,
 )
@@ -24,11 +25,6 @@ MAX_BULK_DELETE_FILES = 20
 MAX_LOCATION_ANSWER_CHARS = 480
 RECENT_CONVERSATION_MESSAGES = 8
 DELETE_INTENT_PATTERN = re.compile(r"(?:지워|삭제|제거|없애|비워)")
-DOCUMENT_FILENAME_PATTERN = re.compile(
-    r"[^/\\\s]+(?:\s+[^/\\\s]+)*\.(?:hwp|hwpx|pdf|docx?|xlsx?|md|txt)"
-    r"(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
 BULK_CONTRACT_DELETE_PATTERN = re.compile(
     r"계약서(?:를|을)?\s*(?:전부|모두)(?:\s*다)?\s*(?:지워|삭제|제거|없애)",
     re.IGNORECASE,
@@ -105,7 +101,6 @@ class ChatService:
         run_id = f"run_{uuid4().hex}"
         authenticated = access_context.subject_id is not None
         bulk_delete_type = _bulk_file_deletion_type(request.message)
-        deletion_filename = _file_deletion_filename(request.message)
         if bulk_delete_type is not None:
             if authenticated:
                 self._state.record_message(
@@ -120,25 +115,6 @@ class ChatService:
                 request=request,
                 message_id=assistant_message_id,
                 document_type=bulk_delete_type,
-                repository=repository,
-                access_context=access_context,
-            )
-            self._record_assistant(response, tenant_id, subject_id)
-            return response
-        if deletion_filename is not None:
-            if authenticated:
-                self._state.record_message(
-                    conversation_id=request.conversation_id,
-                    tenant_id=tenant_id,
-                    subject_id=subject_id,
-                    message_id=user_message_id,
-                    role="user",
-                    content=request.message,
-                )
-            response = self._file_deletion_response(
-                request=request,
-                message_id=assistant_message_id,
-                filename=deletion_filename,
                 repository=repository,
                 access_context=access_context,
             )
@@ -244,8 +220,6 @@ class ChatService:
                     response = self._location_response(
                         request=request,
                         message_id=assistant_message_id,
-                        repository=repository,
-                        access_context=access_context,
                         documents=direct_documents,
                         assistant_text="요청한 항목과 일치하는 현재 문서 근거를 찾았습니다.",
                         target_document_id=None,
@@ -265,12 +239,82 @@ class ChatService:
             decision.search_query,
             access_context=access_context,
         )
+        if decision.intent == "delete_file":
+            target_id = decision.target_document_id
+            if target_id is None:
+                response = _error_response(
+                    request.conversation_id,
+                    assistant_message_id,
+                    code="DOCUMENT_SELECTION_REQUIRED",
+                    message="삭제할 원본 파일 하나를 선택해주세요.",
+                )
+            elif (
+                request.selected_document_id is not None
+                and request.selected_document_id != target_id
+            ):
+                response = _error_response(
+                    request.conversation_id,
+                    assistant_message_id,
+                    code="SELECTED_DOCUMENT_MISMATCH",
+                    message=(
+                        "선택한 문서와 삭제 요청에서 확인된 대상이 다릅니다. "
+                        "삭제할 문서를 다시 선택해 주세요."
+                    ),
+                )
+            else:
+                response = self._file_deletion_response(
+                    request=request,
+                    message_id=assistant_message_id,
+                    document_id=target_id,
+                    repository=repository,
+                    access_context=access_context,
+                )
+            self._record_assistant(response, tenant_id, subject_id)
+            return response
+        if decision.intent == "create_file":
+            target_id = decision.target_document_id
+            target_document = (
+                repository.get(target_id, access_context=access_context)
+                if target_id is not None
+                else None
+            )
+            if (
+                target_document is None
+                or decision.target_filename is None
+                or decision.document_markdown is None
+            ):
+                response = _error_response(
+                    request.conversation_id,
+                    assistant_message_id,
+                    code="DOCUMENT_CREATION_DETAILS_REQUIRED",
+                    message="새 문서의 근거, 파일명과 내용을 모두 확인하지 못했습니다.",
+                )
+            elif access_context.subject_id is None:
+                response = _error_response(
+                    request.conversation_id,
+                    assistant_message_id,
+                    code="AUTHENTICATION_REQUIRED",
+                    message="새 문서 생성 미리보기는 로그인이 필요합니다.",
+                )
+            else:
+                response = ChatMessageResponse(
+                    conversation_id=request.conversation_id,
+                    message_id=assistant_message_id,
+                    response_type=ResponseType.DOCUMENT_CREATION_PREVIEW,
+                    assistant_text=decision.assistant_text,
+                    documents=[target_document],
+                    generated_document=GeneratedDocument(
+                        filename=decision.target_filename,
+                        markdown=decision.document_markdown,
+                        source_document_ids=[target_document.document_id],
+                    ),
+                )
+            self._record_assistant(response, tenant_id, subject_id)
+            return response
         if decision.intent == "locate":
             response = self._location_response(
                 request=request,
                 message_id=assistant_message_id,
-                repository=repository,
-                access_context=access_context,
                 documents=documents,
                 assistant_text=decision.assistant_text,
                 target_document_id=decision.target_document_id,
@@ -397,7 +441,7 @@ class ChatService:
         *,
         request: ChatMessageRequest,
         message_id: str,
-        filename: str,
+        document_id: str,
         repository: KnowledgeRepository,
         access_context: AccessContext,
     ) -> ChatMessageResponse:
@@ -408,34 +452,19 @@ class ChatService:
                 code="AUTHENTICATION_REQUIRED",
                 message="파일 삭제 미리보기를 만들려면 로그인이 필요합니다.",
             )
-        candidates = repository.find_by_source_filename(
-            filename,
-            access_context=access_context,
-        )
-        if request.selected_document_id is not None:
-            candidates = [
-                item for item in candidates if item.document_id == request.selected_document_id
-            ]
-        if not candidates:
+        document = repository.get(document_id, access_context=access_context)
+        if document is None:
             return _error_response(
                 request.conversation_id,
                 message_id,
                 code="DOCUMENT_NOT_FOUND",
-                message=f"정확한 파일명이 '{filename}'인 삭제 가능한 문서를 찾지 못했습니다.",
+                message="현재 삭제 가능한 원본 문서를 찾지 못했습니다.",
             )
-        if len(candidates) > 1:
-            return _error_response(
-                request.conversation_id,
-                message_id,
-                code="DOCUMENT_SELECTION_REQUIRED",
-                message="같은 파일명의 문서가 여러 개입니다. 삭제할 문서를 먼저 선택해주세요.",
-            )
-        document = candidates[0]
         try:
             plan = self._plans.create_delete_plan(
                 repository=repository,
                 access_context=access_context,
-                document_id=document.document_id,
+                document_id=document_id,
                 request_text=request.message,
             )
         except ChangeServiceError as error:
@@ -525,19 +554,26 @@ class ChatService:
         *,
         request: ChatMessageRequest,
         message_id: str,
-        repository: KnowledgeRepository,
-        access_context: AccessContext,
         documents: list[DocumentResult],
         assistant_text: str,
         target_document_id: str | None,
     ) -> ChatMessageResponse:
         if target_document_id:
-            target = repository.get(target_document_id, access_context=access_context)
-            if target is not None:
-                documents = [
-                    target,
-                    *[item for item in documents if item.document_id != target_document_id],
-                ]
+            searched_target = next(
+                (item for item in documents if item.document_id == target_document_id),
+                None,
+            )
+            if searched_target is None:
+                return _error_response(
+                    request.conversation_id,
+                    message_id,
+                    code="DOCUMENT_NOT_FOUND",
+                    message="검증한 대상 문서에서 현재 검색어와 일치하는 근거를 찾지 못했습니다.",
+                )
+            documents = [
+                searched_target,
+                *[item for item in documents if item.document_id != target_document_id],
+            ]
         if not documents:
             return _error_response(
                 request.conversation_id,
@@ -618,6 +654,20 @@ def _agent_outcome_response(
     user_message: str,
 ) -> ChatMessageResponse:
     if outcome is AgentOutcome.NEEDS_CLARIFICATION:
+        if intent == "create_file":
+            return _error_response(
+                conversation_id,
+                message_id,
+                code="DOCUMENT_CREATION_DETAILS_REQUIRED",
+                message="참고할 문서와 만들 HWPX 파일명을 더 구체적으로 적어주세요.",
+            )
+        if intent == "delete_file":
+            return _error_response(
+                conversation_id,
+                message_id,
+                code="DOCUMENT_SELECTION_REQUIRED",
+                message="삭제할 원본 파일 하나를 파일명이나 문서 제목으로 지정해주세요.",
+            )
         if intent == "change":
             message = (
                 "지울 항목이나 내용을 지정해주세요. 직전 요청을 이어 말한 경우 같은 대화에서 "
@@ -666,28 +716,8 @@ def _agent_outcome_response(
     )
 
 
-def _requests_file_deletion(user_message: str) -> bool:
-    return (
-        _bulk_file_deletion_type(user_message) is not None
-        or _file_deletion_filename(user_message) is not None
-    )
-
-
 def _bulk_file_deletion_type(user_message: str) -> str | None:
     return "contract" if BULK_CONTRACT_DELETE_PATTERN.search(user_message) else None
-
-
-def _file_deletion_filename(user_message: str) -> str | None:
-    for filename in DOCUMENT_FILENAME_PATTERN.finditer(user_message):
-        suffix = user_message[filename.end() :]
-        if re.match(
-            r"\s*(?:파일\s*)?(?:을|를)?\s*(?:전부\s*)?(?:다\s*)?"
-            r"(?:지워|삭제|제거|없애|비워)",
-            suffix,
-            re.IGNORECASE,
-        ):
-            return filename.group(0).strip()
-    return None
 
 
 def _compact_answer(value: str) -> str:

@@ -85,7 +85,8 @@ describe('OAuth loopback receiver', () => {
       expect(response.headers.get('cache-control')).toBe('no-store');
       expect(html).toContain('<title>로그인 완료 · Folding</title>');
       expect(html).toContain('로그인이 완료되었습니다');
-      expect(html).toContain('3초 후 창이 자동으로 닫힙니다.');
+      expect(html).toContain('3초 후 창 닫기를 시도하고 Folding으로 돌아갑니다.');
+      expect(html).toContain('브라우저가 이 탭을 닫지 못하게 하면');
       expect(html).toContain('window.setTimeout(closeWindow, 3_000)');
       expect(html).toContain('window.close()');
       await expect(receiver.waitForCode()).resolves.toEqual({

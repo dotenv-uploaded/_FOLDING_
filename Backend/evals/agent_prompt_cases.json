@@ -129,15 +129,37 @@
     }
   },
   {
-    "id": "whole-file-delete-unsupported",
-    "category": "fail_closed",
-    "message": "test (1).hwp 파일 지워",
+    "id": "whole-file-delete",
+    "category": "conversation_grounding",
+    "message": "REG-000001.md 파일 지워",
     "selected_document_id": null,
     "expected": {
-      "outcome": "unsupported",
-      "intent": "change",
-      "target_document_id": null,
-      "operation": null
+      "outcome": "ready",
+      "intent": "delete_file",
+      "target_document_id": "REG-000001",
+      "source_sha256": null,
+      "operation": null,
+      "required_tool_sequence": [
+        "mcp__codegate__knowledge_search",
+        "mcp__codegate__document_get"
+      ]
+    }
+  },
+  {
+    "id": "create-hwpx-from-report",
+    "category": "creation_grounding",
+    "message": "REG-000001을 보고 주간업무보고서.hwpx를 만들어줘",
+    "selected_document_id": null,
+    "expected": {
+      "outcome": "ready",
+      "intent": "create_file",
+      "target_document_id": "REG-000001",
+      "source_sha256": null,
+      "operation": null,
+      "required_tool_sequence": [
+        "mcp__codegate__document_get",
+        "mcp__codegate__knowledge_document_read"
+      ]
     }
   },
   {

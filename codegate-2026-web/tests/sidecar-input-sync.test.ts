@@ -163,6 +163,51 @@ describe('sidecar normalized input sync', () => {
     expect(hwpParser).toHaveBeenCalledTimes(2);
   });
 
+  it('이전 XLSX normalizer marker는 같은 SHA여도 한 번 재변환한 뒤 안정화한다', async () => {
+    const root = await temporaryRoot();
+    const inputRoot = path.join(root, 'source-md');
+    const row = fileRow(root, 'risk.xlsx', '4'.repeat(64));
+    const fetchImpl = conversionFetch(row.sha256);
+    await syncNormalizedInputs({
+      files: [row],
+      inputRoot,
+      doc2mdUrl: 'http://127.0.0.1:8123',
+      fetchImpl,
+    });
+
+    const markerPath = path.join(inputRoot, '.codegate-input-owner.json');
+    const marker = JSON.parse(await fs.readFile(markerPath, 'utf8')) as {
+      documents: Array<Record<string, unknown>>;
+    };
+    expect(marker.documents[0]?.normalizerVersion).toBe(1);
+    delete marker.documents[0]?.normalizerVersion;
+    await fs.writeFile(markerPath, JSON.stringify(marker));
+
+    await expect(
+      syncNormalizedInputs({
+        files: [row],
+        inputRoot,
+        doc2mdUrl: 'http://127.0.0.1:8123',
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ converted: 1, unchanged: 0, removed: 0 });
+    await expect(
+      syncNormalizedInputs({
+        files: [row],
+        inputRoot,
+        doc2mdUrl: 'http://127.0.0.1:8123',
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ converted: 0, unchanged: 1, removed: 0 });
+
+    const output = await fs.readFile(
+      path.join(inputRoot, `${stableDocumentId(row.relPath)}.md`),
+      'utf8',
+    );
+    expect(output).toContain('"revision": "2"');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('source URI와 SHA가 같으면 승인된 normalized input을 덮어쓰지 않는다', async () => {
     const root = await temporaryRoot();
     const inputRoot = path.join(root, 'source-md');

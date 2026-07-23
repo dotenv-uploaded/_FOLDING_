@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 import jwt
-from codegate_cloud_api.store import AuthStore
 from fastapi import HTTPException, status
 from jwt import PyJWKClient
 from jwt.exceptions import PyJWTError
@@ -16,6 +15,7 @@ from jwt.exceptions import PyJWTError
 from codegate_api.config import Settings
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.schemas import AccessLevel
+from codegate_cloud_api.store import AuthStore
 
 
 class TokenAuthenticator(Protocol):
