@@ -39,6 +39,89 @@
 시연에서는 로그인과 폴더 등록부터 문서 질의, 근거 확인, HWP 작성자 변경 승인, 여러 업무 문서를
 바탕으로 한 주간업무보고서 HWPX 생성까지 하나의 흐름으로 확인할 수 있습니다.
 
+## 담당 구현 — Agent Runtime & Consistency
+
+이 프로젝트에서 성주가 담당한 영역은 FastAPI Backend와 Claude Agent runtime, 그리고 실제 파일
+변경이 발생하는 side effect 경계입니다. Frontend, 문서 변환기, LLMWIKI가 만든 각각의 기능을
+하나의 사용자 흐름으로 연결하고, 모델의 제안이 권한 검증과 사용자 승인 없이 실행되지 않도록
+제품의 control plane을 구성했습니다.
+
+```mermaid
+flowchart LR
+    U[사용자 요청] --> UI[Electron UI]
+
+    subgraph CORE[성주 담당 · Local Agent Control Plane]
+        API[FastAPI · OpenAPI<br/>chat · document · execution]
+        AGENT[Claude Agent SDK<br/>typed decision · tool trace]
+        TRUST[Evidence & Authorization<br/>ACL · source hash · canonical quote]
+        PLAN[Change Plan<br/>exact diff · plan_hash · expiry]
+        TX[File Transaction<br/>backup · journal · atomic replace]
+        STATE[SQLite State Machine<br/>idempotency · retry · recovery · Undo]
+        SYNC[Knowledge Orchestrator<br/>outbox · publish barrier · CAS]
+
+        API --> AGENT
+        AGENT --> TRUST
+        TRUST --> PLAN
+        PLAN --> TX
+        TX --> STATE
+        STATE --> SYNC
+    end
+
+    UI --> API
+    SYNC --> CONVERT[doc2md<br/>문서 재변환]
+    SYNC --> WIKI[LLMWIKI<br/>FTS · vector · graph]
+    WIKI --> SNAPSHOT[Immutable knowledge version]
+    SNAPSHOT --> API
+    TX --> SOURCE[(사용자 원본 문서)]
+
+    classDef owned fill:#EEF3FF,stroke:#2B5DFD,stroke-width:2px,color:#0D1630;
+    class API,AGENT,TRUST,PLAN,TX,STATE,SYNC owned;
+```
+
+### 맡은 문제와 해결 방식
+
+| 책임 | 구현한 경계 |
+| --- | --- |
+| Agent runtime | Claude Agent SDK를 로컬 sidecar에서 구동하고 app-owned read tool만 제공합니다. built-in `Edit`, `Write`, `Bash`, Web tool은 비활성화하며 tool trace와 구조화 결과를 Python에서 다시 검증합니다. |
+| 근거 기반 응답 | 검색 결과의 source SHA-256, canonical section, exact quote와 graph version을 대조합니다. 응답은 문서 ID·revision·section citation을 포함하고 현재 turn에서 읽지 않은 근거는 사용할 수 없습니다. |
+| 인증과 권한 | cloud identity와 local file capability를 분리합니다. 검색·relation 확장·preview·approve·Undo의 각 경계에서 ACL을 다시 적용해 권한 없는 문서의 존재도 모델 context에 넣지 않습니다. |
+| 승인형 변경 | 현재 원본 hash, typed operation, unified diff, 결과 hash, 만료 시각을 canonical `plan_hash`로 묶습니다. 화면에 표시된 동일 plan을 승인하기 전에는 source write가 발생하지 않습니다. |
+| 파일 transaction | allowlisted `source://`만 해석하고 symlink escape를 차단합니다. immutable backup과 durable journal을 남긴 뒤 same-directory temporary file, `fsync`, atomic replace 순서로 적용합니다. |
+| 실패 복구와 Undo | 파일시스템과 SQLite 사이의 중단 상태를 before/after hash로 복구합니다. idempotency key로 중복 실행을 막고, 현재 원본이 앞선 실행 결과와 일치할 때만 Undo를 새 감사 execution으로 수행합니다. |
+| 지식 동기화 | 원본 적용과 지식 게시 상태를 분리하고 outbox worker로 doc2md와 LLMWIKI를 연결합니다. FTS·vector·graph가 모두 검증된 candidate만 CAS로 공개하며 실패 중에는 직전 정상 version을 제공합니다. |
+| 문서 lifecycle | 자연어 수정뿐 아니라 정확한 파일 삭제, 여러 대상의 개별 승인, 삭제 후 tombstone, 복원, 여러 문서를 근거로 한 HWPX 생성 preview까지 typed decision으로 연결했습니다. |
+
+### 모델보다 애플리케이션이 결정하는 것
+
+Claude는 사용자의 의도를 해석하고 읽을 대상을 제안하지만, 실행 권한을 갖지 않습니다. 다음 판단은
+모델 출력과 독립된 애플리케이션 코드가 담당합니다.
+
+- 어떤 source root와 문서에 접근할 수 있는지
+- 인용한 문장이 현재 canonical section에 실제로 존재하는지
+- 계획을 만든 뒤 원본이 바뀌지 않았는지
+- 사용자가 보고 승인한 diff와 실행할 operation이 같은지
+- HWP/HWPX runtime과 dependency graph가 attestation을 통과했는지
+- 새 knowledge build가 active pointer를 바꿀 만큼 완전한지
+- 실패한 실행을 재시도할지, 복구할지, Undo할 수 있는지
+
+이 분리 덕분에 prompt나 모델이 바뀌어도 파일 권한, 승인, 원자적 쓰기와 복구 규칙은 같은
+결정론적 경계를 유지합니다. Agent가 문서를 “잘 이해하는가”와 실제 원본을 “안전하게 바꿀 수
+있는가”를 서로 다른 검증 문제로 다룹니다.
+
+### 구현 규모와 검증
+
+| 항목 | 현재 저장소 기준 |
+| --- | --- |
+| Architecture Decision Record | Backend 경계, 지식 게시, crash recovery, prompt contract, HWP 왕복 편집, 삭제·생성 lifecycle 등 [ADR 11개](Backend/docs/adr) |
+| Application API | chat, documents, change plans, approval, execution, retry, Undo, health를 포함한 10개 endpoint |
+| Backend 자동화 검증 | Pytest 286개 통과, line coverage 84% |
+| 정적 검증 | Ruff lint와 mypy 통과 |
+| 실제 통합 경로 | Claude Agent SDK → 승인 변경 → 원본 write → doc2md → LLMWIKI publish → 변경 근거 재검색 → Undo |
+
+세부 책임과 설계 근거는 [성주 역할 및 백엔드 로드맵](Backend/docs/ROLE_AND_ROADMAP.md),
+[통합 계약](Backend/docs/INTEGRATION_CONTRACT.md), [Backend 작업 기록](Backend/docs/WORK_LOG.md)에
+정리되어 있습니다.
+
 ## 문서 작업의 한 흐름
 
 | 탐색 | 변경 | 생성 |
@@ -191,6 +274,7 @@ dependency graph의 digest를 확인하고, patch 결과를 다시 parse해 요�
 
 | 범위 | 결과 |
 | --- | --- |
+| Backend / Agent Runtime | Pytest 286개 통과, line coverage 84% |
 | Electron / React | Vitest 159개 통과, 환경 의존 integration 1개 skip |
 | doc2md | Pytest 117개 통과 |
 | XLSX 안전 정규화 | 집중 테스트 8개 통과 |

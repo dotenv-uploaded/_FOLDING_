@@ -1,5 +1,19 @@
 # Work log
 
+## 2026-07-23 — README Backend·Agent Runtime 담당 영역 보강
+
+- 목표: 공개 README에서 성주 담당 영역이 단순 Backend 한 줄로 축소되지 않고, 제품의 Agent
+  control plane과 안전·일관성 경계를 끝까지 소유한 범위로 정확히 드러나게 한다.
+- 변경: Claude Agent runtime, 근거·ACL 검증, exact plan 승인, 원자적 파일 transaction, crash
+  recovery·Undo, outbox 기반 지식 게시와 문서 lifecycle 책임을 별도 구조도와 표로 정리했다. 모델의
+  제안과 애플리케이션의 실행 권한을 분리한 설계 결정, ADR·API·테스트 규모도 함께 기록했다.
+- 영향: 루트 README와 공개 역할 설명만 변경한다. 런타임 코드와 팀 구성요소의 소유권은 변경하지
+  않는다.
+- 검증: Backend 전체 Pytest 286개가 통과했고 line coverage 84%를 확인했다. Ruff lint와 mypy는
+  통과했으며 format check는 이번 문서 변경과 무관한 기존 Python 5개 파일의 차이를 보고했다.
+  GitHub GFM 렌더링, 로컬 링크와 staged 공개 트리의 비밀정보를 확인한 뒤
+  `ghdtjdwn_complete` main에 반영한다.
+
 ## 2026-07-23 — README 지식 그래프 설명과 시연 화면 보강
 
 - 목표: 공개 README에서 지식 그래프가 맡는 역할, 필요한 이유, 관계 생성·검증·게시 기술과 실제
