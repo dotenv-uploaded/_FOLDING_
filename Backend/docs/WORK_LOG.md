@@ -445,3 +445,17 @@
 - 검증: Ruff, mypy와 Backend 전체 pytest 278개 통과, line coverage 84%. Electron의 실제 생성·승인
   경로 검증은 web 저장소 작업 로그에 별도로 기록함.
 - 전달 결과: 전용 monorepo commit `228f17f`로 push하고 PR #1을 통해 main 병합 절차를 실행함.
+
+## 2026-07-23 — Bundled LLMWIKI 삭제 scope 계약 복구
+
+- 목적: monorepo 병합 뒤 문서 변환은 성공하지만 Python sidecar가 시작 전에 종료돼 지식 빌드가
+  실패하는 Backend–LLMWIKI 런타임 불일치를 복구함.
+- 변경: bundled `WikiBuildRequest`와 `WikiScope`에 검증된 `allowed_missing_link_targets`를 연결하고,
+  삭제된 정확한 target을 참조하는 explicit link와 enrichment만 한시적으로 stale 처리한다. Backend
+  테스트는 실제 sibling LLMWIKI request를 구성해 두 package의 생성자 계약을 고정한다.
+- 영향: LLMWIKI config·corpus·enrichment·validation·service와 Backend cross-package contract test.
+- 검증: LLMWIKI Ruff와 전체 pytest 43개, Backend Ruff·mypy·전체 pytest 279개, Electron sidecar
+  회귀 테스트 15개·typecheck·production build가 통과했다. 실제 사용자 데이터의 격리 복사본에서도
+  sidecar startup과 index load가 완료됐다. Real OAuth integrated runtime에서도 health `ok`,
+  converter·graph·index·worker·agent 준비와 pending/failed/stale sync event 0건을 확인했다.
+- 전달 결과: 로컬 구현과 검증 완료. GitHub 전달 결과는 PR 생성 뒤 갱신한다.

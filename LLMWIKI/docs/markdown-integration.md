@@ -64,6 +64,12 @@ uv run python -m wiki_builder \
 - 상태만 바뀌어도 같은 `id`의 조각 전체에 상태를 동일하게 반영한다.
 - 조각 추가·삭제·교체는 논리 문서의 집계 해시를 바꾸고 enrichment를 무효화한다.
 - 문서 삭제는 해당 `id`의 모든 조각을 입력 세트에서 제거하고 새 build를 만든다.
+- 기본 빌드는 깨진 내부 링크를 계속 거부한다. 승인된 문서 삭제를 처리하는 신뢰된 호출자는 stage와
+  candidate 활성화 요청에 동일한 `allowed_missing_link_targets`를 전달할 수 있다. 호출자는 삭제가
+  복원될 때까지 활성 삭제 ID 전체를 이후 모든 build에도 다시 전달해야 한다. 빌더는 그 정확한 대상의
+  graph edge만 제외하고 원본 Markdown 링크와 section anchor는 보존한다.
+- 승인 enrichment가 허용 누락 target과의 relation을 포함하면 그 build에서만 `stale`로 제외한다. target이
+  복원되고 허용 목록에서 빠지면 같은 source hash·model·prompt의 승인 record를 다시 사용한다.
 - 규제나 감사 요구가 있는 경우 물리적 삭제는 별도 보존 정책을 따른다.
 
 ## 로컬 변환 API 연동

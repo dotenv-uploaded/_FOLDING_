@@ -12,7 +12,11 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from wiki_builder.config import WikiConfig, WikiScope, scoped_config
-from wiki_builder.corpus import extract_links
+from wiki_builder.corpus import (
+    allowed_missing_link_targets,
+    enrichment_references_missing_targets,
+    extract_links,
+)
 from wiki_builder.errors import ProviderError, ValidationError
 from wiki_builder.gemini import GeminiClient, get_api_key
 from wiki_builder.io_utils import atomic_write_json
@@ -339,7 +343,10 @@ def enrich_documents(
     ]
     _enforce_external_processing_policy(config, selected_documents)
     fingerprint = _check_provider_ready(config)
-    all_links = extract_links(documents)
+    all_links = extract_links(
+        documents,
+        allowed_missing_targets=allowed_missing_link_targets(config),
+    )
     links_by_doc = {
         document.doc_id: [link for link in all_links if link.from_doc_id == document.doc_id]
         for document in documents
@@ -350,6 +357,7 @@ def enrich_documents(
     review_dir.mkdir(parents=True, exist_ok=True)
     run = EnrichmentRun()
     pending: list[Document] = []
+    missing_targets = allowed_missing_link_targets(config)
     for document in documents:
         if selected_ids is not None and document.doc_id not in selected_ids:
             continue
@@ -358,6 +366,8 @@ def enrich_documents(
             try:
                 existing = json.loads(approved_path.read_text(encoding="utf-8"))
                 validate_record(config, "enrichment", existing, document.doc_id)
+                if enrichment_references_missing_targets(existing, missing_targets):
+                    raise ValidationError("enrichment가 승인된 삭제 대상과의 관계를 참조합니다")
                 validate_grounding(config, document, links_by_doc[document.doc_id], existing)
                 if all(
                     (

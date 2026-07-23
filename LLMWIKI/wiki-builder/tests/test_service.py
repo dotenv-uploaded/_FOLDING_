@@ -68,6 +68,86 @@ def _request(scope: WikiScope, expected_current_build_id: str | None) -> WikiBui
     )
 
 
+def test_build_request_preserves_explicit_missing_link_scope(tmp_path: Path) -> None:
+    request = WikiBuildRequest(
+        tenant_id="tenant-a",
+        wiki_id="operations",
+        input_dir=tmp_path / "source-md",
+        storage_root=tmp_path / "storage",
+        actor_id="tester",
+        allowed_missing_link_targets=frozenset({"DOC-0123456789ABCDEF"}),
+    )
+
+    assert request.to_scope().allowed_missing_link_targets == frozenset({"DOC-0123456789ABCDEF"})
+    with pytest.raises(ValidationError, match="missing link target"):
+        WikiBuildRequest(
+            tenant_id="tenant-a",
+            wiki_id="operations",
+            input_dir=tmp_path / "source-md",
+            storage_root=tmp_path / "storage",
+            actor_id="tester",
+            allowed_missing_link_targets=frozenset({"../outside"}),
+        ).to_scope()
+
+
+def test_deleted_link_target_makes_related_approved_enrichment_temporarily_stale(
+    config: WikiConfig,
+    tmp_path: Path,
+) -> None:
+    scope = _scope(config, tmp_path)
+    shutil.copytree(
+        config.resolve_path("enrichment_dir") / "approved",
+        scope.enrichment_dir / "approved",
+    )
+    target_path = scope.input_dir / "REG-000002.md"
+    target_bytes = target_path.read_bytes()
+    target_path.unlink()
+    service = WikiBuildService(config)
+    deleted_request = WikiBuildRequest(
+        tenant_id=scope.tenant_id,
+        wiki_id=scope.wiki_id,
+        input_dir=scope.input_dir,
+        storage_root=scope.storage_root,
+        actor_id=scope.actor_id,
+        synthetic_corpus=scope.synthetic_corpus,
+        allowed_missing_link_targets=frozenset({"REG-000002"}),
+    )
+
+    deleted = service.stage(deleted_request)
+    service.validate_candidate(
+        deleted_request,
+        deleted.build_id,
+        require_enrichment=False,
+        check_reproducible=False,
+    )
+    deleted_enrichments = [
+        json.loads(line)
+        for line in (deleted.build_dir / "retrieval/enrichments.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    assert "MAN-000001" not in {record["doc_id"] for record in deleted_enrichments}
+    deleted_manifest = [
+        json.loads(line)
+        for line in (deleted.build_dir / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    manual = next(record for record in deleted_manifest if record["doc_id"] == "MAN-000001")
+    assert manual["enrichment"]["status"] == "stale"
+
+    target_path.write_bytes(target_bytes)
+    restored_request = _request(scope, expected_current_build_id=None)
+    restored = service.stage(restored_request)
+    restored_enrichments = [
+        json.loads(line)
+        for line in (restored.build_dir / "retrieval/enrichments.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    assert "MAN-000001" in {record["doc_id"] for record in restored_enrichments}
+
+
 def test_add_update_delete_creates_distinct_immutable_builds(
     config: WikiConfig,
     tmp_path: Path,
