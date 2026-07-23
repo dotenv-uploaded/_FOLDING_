@@ -1,5 +1,49 @@
 # 작업 로그
 
+## 2026-07-23 — 실제 업무기록 9종의 검색·삭제·후속 빌드·Undo 검증
+
+- 목적: 다운로드한 업무기록 묶음의 DOCX, HWP, HWPX, PDF, PPTX, XLSX를 실제 제품 경로로 변환·검색하고,
+  승인 전 무변경과 승인 후 삭제·게시·Undo가 형식과 재시작에 관계없이 수렴하는지 확인
+- 변경:
+  - 문서 내용 편집 가능 여부와 승인 기반 원본 파일 수명주기 권한을 분리해 PDF 같은 read-only 형식도
+    정확한 파일명 삭제 preview와 복원을 지원
+  - SQLite schema v6의 삭제 tombstone에 승인 execution, source SHA와 삭제 전 graph를 기록하고 Undo가
+    게시될 때까지 이후 모든 LLMWIKI stage·activation에 활성 tombstone 전체를 전달
+  - 삭제 승인에 포함된 정확한 문서 ID의 graph edge만 제외하고, 원본 Markdown의 수동 링크·section
+    anchor와 다른 깨진 링크는 Backend와 builder 양쪽에서 계속 거부
+  - 단일 normalized input뿐 아니라 source-fragment 문서의 모든 조각을 사전 검증 뒤 격리·재시도·복원하고
+    조각 descriptor를 restore candidate attestation에 사용
+  - 승인된 삭제가 원본 이동 뒤 지식 게시에 실패해도 active knowledge를 recovery mode로 읽고, cache가
+    없어도 source 부재를 허용해 quarantine 경로에서 동일 execution을 재시도할 수 있게 함
+  - native pointer가 먼저 바뀌고 SQLite 완료 전에 종료된 삭제는 execution의 삭제 전 graph와 격리
+    input을 다시 검증해 event만 멱등 완료하며, 삭제 target을 참조하는 enrichment는 복원 전까지 stale 처리
+  - Claude locate trace는 선택·대화 이력 target도 동일 query의 검색 결과에 포함돼야 통과시키고,
+    검증된 target 뒤에는 동일 query·동일 target의 evidence search만 허용. 정확한 파일명 query의 chunk
+    ranking에서는 파일명 token을 제외해 요청한 사실 근거를 우선
+- 영향: LLMWIKI build request와 graph validation, compatibility materialization, 다중 입력 lifecycle,
+  active knowledge recovery, 삭제 outbox replay와 관련 회귀 테스트
+- 검증:
+  - 실제 9개 문서 모두 production input sync 변환, 정확한 파일명 검색 9/9와 HWP 본문 조회 성공
+  - HWP 이름 변경 preview에서 승인 전 hash 불변, 승인 후 재parse 결과 반영과 Undo 뒤 원문 복구 확인
+  - PDF 삭제 preview에서 승인 전 무변경, 승인 후 원본·검색 결과 제거, 실패 execution의 재시작 retry,
+    peer normalized input hash 불변·삭제 대상 graph edge 0건과 Undo 뒤 원본 SHA·38개 관계 링크 복구 확인
+  - 실제 PDF 삭제 게시 뒤 sidecar 재시작, 삭제 상태에서 무관한 HWP 수정·재빌드, PDF Undo·재빌드,
+    HWP Undo까지 연속 성공. tombstone 1→0, pending/failed event 0건과 두 원본 SHA의 정확한 복구 확인
+  - 실제 XLSX 파일명·`지연 일정, 위험 요소와 담당자` query가 해당 문서의 `리스크 · 2` 근거와 R-01~R-03,
+    책임 팀, 08-03 변경 일정을 반환
+  - 독립 최종 review에서 selected/history target의 `document_get` 단독 근거 우회를 발견해 동일 query의
+    target 포함 검색을 필수화하고 generic chunk fallback을 제거. 보완 뒤 blocker/high/medium 0건 확인
+  - 보완된 최종 코드로 같은 실제 XLSX 질문을 다시 실행해 `location_result`, 정확한 문서 ID와 리스크
+    표 근거가 반환되는 것을 확인
+  - XLSX merge metadata 기반 임시 사본 변환과 cache/input marker 마이그레이션 뒤 실제 파일의 반복
+    관계 문장 8→1, 리스크 표의 R-01~R-03 각 행 1회와 source SHA 불변 확인
+  - Backend Ruff format/check, mypy, pytest 275개 통과(coverage 84%); Electron typecheck, Vitest 148개
+    통과·선택적 integration 1개 skip, production build 성공
+  - doc2md 전체 Ruff check와 Python 3.12 pytest 117개, LLMWIKI builder Ruff check와 pytest 47개 통과
+- 전달 상태: 로컬 구현과 검증 완료. 원본 ZIP은 변경하지 않았고 commit·push·배포는 수행하지 않음
+- 남은 일: 앱은 ZIP 자체가 아니라 압축 해제한 폴더 등록을 지원한다. 서명된 설치본의 실제 사용자 승인
+  클릭 smoke와 ZIP 직접 가져오기는 별도 범위다.
+
 ## 2026-07-22 — 승인 기반 파일 삭제·일괄 계약서 삭제와 query trace 복구
 
 - 목적: 정확한 파일 삭제, 계약서 일괄 삭제와 직전 조회 기반 담당자 변경을 승인·복구 가능한 흐름으로
@@ -389,3 +433,15 @@
   write 권한을 주지 않음. 서명된 설치본의 resource/ASAR smoke는 release gate로 유지
 - 남은 일: 서명된 installer에서 Kordoc resource와 standalone Node bundle 실행 확인. 광범위 full suite와
   production build는 이번 집중 검증 범위에서 다시 실행하지 않음
+
+## 2026-07-23 — Agent-routed 파일 삭제와 HWPX 생성 계약
+
+- 목적: 자연어 파일 삭제와 기존 보고서 기반 새 HWPX 생성 요청이 `unsupported`로 끝나는 채팅 routing
+  결함을 실제 승인·생성 경로까지 해결함
+- 변경: `ready_delete_file`, `ready_create_file` typed decision과 current-turn tool trace를 추가했다. 삭제는
+  Backend가 ACL·원본 hash를 재검증해 기존 `plan_hash`와 Undo 흐름으로 연결하고, 생성은 검증된 source
+  document ID·안전한 HWPX basename·근거 기반 Markdown만 Electron에 전달한다.
+- 영향: agent prompt/schema/trace, ChatService response, prompt eval corpus, Electron sidecar 생성 계약
+- 검증: Ruff, mypy와 Backend 전체 pytest 278개 통과, line coverage 84%. Electron의 실제 생성·승인
+  경로 검증은 web 저장소 작업 로그에 별도로 기록함.
+- 전달 결과: 전용 monorepo commit `228f17f`로 push하고 PR #1을 통해 main 병합 절차를 실행함.

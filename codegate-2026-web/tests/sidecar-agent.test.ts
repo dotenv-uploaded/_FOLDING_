@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvalRequest, executionMessage } from '@main/agent/sidecar-agent';
+import { approvalRequest, createDocumentDiff, executionMessage } from '@main/agent/sidecar-agent';
 import type { ChangePlanResponse, ExecutionResponse } from '@main/sidecar/client';
 
 const deletePlan: ChangePlanResponse = {
@@ -34,5 +34,16 @@ describe('sidecar file deletion approval', () => {
     };
 
     expect(executionMessage(execution, deletePlan)).toContain('Undo로 복원');
+  });
+});
+
+describe('sidecar document creation approval', () => {
+  it('shows the complete generated Markdown as a new-file diff', () => {
+    const diff = createDocumentDiff('주간업무보고서.hwpx', '# 주간업무보고서\n\n- 완료 업무');
+
+    expect(diff).toContain('--- /dev/null');
+    expect(diff).toContain('+++ 주간업무보고서.hwpx');
+    expect(diff).toContain('+# 주간업무보고서');
+    expect(diff).toContain('+- 완료 업무');
   });
 });

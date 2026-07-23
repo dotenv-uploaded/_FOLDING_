@@ -1,13 +1,55 @@
 # Work log
 
-## 2026-07-23 — 채팅 추천 명령을 읽기·수정·삭제로 구분
+## 2026-07-23 — 기존 XLSX 입력의 병합 hidden-cell 교정 마이그레이션
 
-- 목표: 빈 채팅 화면의 혼합된 예시를 실제 문서 작업 유형에 맞춰 빠르게 선택할 수 있게 한다.
-- 변경: 추천 명령을 읽기, 수정, 삭제 카드로 나누고 각 범주에 두 개의 실행 가능한 예시를 배치했다.
-  삭제 카드는 승인 후 실행과 Undo 가능성을 명시하며 단일 파일·계약서 일괄 삭제 예시를 제공한다.
-- 검증: TypeScript typecheck, Vitest 143개 통과, 선택적 integration fixture 1개 skip, Electron
+- 목표: doc2md의 XLSX 병합 hidden-cell 중복 수정이 이미 등록된 같은-SHA 문서에도 한 번 적용되게 한다.
+- 변경: ownership manifest의 기존 `normalizerVersion` 계약을 XLSX에도 적용해 version 1이 없는 XLSX는
+  doc2md로 재변환하고, 성공 뒤 marker를 기록해 다음 sync부터 bytes를 보존한다. HWP version 3과 다른
+  형식의 same-SHA 보존 계약은 유지한다.
+- 검증: marker 없는 XLSX가 정확히 한 번 재변환되고 revision 2와 marker 1로 안정화하는 테스트,
+  TypeScript typecheck와 전체 Vitest 148개 통과·선택적 integration 1개 skip을 확인했다. converter 전체
+  pytest 117개와 실제 `GBX-ONB-003` 원본 SHA 불변·병합 문장 8→1도 확인했다.
+- 전달 상태: 로컬 구현과 검증 완료. 원본 XLSX·ZIP은 변경하지 않았고 commit·push·배포는 수행하지 않음.
+
+## 2026-07-23 — 실제 업무기록 corpus의 삭제·복원 링크 보존
+
+- 목표: 실제 9종 문서 corpus에서 승인된 파일 삭제와 Undo 뒤 Electron이 만드는 문서 관계 링크가 현재
+  파일 집합과 항상 일치하게 한다.
+- 변경: Electron crosslink는 기존 내부 링크를 수정하지 않고 plain document code만 새 링크로 만든다.
+  승인 삭제 시 사라진 target의 graph edge 처리는 Backend가 정확한 삭제 ID를 LLMWIKI에 결박해
+  수행하므로 수동 링크와 section anchor가 normalized input에 그대로 남는다.
+- 검증: 실제 DOCX·HWP·HWPX·PDF·PPTX·XLSX 9개 변환과 정확한 파일명 검색 9/9, HWP 승인 변경·Undo,
+  PDF 승인 삭제·재시작 retry·Undo와 peer input hash 불변을 확인했다. TypeScript typecheck, Vitest
+  148개 통과·선택적
+  integration 1개 skip, Electron production build가 성공했다.
+- 전달 상태: 로컬 구현과 검증 완료. 원본 ZIP은 변경하지 않았고 commit·push·배포는 수행하지 않음.
+- 남은 일: ZIP 직접 import는 지원하지 않으므로 현재는 압축 해제한 폴더를 등록해야 한다.
+
+## 2026-07-23 — 등록 폴더 기반 채팅 추천 명령
+
+- 목표: 빈 채팅 화면의 추천이 고정 예시가 아니라 사용자가 등록한 폴더의 실제 문서와 기능 범위를
+  반영하게 한다.
+- 변경: 파일 트리 변경마다 추천을 다시 계산한다. 일정·리스크, 회의록, 성과보고, 승인서와 계획서의
+  파일명에 맞는 조회 명령을 만들고 HWP/HWPX/Markdown/TXT가 있을 때만 수정 준비를 표시한다. 삭제는
+  중복되지 않은 실제 파일명을 사용하며, 계약서가 여러 개일 때만 일괄 삭제를 제안한다.
+- 검증: 추천 집중 테스트 5개, TypeScript typecheck, 전체 Vitest 148개 통과, 선택적 integration
+  테스트 2개 skip, Electron
   production build 성공.
 - 전달 상태: 로컬 구현과 검증 완료. 기존 사용자 변경을 보존했으며 commit·push는 수행하지 않음.
+
+## 2026-07-23 — 채팅 기반 실제 HWPX 생성과 안전한 게시
+
+- 목표: `이번주 보고서를 보고 주간업무보고서.hwpx를 만들어줘` 요청을 답변 문구가 아니라 실제 파일
+  생성으로 완료하고, 자연어 파일 삭제도 agent routing 결과를 기존 승인 흐름에 연결한다.
+- 변경: sidecar chat 계약에 grounded HWPX preview를 추가했다. 등록 폴더의 충돌 없는 경로와 전체
+  new-file diff를 승인 모달에 보여준 뒤 설치된 Kordoc으로 임시 HWPX를 만들고 재파싱한다. 검증된
+  candidate만 hard-link no-replace로 게시하며 취소·이름 충돌·빈 파일·재파싱 실패에는 대상 파일을
+  남기지 않는다. 성공 파일은 기존 watcher가 후속 지식 빌드에 반영한다.
+- 영향: sidecar client/agent, 실제 Kordoc 생성 경계와 생성 회귀 테스트.
+- 검증: 실제 설치 Kordoc으로 HWPX 생성·재파싱과 전체 sidecar 승인 흐름을 실행했다. TypeScript
+  typecheck, 전체 Vitest 156개 통과(환경 의존 통합 테스트 1개 skip), Electron production build가
+  성공했다.
+- 전달 결과: 전용 monorepo commit `228f17f`로 push하고 PR #1을 통해 main 병합 절차를 실행함.
 
 ## 2026-07-22 — 파일 삭제 개별 승인과 복원 안내 연결
 

@@ -103,7 +103,10 @@ writer가 이어받는다. 기존 `build/` 파이프라인은 mock UX와 이전 
 선택됐는지 로그로 남긴다.
 
 `sidecar-agent.ts`는 sidecar 응답을 `AgentEvent` 스트림으로 변환한다:
-`tool_start` → `text_delta` → (`change_preview`면) `approval_request` → `done{citations}`.
+`tool_start` → `text_delta` → (`change_preview` 또는 `document_creation_preview`면)
+`approval_request` → `done{citations}`. 기존 문서 변경·삭제는 Backend `plan_hash` 실행을 사용한다. 새 HWPX는
+등록 폴더의 실제 target과 전체 new-file diff를 승인받고 실제 Kordoc 생성·재파싱·no-overwrite 게시 뒤
+watcher가 다음 지식 빌드에 포함한다.
 쓰기 전 `deps.auth.canWrite()`를 확인하고 아니면 `auth_error{kind:'not_provisioned'}`.
 
 ## 2. 계약 (`packages/contracts`)

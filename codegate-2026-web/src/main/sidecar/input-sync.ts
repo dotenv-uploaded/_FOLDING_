@@ -18,6 +18,7 @@ const OWNER_FILE = '.codegate-input-owner.json';
 const LLMWIKI_SECTION_MAX_CHARS = 2_200;
 const LLMWIKI_MAX_SECTIONS = 500;
 const HWP_NORMALIZER_VERSION = 3;
+const XLSX_NORMALIZER_VERSION = 1;
 
 interface Doc2MdResult {
   body?: unknown;
@@ -143,13 +144,15 @@ export async function syncNormalizedInputs(options: InputSyncOptions): Promise<I
     const filename = `${id}.md`;
     const target = path.join(options.inputRoot, filename);
     const uri = canonicalSourceUri(file.relPath);
+    const expectedNormalizerVersion = normalizerVersion(file.relPath);
 
     const existing = await readIdentity(target);
     if (
       existing?.id === id &&
       existing.uri === uri &&
       existing.sourceSha256.toLowerCase() === file.sha256.toLowerCase() &&
-      (!isHwpSource(file.relPath) || previous?.normalizerVersion === HWP_NORMALIZER_VERSION) &&
+      (expectedNormalizerVersion === undefined ||
+        previous?.normalizerVersion === expectedNormalizerVersion) &&
       !(await normalizedInputNeedsRepair(target, existing.title))
     ) {
       unchanged += 1;
@@ -217,7 +220,7 @@ export async function syncNormalizedInputs(options: InputSyncOptions): Promise<I
       relativePath: file.relPath,
       revision,
       sourceSha256: file.sha256.toLowerCase(),
-      normalizerVersion: hwpSource ? HWP_NORMALIZER_VERSION : previous?.normalizerVersion,
+      normalizerVersion: expectedNormalizerVersion ?? previous?.normalizerVersion,
     });
     converted += 1;
     options.onProgress?.({
@@ -411,6 +414,13 @@ async function convertHwpSource(
 
 function isHwpSource(relativePath: string): boolean {
   return ['.hwp', '.hwpx'].includes(path.extname(relativePath).toLowerCase());
+}
+
+function normalizerVersion(relativePath: string): number | undefined {
+  const extension = path.extname(relativePath).toLowerCase();
+  if (['.hwp', '.hwpx'].includes(extension)) return HWP_NORMALIZER_VERSION;
+  if (extension === '.xlsx') return XLSX_NORMALIZER_VERSION;
+  return undefined;
 }
 
 export function localDoc2MdBaseUrl(value: string): string {

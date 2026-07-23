@@ -30,14 +30,26 @@ export interface ChangePlanResponse {
   };
 }
 
+export interface GeneratedDocumentResponse {
+  filename: string;
+  markdown: string;
+  source_document_ids: string[];
+}
+
 export interface ChatResponse {
   conversation_id: string;
   message_id: string;
-  response_type: 'location_result' | 'target_selection' | 'change_preview' | 'error';
+  response_type:
+    | 'location_result'
+    | 'target_selection'
+    | 'change_preview'
+    | 'document_creation_preview'
+    | 'error';
   assistant_text: string;
   documents: DocumentResponse[];
   change_plan: ChangePlanResponse | null;
   change_plans?: ChangePlanResponse[];
+  generated_document?: GeneratedDocumentResponse | null;
   error: { code: string; message: string; retryable: boolean } | null;
 }
 

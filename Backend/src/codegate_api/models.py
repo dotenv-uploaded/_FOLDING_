@@ -16,6 +16,7 @@ class ResponseType(StrEnum):
     LOCATION_RESULT = "location_result"
     TARGET_SELECTION = "target_selection"
     CHANGE_PREVIEW = "change_preview"
+    DOCUMENT_CREATION_PREVIEW = "document_creation_preview"
     ERROR = "error"
 
 
@@ -231,6 +232,16 @@ class ApiError(StrictModel):
     retryable: bool = False
 
 
+class GeneratedDocument(StrictModel):
+    filename: str = Field(
+        min_length=6,
+        max_length=255,
+        pattern=r'^[^./\\\x00-\x1f<>:"|?*][^/\\\x00-\x1f<>:"|?*]*\.[Hh][Ww][Pp][Xx]$',
+    )
+    markdown: str = Field(min_length=1, max_length=65_536)
+    source_document_ids: list[str] = Field(min_length=1, max_length=20)
+
+
 class ChatMessageRequest(StrictModel):
     conversation_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4_000)
@@ -249,6 +260,7 @@ class ChatMessageResponse(StrictModel):
     documents: list[DocumentResult]
     change_plan: ChangePlanView | None = None
     change_plans: list[ChangePlanView] = Field(default_factory=list, max_length=20)
+    generated_document: GeneratedDocument | None = None
     error: ApiError | None = None
 
 

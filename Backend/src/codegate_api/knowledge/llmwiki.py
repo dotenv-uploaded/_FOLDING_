@@ -84,6 +84,18 @@ class NativeInputBaseline:
     path: Path
     file_sha256: str
     text: str
+    chunk_no: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NativeDocumentInputBaseline:
+    source_filename: str
+    source_uri: str
+    source_sha256: str
+    revision: str
+    descriptor_sha256: str
+    fragments: tuple[NativeInputBaseline, ...]
+    supports_atomic_edit: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +126,7 @@ class PreparedNativeBuild:
     compatibility_root: Path
     repository: KnowledgeRepository
     native_digest: str
+    allowed_missing_link_targets: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -159,11 +172,15 @@ class InProcessLLMWikiBuildRunner:
         self._actor_id = actor_id
         self._lock = threading.Lock()
 
-    def stage(self) -> str:
+    def stage(self, *, allowed_missing_link_targets: set[str] | None = None) -> str:
         with self._lock:
             config_module, service_module = self._load_modules()
             config = config_module.load_config(self._builder_root / "config/wiki.yaml")
-            request = self._request(service_module, expected_current_build_id=None)
+            request = self._request(
+                service_module,
+                expected_current_build_id=None,
+                allowed_missing_link_targets=allowed_missing_link_targets,
+            )
             service = service_module.WikiBuildService(config)
             try:
                 result = service.stage(request)
@@ -175,13 +192,20 @@ class InProcessLLMWikiBuildRunner:
                 raise LLMWikiCompatibilityError("LLMWIKI stage unexpectedly activated a build")
             return str(result.build_id)
 
-    def activate(self, *, build_id: str, expected_current_build_id: str | None) -> None:
+    def activate(
+        self,
+        *,
+        build_id: str,
+        expected_current_build_id: str | None,
+        allowed_missing_link_targets: set[str] | None = None,
+    ) -> None:
         with self._lock:
             config_module, service_module = self._load_modules()
             config = config_module.load_config(self._builder_root / "config/wiki.yaml")
             request = self._request(
                 service_module,
                 expected_current_build_id=expected_current_build_id,
+                allowed_missing_link_targets=allowed_missing_link_targets,
             )
             service = service_module.WikiBuildService(config)
             try:
@@ -200,6 +224,7 @@ class InProcessLLMWikiBuildRunner:
         service_module: ModuleType,
         *,
         expected_current_build_id: str | None,
+        allowed_missing_link_targets: set[str] | None = None,
     ) -> Any:
         return service_module.WikiBuildRequest(
             tenant_id=self._tenant_id,
@@ -209,6 +234,7 @@ class InProcessLLMWikiBuildRunner:
             actor_id=self._actor_id,
             synthetic_corpus=False,
             expected_current_build_id=expected_current_build_id,
+            allowed_missing_link_targets=frozenset(allowed_missing_link_targets or set()),
         )
 
     def _load_modules(self) -> tuple[ModuleType, ModuleType]:
@@ -395,7 +421,7 @@ class LLMWikiCompatibilityAdapter:
             },
         )
 
-    def materialize(self, build: NativeBuild) -> Path:
+    def materialize(self, build: NativeBuild, *, validate_sources: bool = True) -> Path:
         destination = self._compatibility_root / f"{build.build_id}-codegate-v4"
         with self._lock:
             if destination.is_dir():
@@ -403,7 +429,7 @@ class LLMWikiCompatibilityAdapter:
             self._compatibility_root.mkdir(parents=True, exist_ok=True)
             staging = self._compatibility_root / f".staging-{uuid4().hex}"
             try:
-                self._render(build, staging)
+                self._render(build, staging, validate_sources=validate_sources)
                 repository = KnowledgeRepository(staging, self._source_resolver)
                 repository.load(validate_sources=False)
                 _fsync_tree(staging)
@@ -427,30 +453,81 @@ class LLMWikiCompatibilityAdapter:
         return _safe_child(self._input_root, relative.as_posix())
 
     def input_baseline(self, build: NativeBuild, document_id: str) -> NativeInputBaseline:
+        document = self.document_input_baseline(build, document_id)
+        if not document.supports_atomic_edit:
+            raise LLMWikiCompatibilityError(
+                f"LLMWIKI source-fragment document is read-only: {document_id}"
+            )
+        return document.fragments[0]
+
+    def document_input_baseline(
+        self,
+        build: NativeBuild,
+        document_id: str,
+    ) -> NativeDocumentInputBaseline:
         manifest = build.manifest_by_id.get(document_id)
         if manifest is None:
             raise LLMWikiCompatibilityError(f"unknown LLMWIKI document: {document_id}")
         ingest = _native_ingest(manifest, document_id)
-        if not ingest.supports_atomic_edit:
-            raise LLMWikiCompatibilityError(
-                f"LLMWIKI source-fragment document is read-only: {document_id}"
+        source = manifest.get("source")
+        if not isinstance(source, dict):
+            raise LLMWikiCompatibilityError(f"LLMWIKI source metadata is invalid: {document_id}")
+        source_filename = source.get("filename")
+        source_uri = source.get("uri")
+        source_sha256 = source.get("sha256")
+        revision = manifest.get("revision")
+        if (
+            not isinstance(source_filename, str)
+            or not source_filename
+            or not isinstance(source_uri, str)
+            or not source_uri
+            or not isinstance(source_sha256, str)
+            or not source_sha256
+            or not isinstance(revision, str)
+            or not revision
+        ):
+            raise LLMWikiCompatibilityError(f"LLMWIKI source identity is invalid: {document_id}")
+        baseline_text = ""
+        if ingest.supports_atomic_edit:
+            canonical_path = _safe_child(build.build_dir, str(manifest["path"]))
+            canonical_text = canonical_path.read_text(encoding="utf-8")
+            baseline_text = _rewrite_native_anchors(
+                canonical_text,
+                build.section_ids_by_document.get(document_id, frozenset()),
+                document_id=document_id,
+                keep_section_anchors=False,
             )
-        fragment = ingest.fragments[0]
-        canonical_path = _safe_child(build.build_dir, str(manifest["path"]))
-        canonical_text = canonical_path.read_text(encoding="utf-8")
-        baseline_text = _rewrite_native_anchors(
-            canonical_text,
-            build.section_ids_by_document.get(document_id, frozenset()),
-            document_id=document_id,
-            keep_section_anchors=False,
+        fragments = tuple(
+            NativeInputBaseline(
+                # A delete retry resolves this path after the live input has already been
+                # atomically moved to its execution-bound quarantine file.
+                path=_safe_output_child(
+                    self._input_root,
+                    fragment.relative_path.removeprefix("source-md/"),
+                ),
+                file_sha256=fragment.sha256,
+                text=baseline_text if ingest.supports_atomic_edit else "",
+                chunk_no=fragment.chunk_no,
+            )
+            for fragment in ingest.fragments
         )
-        return NativeInputBaseline(
-            path=self.input_path(build, document_id),
-            file_sha256=fragment.sha256,
-            text=baseline_text,
+        return NativeDocumentInputBaseline(
+            source_filename=source_filename,
+            source_uri=source_uri,
+            source_sha256=source_sha256,
+            revision=revision,
+            descriptor_sha256=ingest.descriptor_sha256,
+            fragments=fragments,
+            supports_atomic_edit=ingest.supports_atomic_edit,
         )
 
-    def _render(self, build: NativeBuild, destination: Path) -> None:
+    def _render(
+        self,
+        build: NativeBuild,
+        destination: Path,
+        *,
+        validate_sources: bool,
+    ) -> None:
         destination.mkdir(parents=True, exist_ok=False)
         native_manifests = list(build.manifest_by_id.values())
         native_chunks = self._read_validated_jsonl(build.build_dir, "chunk")
@@ -496,7 +573,10 @@ class LLMWikiCompatibilityAdapter:
                     },
                     "canonical_path": native["path"],
                     "access": native["access"],
-                    "write_access": "restricted" if editable else "none",
+                    # Source lifecycle authorization is independent from format-specific
+                    # content editing. Read-only Office/PDF documents still need an
+                    # approval-gated delete/restore path.
+                    "write_access": "restricted",
                     "editability": "editable" if editable else "read_only",
                     "tags": native["tags"],
                     "aliases": native["aliases"],
@@ -512,7 +592,7 @@ class LLMWikiCompatibilityAdapter:
                     },
                 }
             )
-            if not source_path.is_file():
+            if validate_sources and not source_path.is_file():
                 raise LLMWikiCompatibilityError(f"source file is missing: {source_uri}")
             canonical_source = _safe_child(build.build_dir, str(native["path"]))
             canonical_target = _safe_output_child(destination, str(native["path"]))
@@ -542,7 +622,11 @@ class LLMWikiCompatibilityAdapter:
             manifests={item["id"]: item for item in manifests},
             file_versions=file_versions,
         )
-        links = _convert_links(native_links, chunks_by_section)
+        links = _convert_links(
+            native_links,
+            chunks_by_section,
+            document_ids=set(file_versions),
+        )
         aliases = _convert_aliases(native_aliases, manifests)
 
         (destination / "README.md").write_bytes(
@@ -743,8 +827,26 @@ class NativeLLMWikiCatalog:
     ) -> NativeInputBaseline:
         return self._adapter.input_baseline(self._adapter.native_build(build_id), document_id)
 
-    def stage(self) -> str:
-        return self._runner.stage()
+    def document_input_baseline(self, document_id: str) -> NativeDocumentInputBaseline:
+        with self._lock:
+            if self._native_build is None:
+                raise LLMWikiCompatibilityError("LLMWIKI catalog is not bootstrapped")
+            return self._adapter.document_input_baseline(self._native_build, document_id)
+
+    def retained_document_input_baseline(
+        self,
+        build_id: str,
+        document_id: str,
+    ) -> NativeDocumentInputBaseline:
+        return self._adapter.document_input_baseline(
+            self._adapter.native_build(build_id),
+            document_id,
+        )
+
+    def stage(self, *, allowed_missing_link_targets: set[str] | None = None) -> str:
+        return self._runner.stage(
+            allowed_missing_link_targets=allowed_missing_link_targets,
+        )
 
     def prepare_candidate(
         self,
@@ -754,9 +856,11 @@ class NativeLLMWikiCatalog:
         changed_document_ids: set[str],
         added_document_ids: set[str] | None = None,
         removed_document_ids: set[str] | None = None,
+        allowed_missing_link_targets: set[str] | None = None,
     ) -> PreparedNativeBuild:
         added_document_ids = added_document_ids or set()
         removed_document_ids = removed_document_ids or set()
+        allowed_missing_link_targets = allowed_missing_link_targets or set()
         if (
             changed_document_ids & added_document_ids
             or changed_document_ids & removed_document_ids
@@ -777,17 +881,25 @@ class NativeLLMWikiCatalog:
             raise LLMWikiCompatibilityError("LLMWIKI candidate lacks a changed document")
         if not removed_document_ids <= set(active.manifest_by_id):
             raise LLMWikiCompatibilityError("LLMWIKI removal references an unknown document")
+        if not removed_document_ids <= allowed_missing_link_targets:
+            raise LLMWikiCompatibilityError("LLMWIKI removal lacks an approved missing-link target")
         for document_id, candidate_manifest in candidate.manifest_by_id.items():
             candidate_ingest = _native_ingest(candidate_manifest, document_id)
             if document_id in added_document_ids:
-                if (
-                    not candidate_ingest.supports_atomic_edit
-                    or not self._state.is_known_llmwiki_input_state(
+                legacy_atomic_attestation = (
+                    candidate_ingest.supports_atomic_edit
+                    and self._state.is_known_llmwiki_input_state(
                         document_id=document_id,
                         active_build_id=expected_current_build_id,
                         content_sha256=candidate_ingest.fragments[0].sha256,
                     )
-                ):
+                )
+                descriptor_attestation = self._state.is_known_llmwiki_input_state(
+                    document_id=document_id,
+                    active_build_id=expected_current_build_id,
+                    content_sha256=candidate_ingest.descriptor_sha256,
+                )
+                if not (legacy_atomic_attestation or descriptor_attestation):
                     raise LLMWikiCompatibilityError(
                         f"LLMWIKI candidate contains an unattested restored input: {document_id}"
                     )
@@ -812,7 +924,10 @@ class NativeLLMWikiCatalog:
                 raise LLMWikiCompatibilityError(
                     f"LLMWIKI candidate changed an unrelated input: {document_id}"
                 )
-        prepared = self._prepare(candidate)
+        prepared = self._prepare(
+            candidate,
+            allowed_missing_link_targets=frozenset(allowed_missing_link_targets),
+        )
         with self._lock:
             if self.current_native_build().build_id != expected_current_build_id:
                 raise LLMWikiCompatibilityError("active LLMWIKI build changed during validation")
@@ -838,10 +953,17 @@ class NativeLLMWikiCatalog:
         if _native_build_digest(prepared.build) != prepared.native_digest:
             raise LLMWikiCompatibilityError("LLMWIKI candidate changed after validation")
         try:
-            self._runner.activate(
-                build_id=prepared.build.build_id,
-                expected_current_build_id=expected_current_build_id,
-            )
+            if prepared.allowed_missing_link_targets:
+                self._runner.activate(
+                    build_id=prepared.build.build_id,
+                    expected_current_build_id=expected_current_build_id,
+                    allowed_missing_link_targets=set(prepared.allowed_missing_link_targets),
+                )
+            else:
+                self._runner.activate(
+                    build_id=prepared.build.build_id,
+                    expected_current_build_id=expected_current_build_id,
+                )
         except LLMWikiCompatibilityError:
             current = self._adapter.current_native_build()
             if current is None or current.build_id != prepared.build.build_id:
@@ -925,9 +1047,13 @@ class NativeLLMWikiCatalog:
         build: NativeBuild,
         *,
         validate_sources: bool = True,
+        allowed_missing_link_targets: frozenset[str] = frozenset(),
     ) -> PreparedNativeBuild:
         native_digest = _native_build_digest(build)
-        compatibility_root = self._adapter.materialize(build)
+        compatibility_root = self._adapter.materialize(
+            build,
+            validate_sources=validate_sources,
+        )
         repository = KnowledgeRepository(compatibility_root, self._source_resolver)
         repository.load(validate_sources=validate_sources)
         if repository.version != build.build_id:
@@ -939,6 +1065,7 @@ class NativeLLMWikiCatalog:
             compatibility_root=compatibility_root,
             repository=repository,
             native_digest=native_digest,
+            allowed_missing_link_targets=allowed_missing_link_targets,
         )
 
     def _promote(self, build: NativeBuild, repository: KnowledgeRepository) -> None:
@@ -981,6 +1108,19 @@ class NativeLLMWikiPipeline:
                 input_changes = await asyncio.to_thread(self._apply_inputs, events)
                 if isinstance(input_changes, set | frozenset):
                     input_changes = NativeInputChanges(changed=frozenset(input_changes))
+                allowed_missing_link_targets = self._state.llmwiki_deleted_document_ids()
+                if not set(input_changes.removed) <= allowed_missing_link_targets:
+                    raise LLMWikiCompatibilityError(
+                        "LLMWIKI removal lacks a durable deletion record"
+                    )
+                if input_changes.changed & allowed_missing_link_targets:
+                    raise LLMWikiCompatibilityError(
+                        "LLMWIKI changed input still has an active deletion record"
+                    )
+                if input_changes.added & allowed_missing_link_targets:
+                    raise LLMWikiCompatibilityError(
+                        "LLMWIKI restored input still has an active deletion record"
+                    )
                 self._state.record_sync_task(event_ids, stage="convert", status="succeeded")
                 if not input_changes.document_ids:
                     await asyncio.to_thread(self._verify_live_sources, events)
@@ -989,7 +1129,13 @@ class NativeLLMWikiPipeline:
                 self._state.record_sync_task(event_ids, stage="publish", status="running")
                 async with self._locks.acquire_publish():
                     await asyncio.to_thread(self._verify_live_sources, events)
-                    new_version = await asyncio.to_thread(self._catalog.stage)
+                    if allowed_missing_link_targets:
+                        new_version = await asyncio.to_thread(
+                            self._catalog.stage,
+                            allowed_missing_link_targets=allowed_missing_link_targets,
+                        )
+                    else:
+                        new_version = await asyncio.to_thread(self._catalog.stage)
                     prepared = await asyncio.to_thread(
                         self._catalog.prepare_candidate,
                         new_version,
@@ -997,6 +1143,7 @@ class NativeLLMWikiPipeline:
                         changed_document_ids=set(input_changes.changed),
                         added_document_ids=set(input_changes.added),
                         removed_document_ids=set(input_changes.removed),
+                        allowed_missing_link_targets=allowed_missing_link_targets,
                     )
                     await asyncio.to_thread(self._verify_live_sources, events)
                     repository = await asyncio.to_thread(
@@ -1112,7 +1259,11 @@ class NativeLLMWikiPipeline:
                 operation = payload.operation
                 if isinstance(operation, DeleteFileOperation):
                     if manifest is None:
-                        raise LLMWikiCompatibilityError(f"unknown LLMWIKI document: {document_id}")
+                        self._reconcile_committed_deletion(
+                            document_id=document_id,
+                            payload=payload,
+                        )
+                        continue
                     if (
                         payload.source_uri != manifest.source.uri
                         or payload.before_sha256 != manifest.source.sha256
@@ -1122,10 +1273,33 @@ class NativeLLMWikiPipeline:
                         raise LLMWikiCompatibilityError(
                             f"file deletion event mismatch: {document_id}"
                         )
-                    baseline = self._catalog.input_baseline(document_id)
-                    self._quarantine_input(
-                        baseline,
+                    document_inputs = self._catalog.document_input_baseline(document_id)
+                    graph_version_before = self._state.execution_graph_version_before(
+                        payload.execution_id,
+                        document_id,
+                    )
+                    if graph_version_before != repository.version:
+                        raise LLMWikiCompatibilityError(
+                            f"file deletion graph baseline mismatch: {document_id}"
+                        )
+                    if (
+                        document_inputs.source_uri != payload.source_uri
+                        or document_inputs.source_sha256 != payload.before_sha256
+                    ):
+                        raise LLMWikiCompatibilityError(
+                            f"file deletion input baseline mismatch: {document_id}"
+                        )
+                    self._quarantine_inputs(
+                        document_inputs.fragments,
                         execution_id=payload.execution_id,
+                    )
+                    self._state.record_llmwiki_deleted_document(
+                        document_id=document_id,
+                        deleted_execution_id=payload.execution_id,
+                        source_uri=payload.source_uri,
+                        source_sha256=payload.before_sha256,
+                        graph_version_before=graph_version_before,
+                        event_id=payload.event_id,
                     )
                     removed_documents.add(document_id)
                     continue
@@ -1141,35 +1315,49 @@ class NativeLLMWikiPipeline:
                     expected_sha256=payload.after_sha256,
                 )
                 del live_snapshot
-                baseline = self._catalog.retained_input_baseline(
+                document_inputs = self._catalog.retained_document_input_baseline(
                     operation.deleted_graph_version,
                     document_id,
                 )
-                restored_bytes = self._restore_quarantined_input(
-                    baseline,
+                restored_fragments = self._restore_quarantined_inputs(
+                    document_inputs.fragments,
                     deleted_execution_id=operation.deleted_execution_id,
                 )
-                metadata, body = _parse_normalized_markdown(
-                    restored_bytes.decode("utf-8"),
-                    baseline.path,
-                )
-                _validate_input_identity(
-                    metadata,
-                    document_id=document_id,
-                    source_uri=payload.source_uri,
-                    allowed_source_hashes={payload.after_sha256},
-                )
-                if not body.strip():
-                    raise LLMWikiCompatibilityError(
-                        f"restored normalized Markdown body is empty: {document_id}"
+                for baseline, restored_bytes in restored_fragments:
+                    try:
+                        restored_text = restored_bytes.decode("utf-8")
+                    except UnicodeDecodeError as error:
+                        raise LLMWikiCompatibilityError(
+                            f"restored normalized Markdown is not UTF-8: {document_id}"
+                        ) from error
+                    metadata, body = _parse_normalized_markdown(restored_text, baseline.path)
+                    _validate_input_identity(
+                        metadata,
+                        document_id=document_id,
+                        source_uri=payload.source_uri,
+                        allowed_source_hashes={payload.after_sha256},
+                        revision=document_inputs.revision,
                     )
+                    if metadata.get("chunk_no") != baseline.chunk_no:
+                        raise LLMWikiCompatibilityError(
+                            f"restored normalized Markdown fragment identity is invalid: "
+                            f"{document_id}"
+                        )
+                    if not body.strip():
+                        raise LLMWikiCompatibilityError(
+                            f"restored normalized Markdown body is empty: {document_id}"
+                        )
                 self._state.record_llmwiki_input_state(
                     document_id=document_id,
                     active_build_id=repository.version,
                     source_sha256=payload.after_sha256,
-                    revision=str(metadata["revision"]),
-                    content_sha256=_sha256(restored_bytes),
+                    revision=document_inputs.revision,
+                    content_sha256=document_inputs.descriptor_sha256,
                     event_ids=[payload.event_id],
+                )
+                self._state.clear_llmwiki_deleted_document(
+                    document_id=document_id,
+                    deleted_execution_id=operation.deleted_execution_id,
                 )
                 if manifest is None:
                     added_documents.add(document_id)
@@ -1354,49 +1542,96 @@ class NativeLLMWikiPipeline:
             removed=frozenset(removed_documents),
         )
 
-    def _quarantine_input(
+    def _reconcile_committed_deletion(
         self,
-        baseline: NativeInputBaseline,
+        *,
+        document_id: str,
+        payload: ContentChangedPayload,
+    ) -> None:
+        """Finish state after a crash that occurred after native pointer activation."""
+
+        if (
+            payload.after_sha256 != DELETED_FILE_SHA256
+            or self._files.snapshot_optional(payload.source_uri) is not None
+        ):
+            raise LLMWikiCompatibilityError(f"file deletion event mismatch: {document_id}")
+        graph_version_before = self._state.execution_graph_version_before(
+            payload.execution_id,
+            document_id,
+        )
+        document_inputs = self._catalog.retained_document_input_baseline(
+            graph_version_before,
+            document_id,
+        )
+        if (
+            document_inputs.source_uri != payload.source_uri
+            or document_inputs.source_sha256 != payload.before_sha256
+        ):
+            raise LLMWikiCompatibilityError(
+                f"file deletion retained baseline mismatch: {document_id}"
+            )
+        self._quarantine_inputs(
+            document_inputs.fragments,
+            execution_id=payload.execution_id,
+        )
+        self._state.record_llmwiki_deleted_document(
+            document_id=document_id,
+            deleted_execution_id=payload.execution_id,
+            source_uri=payload.source_uri,
+            source_sha256=payload.before_sha256,
+            graph_version_before=graph_version_before,
+            event_id=payload.event_id,
+        )
+
+    def _quarantine_inputs(
+        self,
+        baselines: tuple[NativeInputBaseline, ...],
         *,
         execution_id: str,
     ) -> None:
-        quarantine = _deleted_input_path(baseline.path, execution_id)
-        source_exists = baseline.path.is_file() and not baseline.path.is_symlink()
-        quarantine_exists = quarantine.is_file() and not quarantine.is_symlink()
-        if source_exists and quarantine_exists:
-            raise LLMWikiCompatibilityError("normalized input and deletion backup both exist")
-        if source_exists:
-            if _sha256(baseline.path.read_bytes()) != baseline.file_sha256:
+        states: list[tuple[NativeInputBaseline, Path, bool]] = []
+        for baseline in baselines:
+            quarantine = _deleted_input_path(baseline.path, execution_id)
+            source_exists = baseline.path.is_file() and not baseline.path.is_symlink()
+            quarantine_exists = quarantine.is_file() and not quarantine.is_symlink()
+            if source_exists == quarantine_exists:
+                raise LLMWikiCompatibilityError(
+                    "normalized input lifecycle state is ambiguous before file deletion"
+                )
+            current = baseline.path if source_exists else quarantine
+            if _sha256(current.read_bytes()) != baseline.file_sha256:
                 raise LLMWikiCompatibilityError("normalized input changed before file deletion")
-            os.replace(baseline.path, quarantine)
-            _fsync_directory(baseline.path.parent)
-            quarantine_exists = True
-        if not quarantine_exists or _sha256(quarantine.read_bytes()) != baseline.file_sha256:
-            raise LLMWikiCompatibilityError("deleted normalized input backup is unavailable")
+            states.append((baseline, quarantine, source_exists))
+        for baseline, quarantine, source_exists in states:
+            if source_exists:
+                os.replace(baseline.path, quarantine)
+                _fsync_directory(baseline.path.parent)
 
-    def _restore_quarantined_input(
+    def _restore_quarantined_inputs(
         self,
-        baseline: NativeInputBaseline,
+        baselines: tuple[NativeInputBaseline, ...],
         *,
         deleted_execution_id: str,
-    ) -> bytes:
-        quarantine = _deleted_input_path(baseline.path, deleted_execution_id)
-        source_exists = baseline.path.is_file() and not baseline.path.is_symlink()
-        quarantine_exists = quarantine.is_file() and not quarantine.is_symlink()
-        if source_exists and quarantine_exists:
-            raise LLMWikiCompatibilityError("restored input and deletion backup both exist")
-        if quarantine_exists:
-            if _sha256(quarantine.read_bytes()) != baseline.file_sha256:
+    ) -> list[tuple[NativeInputBaseline, bytes]]:
+        states: list[tuple[NativeInputBaseline, Path, bool, bytes]] = []
+        for baseline in baselines:
+            quarantine = _deleted_input_path(baseline.path, deleted_execution_id)
+            source_exists = baseline.path.is_file() and not baseline.path.is_symlink()
+            quarantine_exists = quarantine.is_file() and not quarantine.is_symlink()
+            if source_exists == quarantine_exists:
+                raise LLMWikiCompatibilityError(
+                    "normalized input lifecycle state is ambiguous before file restore"
+                )
+            current = baseline.path if source_exists else quarantine
+            restored = current.read_bytes()
+            if _sha256(restored) != baseline.file_sha256:
                 raise LLMWikiCompatibilityError("deleted normalized input backup is corrupt")
-            os.replace(quarantine, baseline.path)
-            _fsync_directory(baseline.path.parent)
-            source_exists = True
-        if not source_exists:
-            raise LLMWikiCompatibilityError("deleted normalized input backup is unavailable")
-        restored = baseline.path.read_bytes()
-        if _sha256(restored) != baseline.file_sha256:
-            raise LLMWikiCompatibilityError("restored normalized input hash is invalid")
-        return restored
+            states.append((baseline, quarantine, source_exists, restored))
+        for baseline, quarantine, source_exists, _restored in states:
+            if not source_exists:
+                os.replace(quarantine, baseline.path)
+                _fsync_directory(baseline.path.parent)
+        return [(baseline, restored) for baseline, _quarantine, _exists, restored in states]
 
     def _record_and_write_input(
         self,
@@ -1684,10 +1919,15 @@ def _convert_chunks(
 def _convert_links(
     native_links: list[dict[str, Any]],
     chunks_by_section: dict[tuple[str, str], list[dict[str, Any]]],
+    *,
+    document_ids: set[str],
 ) -> list[dict[str, Any]]:
     converted: list[dict[str, Any]] = []
     for native in native_links:
         source_id = str(native["from_doc_id"])
+        target_id = str(native["to_doc_id"])
+        if source_id not in document_ids or target_id not in document_ids:
+            raise LLMWikiCompatibilityError("LLMWIKI link references an unknown document")
         section_id = str(native["from_section_id"])
         quote = str(native["evidence_quote"])
         matches = [
@@ -1703,7 +1943,7 @@ def _convert_links(
             {
                 "schema_version": "1.0.0",
                 "source_id": source_id,
-                "target_id": native["to_doc_id"],
+                "target_id": target_id,
                 "relation": str(native["relation_type"]).upper(),
                 "status": "VERIFIED" if native["origin"] == "explicit" else "PROPOSED",
                 "evidence_chunk_ids": matches,

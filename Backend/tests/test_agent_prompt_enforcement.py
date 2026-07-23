@@ -28,6 +28,7 @@ class StubAgent:
     def __init__(self, decision: AgentDecision) -> None:
         self._decision = decision
         self.calls = 0
+        self.requests: list[dict[str, Any]] = []
 
     @property
     def session_ttl_seconds(self) -> None:
@@ -36,8 +37,9 @@ class StubAgent:
     def session_fingerprint(self, **_: Any) -> None:
         return None
 
-    async def decide(self, **_: Any) -> AgentRunResult:
+    async def decide(self, **kwargs: Any) -> AgentRunResult:
         self.calls += 1
+        self.requests.append(kwargs)
         return AgentRunResult(decision=self._decision, provider="stub")
 
 
@@ -75,6 +77,8 @@ def _decision(
     expected_text: str | None = None,
     replacement_text: str | None = None,
     search_query: str = "개인정보 보관 기간",
+    target_filename: str | None = None,
+    document_markdown: str | None = None,
 ) -> AgentDecision:
     operation = None
     if expected_text is not None and replacement_text is not None:
@@ -94,6 +98,8 @@ def _decision(
             "target_document_id": target_document_id,
             "source_sha256": source_sha256,
             "operation": operation,
+            "target_filename": target_filename,
+            "document_markdown": document_markdown,
         }
     )
 
@@ -144,7 +150,7 @@ def test_non_ready_agent_outcomes_stop_before_successful_search(
     }
 
 
-def test_file_deletion_returns_approval_preview_without_calling_agent_or_writing(
+def test_agent_routes_natural_language_file_deletion_to_approval_preview_without_writing(
     client: TestClient,
     test_app: FastAPI,
     auth_headers: dict[str, str],
@@ -154,11 +160,9 @@ def test_file_deletion_returns_approval_preview_without_calling_agent_or_writing
         test_app,
         _decision(
             outcome=AgentOutcome.READY,
-            intent="change",
+            intent="delete_file",
             target_document_id="REG-000001",
-            source_sha256=("7e2d690883e207dea2880bef301fc000ea6ee384c7e7e3415e5618872a614e26"),
-            expected_text="1년",
-            replacement_text="",
+            search_query="일일업무 보고서",
         ),
     )
 
@@ -167,7 +171,7 @@ def test_file_deletion_returns_approval_preview_without_calling_agent_or_writing
         headers=auth_headers,
         json={
             "conversation_id": "file-delete-preview",
-            "message": "REG-000001.md 파일 지워",
+            "message": "일일업무 보고서 파일 삭제해줘",
         },
     )
 
@@ -178,7 +182,45 @@ def test_file_deletion_returns_approval_preview_without_calling_agent_or_writing
     assert "/dev/null" in body["change_plan"]["unified_diff"]
     assert "승인하기 전에는 파일이 삭제되지 않으며" in body["assistant_text"]
     assert (app_settings.resolved_source_root() / "regulations/REG-000001.md").exists()
-    assert agent.calls == 0
+    assert agent.calls == 1
+    assert agent.requests[0]["message"] == "일일업무 보고서 파일 삭제해줘"
+
+
+def test_agent_routes_report_creation_to_grounded_hwpx_preview(
+    client: TestClient,
+    test_app: FastAPI,
+    auth_headers: dict[str, str],
+) -> None:
+    agent = _install_stub(
+        test_app,
+        _decision(
+            outcome=AgentOutcome.READY,
+            intent="create_file",
+            target_document_id="REG-000001",
+            search_query="이번주 보고서",
+            target_filename="주간업무보고서.hwpx",
+            document_markdown="# 주간업무보고서\n\n- 이번 주 업무 근거",
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/chat/messages",
+        headers=auth_headers,
+        json={
+            "conversation_id": "weekly-report-create",
+            "message": "이번주 보고서를 보고 주간업무보고서.hwpx를 만들어줘",
+        },
+    )
+
+    body = response.json()
+    assert body["response_type"] == "document_creation_preview"
+    assert body["generated_document"] == {
+        "filename": "주간업무보고서.hwpx",
+        "markdown": "# 주간업무보고서\n\n- 이번 주 업무 근거",
+        "source_document_ids": ["REG-000001"],
+    }
+    assert body["change_plan"] is None
+    assert agent.calls == 1
 
 
 def test_filename_scoped_content_deletion_is_not_mistaken_for_file_deletion(
@@ -231,6 +273,102 @@ def test_locate_clarification_uses_acl_filtered_direct_evidence_fallback(
     body = response.json()
     assert body["response_type"] == "location_result"
     assert body["documents"][0]["evidence"]
+
+
+def test_ready_locate_preserves_ranked_search_evidence_for_verified_target(
+    client: TestClient,
+    test_app: FastAPI,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = "개인정보 보관 기간"
+    target_document_id = "REG-000001"
+    _install_stub(
+        test_app,
+        _decision(
+            outcome=AgentOutcome.READY,
+            intent="locate",
+            target_document_id=target_document_id,
+            search_query=query,
+        ),
+    )
+    repository = test_app.state.container.catalog.snapshot()
+    ranked_target = next(
+        document
+        for document in repository.search(
+            query,
+            access_context=AccessContext.anonymous(),
+        )
+        if document.document_id == target_document_id
+    )
+    original_get = repository.get
+
+    def generic_get(document_id: str, *, access_context: AccessContext):
+        document = original_get(document_id, access_context=access_context)
+        if document_id != target_document_id or document is None:
+            return document
+        return document.model_copy(
+            update={
+                "evidence": [
+                    document.evidence[0].model_copy(update={"quote": "generic first chunk"})
+                ]
+            }
+        )
+
+    monkeypatch.setattr(repository, "get", generic_get)
+
+    response = client.post(
+        "/api/v1/chat/messages",
+        headers=auth_headers,
+        json={
+            "conversation_id": "ranked-target-evidence",
+            "message": "개인정보 보관 기간을 찾아줘",
+        },
+    )
+
+    body = response.json()
+    assert body["response_type"] == "location_result"
+    assert body["documents"][0]["document_id"] == target_document_id
+    assert body["documents"][0]["evidence"][0]["quote"] == ranked_target.evidence[0].quote
+
+
+def test_ready_locate_rejects_verified_target_without_matching_search_evidence(
+    client: TestClient,
+    test_app: FastAPI,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_document_id = "REG-000001"
+    _install_stub(
+        test_app,
+        _decision(
+            outcome=AgentOutcome.READY,
+            intent="locate",
+            target_document_id=target_document_id,
+            search_query="zzzz-no-current-target-evidence-987654",
+        ),
+    )
+    repository = test_app.state.container.catalog.snapshot()
+
+    def forbidden_get(*_: Any, **__: Any):
+        raise AssertionError("location response must not substitute generic document evidence")
+
+    monkeypatch.setattr(repository, "get", forbidden_get)
+
+    response = client.post(
+        "/api/v1/chat/messages",
+        headers=auth_headers,
+        json={
+            "conversation_id": "missing-target-evidence",
+            "message": "선택한 문서에서 현재 근거를 찾아줘",
+            "selected_document_id": target_document_id,
+        },
+    )
+
+    body = response.json()
+    assert body["response_type"] == "error"
+    assert body["error"]["code"] == "DOCUMENT_NOT_FOUND"
+    assert body["documents"] == []
 
 
 def test_chat_service_resumes_only_after_the_latest_successful_sdk_run(

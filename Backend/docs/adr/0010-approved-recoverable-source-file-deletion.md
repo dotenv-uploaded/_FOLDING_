@@ -12,9 +12,11 @@ ChatService는 원본 파일 삭제 요청을 선제 차단했다. 이 경계는
 
 ## 결정
 
-명시적 파일명 삭제와 `계약서 전부` 삭제를 ChatService가 Claude 호출 전에 결정론적으로 해석한다.
-단일 파일은 Unicode-normalized basename으로 정확히 찾고, 일괄 요청은 `doc_type=contract`인 ACL-visible
-문서를 최대 20개까지 찾는다. 일괄 요청도 파일별 독립 `DeleteFileOperation`, diff와 `plan_hash`를 만들고
+단일 파일 삭제는 Claude의 `ready_delete_file` typed decision으로 분류한다. Claude는 현재 turn에서
+`knowledge_search`와 `document_get`으로 대상 하나를 다시 확인하지만 파일 도구나 삭제 권한은 갖지 않는다.
+ChatService는 검증된 document ID를 다시 조회하고 ACL과 원본 hash를 검사해 삭제 plan을 만든다.
+`계약서 전부` 일괄 요청은 `doc_type=contract`인 ACL-visible 문서를 최대 20개까지 찾는다. 일괄 요청도
+파일별 독립 `DeleteFileOperation`, diff와 `plan_hash`를 만들고
 Electron은 각 파일마다 별도 승인을 받는다. 승인 전 원본 write는 0건이다.
 
 승인 시 ACL과 active source SHA를 다시 확인하고 immutable backup과 durable journal을 만든 뒤 같은
@@ -22,6 +24,12 @@ filesystem 경계에서 원본을 임의 이름으로 rename-quarantine하고 ha
 사이에 외부 edit가 끼면 새 내용을 원래 경로로 복원하고 conflict로 닫는다. outbox event는 LLMWIKI candidate에서 manifest, canonical,
 reference, chunk와 관련 link를 제거하고 검증 뒤 새 버전을 공개한다. 삭제 상태는 고정 sentinel SHA로
 표현해 재시작 복구가 파일 부재를 명시적으로 판별한다.
+
+지식 게시 전 SQLite에 document ID, 삭제 execution, source URI·SHA, 삭제 전 graph와 event를 durable
+tombstone으로 기록한다. 현재 삭제 batch뿐 아니라 tombstone이 남아 있는 동안의 모든 후속 build가 이
+정확한 ID 집합을 `allowed_missing_link_targets`로 사용한다. native pointer 공개 뒤 process가 종료돼도
+pending event는 삭제 전 retained input과 quarantine SHA를 다시 검증해 완료할 수 있다. Undo가 복원
+input을 검증한 뒤에만 같은 삭제 execution의 tombstone을 제거한다.
 
 Undo는 삭제 execution의 backup, 원래 mode와 삭제 당시 graph version에 결박된
 `RestoreFileOperation`을 만든다. 대상 경로가 비어 있고 현재 principal이 같은 document ID를 복원할
@@ -39,12 +47,15 @@ Execution ID는 plan ID의 SHA-256에서 결정론적으로 예약하고 approve
 - 한 번의 일괄 승인으로 여러 파일 삭제: 사용자가 개별 대상을 확인할 수 없고 부분 실패 복구 경계가
   커지므로 제외했다.
 - 휴지통 이동만 수행: 위키와 source lifecycle 상태가 분리되고 운영 환경별 휴지통 계약이 달라 제외했다.
+- broken-link 검증 전역 완화: 승인되지 않은 오타와 손상 link까지 숨기므로 제외하고, 활성 tombstone의
+  exact document ID만 한시적으로 허용한다.
 - LangChain/LangGraph 도입: 현재 Claude SDK structured output, app-owned state/outbox와 승인 journal이
   이미 필요한 상태 전이를 소유한다. 별도 graph checkpoint는 중복 상태와 승인 재개 경로를 만들어
   보장을 늘리지 않으므로 도입하지 않는다.
 
 ## 결과
 
-파일 삭제는 일반 본문 수정과 동일한 exact `plan_hash` 승인 API를 사용하지만 별도 typed operation과
-복구 규칙을 갖는다. UI는 삭제임을 명시하고 복원 가능한 backup을 안내한다. 동일 파일명 복수 대상은
-선택을 요구하며, 20개를 넘는 일괄 요청은 범위를 좁히게 한다.
+파일 삭제는 일반 본문 수정과 동일한 exact `plan_hash` 승인 API를 사용하지만 별도 typed agent intent,
+operation과 복구 규칙을 갖는다. 자연어 문서명과 같은 대화의 후속 요청도 agent가 현재 근거로 다시
+해결한다. UI는 삭제임을 명시하고 복원 가능한 backup을 안내하며, 20개를 넘는 일괄 요청은 범위를
+좁히게 한다.

@@ -243,8 +243,10 @@ def test_sdk_output_schema_is_a_focused_typed_decision_union() -> None:
 
     assert schema["required"] == ["decision"]
     assert schema["additionalProperties"] is False
-    assert len(schema["properties"]["decision"]["anyOf"]) == 6
+    assert len(schema["properties"]["decision"]["anyOf"]) == 8
     ready_change = schema["$defs"]["ReadyChangeOutput"]
+    ready_create = schema["$defs"]["ReadyCreateFileOutput"]
+    ready_delete = schema["$defs"]["ReadyDeleteFileOutput"]
     ready_locate = schema["$defs"]["ReadyLocateOutput"]
     clarification = schema["$defs"]["NeedsClarificationOutput"]
     assert set(ready_change["required"]) >= {
@@ -257,6 +259,26 @@ def test_sdk_output_schema_is_a_focused_typed_decision_union() -> None:
         "operation",
     }
     assert "operation" not in ready_locate["properties"]
+    assert set(ready_delete["required"]) >= {
+        "prompt_contract_version",
+        "decision_type",
+        "assistant_text",
+        "search_query",
+        "target_document_id",
+    }
+    assert "operation" not in ready_delete["properties"]
+    assert "source_sha256" not in ready_delete["properties"]
+    assert set(ready_create["required"]) >= {
+        "prompt_contract_version",
+        "decision_type",
+        "assistant_text",
+        "search_query",
+        "target_document_id",
+        "target_filename",
+        "document_markdown",
+    }
+    assert "operation" not in ready_create["properties"]
+    assert "source_sha256" not in ready_create["properties"]
     assert "source_sha256" not in clarification["properties"]
     assert ready_change["additionalProperties"] is False
 
@@ -279,6 +301,43 @@ def test_sdk_output_union_converts_only_representable_cross_field_states() -> No
     assert ready.outcome.value == "ready"
     assert ready.intent == "change"
     assert ready.operation is not None
+
+    delete_ready = AgentStructuredOutput.model_validate(
+        {
+            "decision": {
+                "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+                "decision_type": "ready_delete_file",
+                "assistant_text": "파일 삭제 미리보기를 준비합니다.",
+                "search_query": "일일업무 보고서",
+                "target_document_id": "REG-000001",
+            }
+        }
+    ).to_decision()
+
+    assert delete_ready.outcome.value == "ready"
+    assert delete_ready.intent == "delete_file"
+    assert delete_ready.target_document_id == "REG-000001"
+    assert delete_ready.source_sha256 is None
+    assert delete_ready.operation is None
+
+    create_ready = AgentStructuredOutput.model_validate(
+        {
+            "decision": {
+                "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+                "decision_type": "ready_create_file",
+                "assistant_text": "새 문서 미리보기를 준비했습니다.",
+                "search_query": "이번주 보고서",
+                "target_document_id": "REG-000001",
+                "target_filename": "주간업무보고서.hwpx",
+                "document_markdown": "# 주간업무보고서\n\n이번 주 업무",
+            }
+        }
+    ).to_decision()
+
+    assert create_ready.outcome.value == "ready"
+    assert create_ready.intent == "create_file"
+    assert create_ready.target_filename == "주간업무보고서.hwpx"
+    assert create_ready.document_markdown.startswith("# 주간업무보고서")
 
     with pytest.raises(ValidationError):
         AgentStructuredOutput.model_validate(

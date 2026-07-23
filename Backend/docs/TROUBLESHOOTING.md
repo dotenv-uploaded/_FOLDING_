@@ -1,5 +1,126 @@
 # 트러블슈팅 기록
 
+## 2026-07-23 — XLSX 위치 조회가 현재 turn 도구 계약 오류로 종료
+
+### 상황, 기대와 영향
+
+`GBX-ONB-003_일정_리스크_추적표.xlsx에서 지연 일정, 위험 요소와 담당자를 찾아줘`라고 물으면
+해당 XLSX의 리스크 표를 답해야 하지만 `Claude가 현재 turn의 위치 검색 도구 계약을 지키지
+않았습니다`라는 일반 오류로 종료됐다. 원본 변경이나 권한 우회는 없었지만, 문서를 올바르게 찾은
+turn도 후단 검증에서 버려져 사용자가 필요한 근거를 받지 못했다.
+
+### 재현, 증거와 원인
+
+- 위치 조회 trace 검증은 `knowledge_search → document_get`만 허용하고 검증된 target의
+  `document_get`이 마지막 도구 호출이어야 한다고 가정했다. Claude가 같은 query로 같은 target의 표
+  근거를 한 번 더 검색하면 안전한 보강임에도 전체 결과를 거부했다.
+- 정확한 파일명 token이 문서 선택뿐 아니라 문서 안의 chunk ranking에도 큰 가중치로 반복 적용돼,
+  `지연 일정`, `위험 요소`, `담당자`가 있는 리스크 표 대신 파일명 주변의 일반 `문서관계` section이
+  선택됐다.
+- ChatService는 Claude가 target ID를 반환하면 이미 검색된 target의 상위 근거를 버리고
+  `document_get`의 첫 일반 chunk로 바꿨다.
+
+검증을 없애거나 target 이후의 임의 검색을 허용하는 방식은 다른 query 또는 다른 문서의 근거를 최종
+응답에 섞을 수 있어 제외했다. 파일명 가중치를 전부 없애는 방식도 정확한 문서 routing을 약화하므로
+제외했다.
+
+### 해결과 검증
+
+- 모든 ready locate는 선택·대화 이력 target도 구조화 `search_query`와 byte-for-byte 같은 검색 결과에
+  포함돼야 한다. 검증된 target 뒤에는 같은 query·같은 target의 `knowledge_search`만 근거 보강으로
+  허용하고 query 변경, 다른 target, source/canonical 재조회는 계속 거부한다.
+- 정확한 파일명은 문서 선택에는 그대로 사용하되, 요청 사실 token이 실제 chunk에 있으면 문서 내부
+  ranking에서만 파일명 token을 제외한다.
+- ChatService는 선택된 target의 검색 근거를 보존하고, 검색 결과에 target이 없으면 일반
+  `document_get` chunk로 대체하지 않고 근거 없음으로 종료한다.
+- 정확한 XLSX 질문의 허용 trace와 query를 넓힌 거부 trace, ChatService의 target 검색 근거 보존을
+  회귀 테스트로 고정했다. agent runtime 테스트 37개와 Backend 전체 pytest 275개가 통과했다.
+- 실제 9종 업무기록 corpus에서 같은 질문이 XLSX 문서의 `리스크 · 2` 근거를 선택하고 R-01~R-03의
+  지연 요소, 제품팀·CX팀·PMO 담당과 pilot 일정 08-03 변경을 반환했다.
+
+### 재발 방지와 남은 위험
+
+도구 순서 자체보다 query, target과 결과 membership을 검증하는 bounded state machine을 유지한다.
+정확한 파일명 routing과 요청 사실 chunk ranking을 각각 독립 회귀 테스트한다. 이번 실문서 검증은
+격리된 deterministic agent로 수행했고 실제 Claude 호출은 provider credit이 있는 환경에서 별도 live
+canary가 필요하다.
+
+- 왜 마지막 검색을 모두 허용하지 않나? 다른 query나 문서의 근거가 구조화 응답에 섞이는 trace drift를
+  다시 열기 때문이다.
+- 왜 파일명 token을 완전히 제거하지 않나? 문서 선택에는 정확한 파일명이 가장 강한 사용자 의도이지만,
+  선택된 문서 안에서는 요청한 사실이 근거 section을 결정해야 하기 때문이다.
+- prompt만 수정하지 않은 이유는? 모델 행동과 무관하게 app boundary가 안전한 trace를 인정하고 올바른
+  근거를 보존해야 하기 때문이다.
+
+## 2026-07-23 — PDF 승인 삭제 뒤 깨진 문서 링크로 게시가 실패하고 재시작도 막힘
+
+### 상황, 기대와 영향
+
+실제 업무기록 corpus에서 PDF를 정확한 파일명으로 삭제하면 처음에는 read-only 문서라는 이유로 삭제
+preview 자체가 만들어지지 않았다. 권한을 바로잡은 뒤에는 승인된 원본 이동까지 성공했지만 LLMWIKI
+candidate가 삭제된 문서를 향한 내부 링크를 포함해 validation에서 실패했다. 이 상태로 sidecar를
+재시작하면 active manifest의 사라진 source도 강제 검증해 outbox retry에 도달하지 못했다.
+
+기대 동작은 승인 전 원본 무변경, 승인 후 원본과 검색 문서의 일관된 제거, 어느 단계에서 중단돼도 같은
+execution의 안전한 재시도, Undo 시 원본 bytes와 지식 관계의 복원이다. 장애 중 승인되지 않은 삭제는
+발생하지 않았지만, 승인된 원본이 quarantine에 있고 지식 버전은 이전 상태인 부분 완료가 남았다.
+
+### 재현, 증거와 원인
+
+- materialized manifest의 `write_access`가 source `editability`를 그대로 따라 PDF·DOCX처럼 content
+  writer가 없는 형식의 승인 삭제까지 차단했다.
+- Electron crosslink가 만든 `[CODE](DOC-….md)` 링크는 source input에 남아 있고, 삭제 대상 ID가 빠진
+  candidate를 만들 때 LLMWIKI builder가 의도대로 broken internal link validation에 실패했다.
+- repository recovery load도 `validate_sources=False`에서 source 존재를 검사해, 승인 뒤 이미 이동한
+  원본을 pending execution으로 복구할 수 없었다.
+- delete retry는 live normalized input만 해석해, 첫 시도가 quarantine으로 옮긴 입력을 다시 찾지
+  못했다.
+
+검토한 대안 중 broken link validation을 전역 완화하는 방식은 오타까지 숨겨 손상된 지식을 게시하므로
+제외했다. normalized input의 링크를 평문화하는 방식도 수동 링크와 section anchor provenance가 없어
+원문을 훼손할 수 있어 제외했다. 승인된 lifecycle operation의 정확한 삭제 ID만 builder request에
+결박하고 outbox가 동일 execution을 재생하는 방식을 선택했다.
+
+### 해결과 복구 검증
+
+- content editability는 그대로 보존하되 로컬 source lifecycle에는 `restricted` write access를 부여해
+  모든 형식이 기존 승인·hash·backup·journal 경계를 거쳐 삭제되게 했다.
+- Backend는 승인된 `removed_document_ids`만 LLMWIKI stage와 candidate activation에 전달한다. builder는
+  그 대상의 graph edge만 제외하고 다른 깨진 링크는 계속 거부하며 Markdown 링크·anchor는 수정하지
+  않는다.
+- Backend는 삭제 execution, source URI·SHA, 삭제 전 graph와 event ID를 SQLite tombstone으로 먼저
+  기록한다. 현재 batch뿐 아니라 tombstone이 남아 있는 모든 후속 build가 활성 삭제 ID 전체를
+  전달하며, 정확한 복원이 게시된 뒤에만 해당 execution의 tombstone을 지운다.
+- source-fragment 문서는 모든 조각의 경로·SHA를 먼저 검증한 뒤 함께 quarantine/restore하고, 복원된
+  조각 descriptor를 candidate attestation에 사용한다.
+- recovery mode는 package·reference 무결성을 계속 검사하면서 pending source 부재만 허용한다. cache
+  miss에서도 source 검사를 생략해 bootstrap할 수 있고 retry는 검증된 output 경계 안의 quarantine input
+  baseline을 사용한다.
+- native pointer 공개 뒤 SQLite 완료 전에 중단된 retry는 execution의 삭제 전 graph, retained input과
+  quarantine SHA를 재검증해 event만 멱등 완료한다. 삭제 target을 참조하는 승인 enrichment는 target이
+  없는 동안 stale 처리하고 복원 뒤 같은 attestation이면 다시 사용한다.
+- 실제 PDF 삭제 게시 뒤 sidecar를 재시작하고, tombstone이 활성인 상태에서 무관한 HWP 수정·재빌드도
+  성공시켰다. PDF는 계속 검색되지 않았고 tombstone은 1개로 유지됐다. 이어 PDF Undo와 HWP Undo를
+  게시해 두 원본 SHA, PDF의 38개 관계 링크와 검색 결과를 정확히 복원했으며 tombstone은 0개,
+  pending/failed event도 0개가 됐다.
+- 관련 회귀 테스트를 포함해 Ruff format/check, mypy와 Backend pytest 275개가 통과했고 coverage는
+  84%다. LLMWIKI builder Ruff check와 pytest 47개도 통과했다.
+
+### 재발 방지와 남은 위험
+
+read-only content와 source lifecycle 권한, 다중 fragment 원자성, 승인된 삭제 ID의 build scope,
+missing-source cache-miss recovery, quarantine retry, pointer 공개 뒤 재조정과 후속 무관 build를 별도
+회귀 테스트로 고정한다. 허용 누락 ID는 경로 문자를 거부하고 stage·activation에 활성 tombstone 전체를
+동일하게 전달한다. 현재 앱은 ZIP 직접 등록이 아니라 압축 해제된 폴더를 입력으로 받으므로 가져오기
+UX는 남아 있다.
+
+- 왜 broken link 검증을 끄지 않았나? 삭제 성공처럼 보이면서 탐색 불가능한 graph를 게시하게 되기
+  때문이다.
+- 왜 read-only PDF를 삭제할 수 있나? 내용 patch 능력과 승인·backup 기반 파일 lifecycle은 서로 다른
+  권한이기 때문이다.
+- 중간 실패를 어떻게 복구하나? deterministic execution과 journal/outbox가 quarantine 상태를 식별하고
+  같은 변경을 재적용한 뒤 CAS publish로 수렴시킨다.
+
 ## 2026-07-22 — 파일 삭제가 unsupported로 끝나고 후속 변경 query가 tool trace와 충돌
 
 ### 상황, 기대와 영향
@@ -608,3 +729,32 @@ pinned bundle과 직접 결박하고 normalized input을 dirfd 기반 immutable 
 작업은 추가 hardening으로 남는다. 면접에서는 “aggregate hash만으로 승인 경계를 만들 수 없는 이유”,
 “원본 write 뒤 파생 build 실패를 어떻게 retry와 Undo로 수렴시키는가”, “다중 파일 논리 문서를 왜 먼저
 read-only로 출시했는가”를 설명할 수 있다.
+## 2026-07-23 — 자연어 삭제와 보고서 생성 요청이 unsupported로 종료됨
+
+### 상황과 영향
+
+같은 대화에서 조회·수정을 마친 `일일업무.hwp`를 “일일업무 보고서 파일 삭제해줘”라고 요청하면
+`UNSUPPORTED_AGENT_REQUEST`가 반환됐다. “이번주 보고서를 보고 주간업무보고서.hwpx를 만들어줘”도 같은
+오류로 끝났다. 기대 동작은 현재 문서 근거로 대상을 다시 확인한 뒤 각각 삭제 승인 preview와 새 HWPX
+생성 승인을 제시하는 것이었다.
+
+### 증거와 원인
+
+단일 파일 삭제는 ChatService 입구의 확장자 포함 filename 정규식만 통과할 수 있었고 그 밖의 표현은
+Claude로 넘어갔지만 structured output은 locate/change만 표현했다. 생성은 response model과 Electron
+sidecar 실행 계약 자체가 없었다. 정규식을 확대하는 방법은 대화 문맥과 자연어 제목을 계속 누락하고,
+Claude에 파일 도구를 여는 방법은 application-owned 승인 경계를 깨므로 제외했다.
+
+### 해결과 검증
+
+Agent가 `delete_file`과 `create_file`을 typed decision으로 선택하고 현재 turn의 검색·문서 확인을 다시
+수행하게 했다. 삭제는 기존 exact `plan_hash`, atomic delete와 Undo를 그대로 사용한다. 생성은 canonical
+근거에서 Markdown을 제안하고 Electron이 실제 대상과 전체 new-file diff를 승인받은 뒤 Kordoc 생성,
+재파싱과 no-overwrite 게시를 수행한다. Backend 전체 pytest, Ruff, mypy가 통과했고 prompt/schema/chat
+회귀 테스트에 두 사용자 문장을 고정했다.
+
+### 재발 방지와 남은 위험
+
+새 lifecycle intent는 typed schema와 tool trace test, prompt eval case를 함께 추가한다. 모델 출력은 여전히
+proposal일 뿐 write authority가 아니다. 실제 사용자 corpus에서 보고서가 여러 개면 임의 선택하지 않고
+clarification으로 닫히며, 서명된 설치본의 Kordoc packaging은 release gate에서 다시 확인한다.

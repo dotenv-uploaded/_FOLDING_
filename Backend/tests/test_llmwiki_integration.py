@@ -19,11 +19,16 @@ from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.llmwiki import (
     LLMWikiCompatibilityAdapter,
     LLMWikiCompatibilityError,
+    NativeDocumentInputBaseline,
     NativeInputBaseline,
+    NativeInputChanges,
     NativeLLMWikiCatalog,
     NativeLLMWikiPipeline,
+    _convert_links,
+    _deleted_input_path,
 )
 from codegate_api.knowledge.repository import KnowledgePackageError, KnowledgeRepository
+from codegate_api.models import DELETED_FILE_SHA256
 from codegate_api.state.store import PendingEvent, StateStore
 
 
@@ -39,6 +44,38 @@ class NativeFixture:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def test_native_link_conversion_rejects_edges_outside_current_corpus() -> None:
+    native_link = {
+        "from_doc_id": "DOC-1111111111111111",
+        "to_doc_id": "DOC-2222222222222222",
+        "from_section_id": "sec-evidence",
+        "evidence_quote": "관련 계획을 따른다.",
+        "relation_type": "references",
+        "origin": "explicit",
+    }
+    chunks = {
+        ("DOC-1111111111111111", "sec-evidence"): [
+            {
+                "chunk_id": "DOC-1111111111111111@1#sec-evidence",
+                "text": "관련 계획을 따른다.",
+            }
+        ]
+    }
+
+    with pytest.raises(LLMWikiCompatibilityError, match="unknown document"):
+        _convert_links(
+            [native_link],
+            chunks,
+            document_ids={"DOC-1111111111111111"},
+        )
+    restored = _convert_links(
+        [native_link],
+        chunks,
+        document_ids={"DOC-1111111111111111", "DOC-2222222222222222"},
+    )
+    assert restored[0]["target_id"] == "DOC-2222222222222222"
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -382,10 +419,17 @@ class _ActivatingRunner:
 
 
 class _PipelineState:
-    def __init__(self, event: PendingEvent, *, fail_completion_once: bool = False) -> None:
+    def __init__(
+        self,
+        event: PendingEvent,
+        *,
+        fail_completion_once: bool = False,
+        deleted_document_ids: set[str] | None = None,
+    ) -> None:
         self._event = event
         self._fail_completion_once = fail_completion_once
         self._completion_failed = False
+        self.deleted_document_ids = set(deleted_document_ids or set())
         self.completed: tuple[list[str], str] | None = None
 
     def pending_events(self) -> list[PendingEvent]:
@@ -393,6 +437,9 @@ class _PipelineState:
 
     def begin_event_batch(self, _event_ids: list[str]) -> None:
         return None
+
+    def llmwiki_deleted_document_ids(self) -> set[str]:
+        return set(self.deleted_document_ids)
 
     def record_sync_task(self, *_args: object, **kwargs: object) -> None:
         if (
@@ -444,6 +491,32 @@ def _event(
                 "replacement_text": replacement_text,
                 "expected_occurrences": 1,
             },
+        },
+    )
+
+
+def _lifecycle_event(
+    *,
+    event_id: str,
+    execution_id: str,
+    before_sha256: str,
+    after_sha256: str,
+    operation: dict[str, object],
+) -> PendingEvent:
+    return PendingEvent(
+        event_id=event_id,
+        execution_id=execution_id,
+        attempts=0,
+        payload={
+            "schema_version": "1.0.0",
+            "event_id": event_id,
+            "execution_id": execution_id,
+            "document_id": "REG-100001",
+            "source_uri": "source://regulations/REG-100001.md",
+            "before_sha256": before_sha256,
+            "after_sha256": after_sha256,
+            "file_version_id": f"fv_{after_sha256}",
+            "operation": operation,
         },
     )
 
@@ -672,8 +745,25 @@ def test_native_adapter_accepts_current_server_v2_build_format(tmp_path: Path) -
     assert baseline.file_sha256 == _sha256(fixture.input_path.read_bytes())
 
 
-def test_native_adapter_marks_server_v2_source_fragments_read_only(tmp_path: Path) -> None:
+def test_native_adapter_resolves_a_quarantined_input_path_for_delete_retry(
+    tmp_path: Path,
+) -> None:
     fixture = _create_native_fixture(tmp_path)
+    build = fixture.adapter.current_native_build()
+    assert build is not None
+    fixture.input_path.unlink()
+
+    baseline = fixture.adapter.input_baseline(build, "REG-100001")
+
+    assert baseline.path == fixture.input_path
+    assert not baseline.path.exists()
+
+
+def test_read_only_source_fragments_delete_retry_and_direct_undo_restore_every_input(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    original_source = fixture.source_path.read_bytes()
     source_sha256 = fixture.before_sha256
     first = _frontmatter(
         source_sha256,
@@ -698,25 +788,158 @@ def test_native_adapter_marks_server_v2_source_fragments_read_only(tmp_path: Pat
     package_root = fixture.adapter.materialize(build)
     manifest = json.loads((package_root / "manifest.jsonl").read_text(encoding="utf-8"))
 
-    assert manifest["write_access"] == "none"
+    assert manifest["write_access"] == "restricted"
     assert manifest["editability"] == "read_only"
     with pytest.raises(LLMWikiCompatibilityError, match="source-fragment document is read-only"):
         fixture.adapter.input_baseline(build, "REG-100001")
 
     pipeline = _build_pipeline(fixture, tmp_path)
-    changed_source = fixture.source_path.read_text(encoding="utf-8").replace("1년", "3년")
-    fixture.source_path.write_text(changed_source, encoding="utf-8")
-    event = _event(
-        fixture,
-        event_id="evt_source_fragments",
-        before_sha256=fixture.before_sha256,
-        after_sha256=_sha256(changed_source.encode()),
-        expected_text="1년",
-        replacement_text="3년",
+    delete_execution_id = f"exec_{'a' * 32}"
+    pipeline._state.execution_graph_version_before = (  # type: ignore[method-assign]  # noqa: SLF001
+        lambda execution_id, document_id: build.build_id
     )
-    with pytest.raises(LLMWikiCompatibilityError, match="source-fragment document is read-only"):
-        pipeline._apply_inputs([event])  # noqa: SLF001
+    fixture.source_path.unlink()
+    delete_event = _lifecycle_event(
+        event_id="evt_delete_source_fragments",
+        execution_id=delete_execution_id,
+        before_sha256=source_sha256,
+        after_sha256=DELETED_FILE_SHA256,
+        operation={
+            "type": "delete_file",
+            "original_mode": 0o644,
+            "size_bytes": len(original_source),
+        },
+    )
+    deleted = pipeline._apply_inputs([delete_event])  # noqa: SLF001
+    retried = pipeline._apply_inputs([delete_event])  # noqa: SLF001
+    assert deleted.removed == frozenset({"REG-100001"})
+    assert retried.removed == frozenset({"REG-100001"})
+    assert pipeline._state.llmwiki_deleted_document_ids() == {"REG-100001"}  # noqa: SLF001
+    assert not fixture.input_path.exists()
+    assert not second_path.exists()
+
+    fixture.source_path.write_bytes(original_source)
+    restore_event = _lifecycle_event(
+        event_id="evt_restore_source_fragments",
+        execution_id=f"exec_{'b' * 32}",
+        before_sha256=DELETED_FILE_SHA256,
+        after_sha256=source_sha256,
+        operation={
+            "type": "restore_file",
+            "original_mode": 0o644,
+            "deleted_execution_id": delete_execution_id,
+            "deleted_graph_version": build.build_id,
+        },
+    )
+    # The graph still contains the document when Undo follows a failed delete sync, so
+    # restoring the exact source inputs needs no new candidate publication.
+    assert pipeline._apply_inputs([restore_event]) == set()  # noqa: SLF001
+    assert pipeline._state.llmwiki_deleted_document_ids() == set()  # noqa: SLF001
+    assert fixture.input_path.read_text(encoding="utf-8") == first
+    assert second_path.read_text(encoding="utf-8") == second
     assert fixture.adapter.current_native_build().build_id == build.build_id  # type: ignore[union-attr]
+
+
+def test_stale_source_bootstrap_materializes_a_missing_compatibility_cache(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    fixture.source_path.unlink()
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=object(),  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+
+    catalog.bootstrap(allow_stale_sources=True)
+
+    assert catalog.snapshot().version == "build-0123456789abcdefabcd"
+    assert fixture.compatibility_root.is_dir()
+
+
+def test_native_catalog_accepts_an_attested_restored_source_fragment_set(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    source_sha256 = fixture.before_sha256
+    second_path = fixture.input_path.with_name("REG-100001_002.md")
+    fixture.input_path.write_text(
+        _frontmatter(
+            source_sha256,
+            "# 개인정보 처리 규정\n\n첫 번째 의미 단위다.\n",
+            chunk_no="chunk-001",
+        ),
+        encoding="utf-8",
+    )
+    second_path.write_text(
+        _frontmatter(
+            source_sha256,
+            "<!-- section: 후속 의미 단위 -->\n\n두 번째 의미 단위다.\n",
+            chunk_no="chunk-002",
+        ),
+        encoding="utf-8",
+    )
+    _use_server_v2_ingest(
+        fixture,
+        [(fixture.input_path, "chunk-001"), (second_path, "chunk-002")],
+    )
+    original = fixture.adapter.current_native_build()
+    assert original is not None
+    restored_build_id = "build-aaaaaaaaaaaaaaaaaaaa"
+    empty_build_id = "build-dddddddddddddddddddd"
+    _clone_native_build(fixture, restored_build_id)
+    empty_build = _clone_native_build(fixture, empty_build_id)
+    _write_jsonl(empty_build / "manifest.jsonl", [])
+    _write_jsonl(empty_build / "retrieval/chunks.jsonl", [])
+    _write_jsonl(empty_build / "retrieval/links.jsonl", [])
+    _write_json(
+        empty_build / "retrieval/aliases.json",
+        {"schema_version": "1.0.0", "normalization": "NFC+whitespace", "entries": []},
+    )
+    _write_json(
+        fixture.adapter.wiki_root / "current.json",
+        {
+            "schema_version": "1.0.0",
+            "tenant_id": "local",
+            "wiki_id": "workspace",
+            "build_id": empty_build_id,
+            "relative_path": f"builds/{empty_build_id}",
+            "complete": False,
+        },
+    )
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=object(),  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap(allow_stale_sources=True)
+    restored_inputs = fixture.adapter.document_input_baseline(
+        fixture.adapter.native_build(restored_build_id),
+        "REG-100001",
+    )
+    state.record_llmwiki_input_state(
+        document_id="REG-100001",
+        active_build_id=empty_build_id,
+        source_sha256=source_sha256,
+        revision="1",
+        content_sha256=restored_inputs.descriptor_sha256,
+        event_ids=["evt_restore_source_fragments"],
+    )
+
+    prepared = catalog.prepare_candidate(
+        restored_build_id,
+        expected_current_build_id=empty_build_id,
+        changed_document_ids=set(),
+        added_document_ids={"REG-100001"},
+    )
+
+    assert prepared.build.build_id == restored_build_id
 
 
 def test_native_adapter_rejects_invalid_server_v2_fragment_aggregate(tmp_path: Path) -> None:
@@ -1038,6 +1261,221 @@ def test_native_pipeline_stages_validates_then_activates(
         expected_calls.append("recover")
     assert calls == expected_calls
     assert state.completed == (["evt_staged_publish"], version)
+
+
+def test_native_pipeline_scopes_missing_links_to_the_approved_removal(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    event = _event(
+        fixture,
+        event_id="evt_scoped_removal",
+        before_sha256=fixture.before_sha256,
+        after_sha256="a" * 64,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, version: str) -> None:
+            self.version = version
+
+    class Catalog:
+        def __init__(self) -> None:
+            self.repository = Repository("build-0123456789abcdefabcd")
+            self.prepared = object()
+
+        def snapshot(self) -> Repository:
+            return self.repository
+
+        def stage(self, *, allowed_missing_link_targets: set[str]) -> str:
+            assert allowed_missing_link_targets == {"REG-100001"}
+            calls.append("stage-scoped")
+            return "build-44444444444444444444"
+
+        def prepare_candidate(self, *_args: object, **kwargs: object) -> object:
+            assert kwargs["removed_document_ids"] == {"REG-100001"}
+            assert kwargs["allowed_missing_link_targets"] == {"REG-100001"}
+            calls.append("prepare-scoped")
+            return self.prepared
+
+        def activate_candidate(self, prepared: object, **_kwargs: object) -> Repository:
+            assert prepared is self.prepared
+            calls.append("activate")
+            self.repository = Repository("build-44444444444444444444")
+            return self.repository
+
+        def recover_committed_candidate(self, _prepared: object) -> bool:
+            return False
+
+        def refresh(self, **_kwargs: object) -> Repository:
+            return self.repository
+
+    state = _PipelineState(event, deleted_document_ids={"REG-100001"})
+    pipeline = NativeLLMWikiPipeline(
+        catalog=Catalog(),  # type: ignore[arg-type]
+        file_store=object(),  # type: ignore[arg-type]
+        state_store=state,  # type: ignore[arg-type]
+        lock_manager=DocumentLockManager(tmp_path / "locks"),
+    )
+    pipeline._apply_inputs = lambda _events: NativeInputChanges(  # type: ignore[method-assign]  # noqa: SLF001
+        removed=frozenset({"REG-100001"})
+    )
+    pipeline._verify_live_sources = lambda _events: None  # type: ignore[method-assign]  # noqa: SLF001
+
+    version = asyncio.run(pipeline.process_pending())
+
+    assert version == "build-44444444444444444444"
+    assert calls == ["stage-scoped", "prepare-scoped", "activate"]
+
+
+def test_native_pipeline_reuses_active_deletion_scope_for_later_updates(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    event = _event(
+        fixture,
+        event_id="evt_update_after_delete",
+        before_sha256=fixture.before_sha256,
+        after_sha256="a" * 64,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+    deleted_id = "REG-999999"
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, version: str) -> None:
+            self.version = version
+
+    class Catalog:
+        def __init__(self) -> None:
+            self.repository = Repository("build-0123456789abcdefabcd")
+            self.prepared = object()
+
+        def snapshot(self) -> Repository:
+            return self.repository
+
+        def stage(self, *, allowed_missing_link_targets: set[str]) -> str:
+            assert allowed_missing_link_targets == {deleted_id}
+            calls.append("stage-with-active-tombstone")
+            return "build-44444444444444444444"
+
+        def prepare_candidate(self, *_args: object, **kwargs: object) -> object:
+            assert kwargs["changed_document_ids"] == {"REG-100001"}
+            assert kwargs["removed_document_ids"] == set()
+            assert kwargs["allowed_missing_link_targets"] == {deleted_id}
+            calls.append("prepare-with-active-tombstone")
+            return self.prepared
+
+        def activate_candidate(self, prepared: object, **_kwargs: object) -> Repository:
+            assert prepared is self.prepared
+            calls.append("activate")
+            self.repository = Repository("build-44444444444444444444")
+            return self.repository
+
+        def recover_committed_candidate(self, _prepared: object) -> bool:
+            return False
+
+        def refresh(self, **_kwargs: object) -> Repository:
+            return self.repository
+
+    state = _PipelineState(event, deleted_document_ids={deleted_id})
+    pipeline = NativeLLMWikiPipeline(
+        catalog=Catalog(),  # type: ignore[arg-type]
+        file_store=object(),  # type: ignore[arg-type]
+        state_store=state,  # type: ignore[arg-type]
+        lock_manager=DocumentLockManager(tmp_path / "locks"),
+    )
+    pipeline._apply_inputs = lambda _events: NativeInputChanges(  # type: ignore[method-assign]  # noqa: SLF001
+        changed=frozenset({"REG-100001"})
+    )
+    pipeline._verify_live_sources = lambda _events: None  # type: ignore[method-assign]  # noqa: SLF001
+
+    version = asyncio.run(pipeline.process_pending())
+
+    assert version == "build-44444444444444444444"
+    assert calls == ["stage-with-active-tombstone", "prepare-with-active-tombstone", "activate"]
+
+
+def test_native_pipeline_reconciles_delete_after_pointer_commit(tmp_path: Path) -> None:
+    execution_id = f"exec_{'c' * 32}"
+    event_id = "evt_delete_after_pointer_commit"
+    source_sha256 = "b" * 64
+    input_path = tmp_path / "source-md" / "REG-100001.md"
+    input_path.parent.mkdir(parents=True)
+    input_bytes = b"approved normalized markdown\n"
+    quarantine_path = _deleted_input_path(input_path, execution_id)
+    quarantine_path.write_bytes(input_bytes)
+    baseline = NativeDocumentInputBaseline(
+        source_filename="regulations/REG-100001.md",
+        source_uri="source://regulations/REG-100001.md",
+        source_sha256=source_sha256,
+        revision="1",
+        descriptor_sha256=_sha256(input_bytes),
+        fragments=(
+            NativeInputBaseline(
+                path=input_path,
+                file_sha256=_sha256(input_bytes),
+                text=input_bytes.decode(),
+            ),
+        ),
+        supports_atomic_edit=True,
+    )
+
+    class Repository:
+        version = "build-22222222222222222222"
+
+        def get_manifest(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    class Catalog:
+        def snapshot(self) -> Repository:
+            return Repository()
+
+        def retained_document_input_baseline(
+            self, build_id: str, document_id: str
+        ) -> NativeDocumentInputBaseline:
+            assert build_id == "build-11111111111111111111"
+            assert document_id == "REG-100001"
+            return baseline
+
+    class Files:
+        def snapshot_optional(self, source_uri: str) -> None:
+            assert source_uri == baseline.source_uri
+            return None
+
+    class State:
+        recorded: dict[str, object] | None = None
+
+        def execution_graph_version_before(self, execution: str, document_id: str) -> str:
+            assert execution == execution_id
+            assert document_id == "REG-100001"
+            return "build-11111111111111111111"
+
+        def record_llmwiki_deleted_document(self, **kwargs: object) -> None:
+            self.recorded = kwargs
+
+    state = State()
+    pipeline = NativeLLMWikiPipeline(
+        catalog=Catalog(),  # type: ignore[arg-type]
+        file_store=Files(),  # type: ignore[arg-type]
+        state_store=state,  # type: ignore[arg-type]
+        lock_manager=DocumentLockManager(tmp_path / "locks"),
+    )
+    event = _lifecycle_event(
+        event_id=event_id,
+        execution_id=execution_id,
+        before_sha256=source_sha256,
+        after_sha256=DELETED_FILE_SHA256,
+        operation={"type": "delete_file", "original_mode": 0o644, "size_bytes": 1},
+    )
+
+    assert pipeline._apply_inputs([event]) == NativeInputChanges()  # noqa: SLF001
+    assert state.recorded is not None
+    assert state.recorded["graph_version_before"] == "build-11111111111111111111"
+    assert quarantine_path.read_bytes() == input_bytes
 
 
 def test_native_llmwiki_adapter_rejects_symlinked_canonical_file(tmp_path: Path) -> None:

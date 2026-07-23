@@ -764,6 +764,86 @@ def test_ready_change_rejects_missing_current_turn_tool_results() -> None:
     assert raised.value.code == "AGENT_TOOL_RESULT_INVALID"
 
 
+def test_ready_file_deletion_requires_current_document_verification_without_source_read() -> None:
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "delete_file",
+            "assistant_text": "파일 삭제 미리보기를 준비합니다.",
+            "search_query": "REG-000001.md",
+            "target_document_id": "REG-000001",
+            "source_sha256": None,
+            "operation": None,
+        }
+    )
+    document_get = ToolUseBlock(
+        id="tool-get",
+        name="mcp__codegate__document_get",
+        input={"document_id": "REG-000001"},
+    )
+
+    _validate_tool_trace(
+        decision,
+        [document_get],
+        {
+            "tool-get": _tool_result_block(
+                "tool-get",
+                "document_get",
+                {"document": {"document_id": "REG-000001"}},
+            )
+        },
+        expected_graph_version="2026-07-21.2-demo",
+        selected_document_id="REG-000001",
+    )
+
+
+def test_ready_file_creation_requires_canonical_source_after_document_verification() -> None:
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "create_file",
+            "assistant_text": "새 HWPX 미리보기를 준비했습니다.",
+            "search_query": "이번주 보고서",
+            "target_document_id": "REG-000001",
+            "source_sha256": None,
+            "operation": None,
+            "target_filename": "주간업무보고서.hwpx",
+            "document_markdown": "# 주간업무보고서\n\n이번 주 업무",
+        }
+    )
+    document_get = ToolUseBlock(
+        id="tool-get",
+        name="mcp__codegate__document_get",
+        input={"document_id": "REG-000001"},
+    )
+    canonical_read = ToolUseBlock(
+        id="tool-canonical",
+        name="mcp__codegate__knowledge_document_read",
+        input={"document_id": "REG-000001"},
+    )
+
+    _validate_tool_trace(
+        decision,
+        [document_get, canonical_read],
+        {
+            "tool-get": _tool_result_block(
+                "tool-get",
+                "document_get",
+                {"document": {"document_id": "REG-000001"}},
+            ),
+            "tool-canonical": _tool_result_block(
+                "tool-canonical",
+                "canonical_document",
+                {"document_id": "REG-000001", "content": "이번 주 업무 근거"},
+            ),
+        },
+        expected_graph_version="2026-07-21.2-demo",
+        selected_document_id="REG-000001",
+    )
+
+
 def test_ready_change_can_resolve_an_exact_stable_id_from_recent_user_context() -> None:
     decision = AgentDecision.model_validate(
         {
@@ -1046,6 +1126,205 @@ def test_ready_target_rejects_document_get_before_required_search() -> None:
         )
 
     assert raised.value.code == "AGENT_TOOL_TRACE_INVALID"
+
+
+def test_locate_allows_scoped_evidence_search_after_target_verification() -> None:
+    query = "GBX-ONB-003_일정_리스크_추적표.xlsx 지연 일정 위험 요소 담당자"
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "locate",
+            "assistant_text": "지연 일정과 위험 요소, 담당자를 찾았습니다.",
+            "search_query": query,
+            "target_document_id": "DOC-1111111111111111",
+            "source_sha256": None,
+            "operation": None,
+        }
+    )
+    tool_uses = [
+        ToolUseBlock(
+            id="tool-search-route",
+            name="mcp__codegate__knowledge_search",
+            input={"query": query},
+        ),
+        ToolUseBlock(
+            id="tool-target",
+            name="mcp__codegate__document_get",
+            input={"document_id": "DOC-1111111111111111"},
+        ),
+        ToolUseBlock(
+            id="tool-search-evidence",
+            name="mcp__codegate__knowledge_search",
+            input={"query": query},
+        ),
+    ]
+    tool_results = {
+        "tool-search-route": _tool_result_block(
+            "tool-search-route",
+            "knowledge_search",
+            {"documents": [{"document_id": "DOC-1111111111111111"}]},
+        ),
+        "tool-target": _tool_result_block(
+            "tool-target",
+            "document_get",
+            {"document": {"document_id": "DOC-1111111111111111"}},
+        ),
+        "tool-search-evidence": _tool_result_block(
+            "tool-search-evidence",
+            "knowledge_search",
+            {"documents": [{"document_id": "DOC-1111111111111111"}]},
+        ),
+    }
+
+    _validate_tool_trace(
+        decision,
+        tool_uses,
+        tool_results,
+        expected_graph_version="2026-07-21.2-demo",
+        selected_document_id=None,
+    )
+
+
+def test_selected_locate_requires_matching_search_evidence_for_target() -> None:
+    query = "개인정보 보관 기간"
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "locate",
+            "assistant_text": "보관 기간 근거를 찾았습니다.",
+            "search_query": query,
+            "target_document_id": "REG-000001",
+            "source_sha256": None,
+            "operation": None,
+        }
+    )
+    tool_use = ToolUseBlock(
+        id="tool-target",
+        name="mcp__codegate__document_get",
+        input={"document_id": "REG-000001"},
+    )
+
+    with pytest.raises(AgentGatewayError, match="위치 검색 도구 계약"):
+        _validate_tool_trace(
+            decision,
+            [tool_use],
+            {
+                "tool-target": _tool_result_block(
+                    "tool-target",
+                    "document_get",
+                    {"document": {"document_id": "REG-000001"}},
+                )
+            },
+            expected_graph_version="2026-07-21.2-demo",
+            selected_document_id="REG-000001",
+        )
+
+
+def test_selected_locate_allows_same_query_target_evidence_after_document_get() -> None:
+    query = "개인정보 보관 기간"
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "locate",
+            "assistant_text": "보관 기간 근거를 찾았습니다.",
+            "search_query": query,
+            "target_document_id": "REG-000001",
+            "source_sha256": None,
+            "operation": None,
+        }
+    )
+    tool_uses = [
+        ToolUseBlock(
+            id="tool-target",
+            name="mcp__codegate__document_get",
+            input={"document_id": "REG-000001"},
+        ),
+        ToolUseBlock(
+            id="tool-evidence",
+            name="mcp__codegate__knowledge_search",
+            input={"query": query},
+        ),
+    ]
+
+    _validate_tool_trace(
+        decision,
+        tool_uses,
+        {
+            "tool-target": _tool_result_block(
+                "tool-target",
+                "document_get",
+                {"document": {"document_id": "REG-000001"}},
+            ),
+            "tool-evidence": _tool_result_block(
+                "tool-evidence",
+                "knowledge_search",
+                {"documents": [{"document_id": "REG-000001"}]},
+            ),
+        },
+        expected_graph_version="2026-07-21.2-demo",
+        selected_document_id="REG-000001",
+    )
+
+
+def test_locate_rejects_unscoped_search_after_target_verification() -> None:
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "locate",
+            "assistant_text": "근거를 찾습니다.",
+            "search_query": "일정 리스크",
+            "target_document_id": "REG-000001",
+            "source_sha256": None,
+            "operation": None,
+        }
+    )
+    tool_uses = [
+        ToolUseBlock(
+            id="tool-route",
+            name="mcp__codegate__knowledge_search",
+            input={"query": "일정 리스크"},
+        ),
+        ToolUseBlock(
+            id="tool-target",
+            name="mcp__codegate__document_get",
+            input={"document_id": "REG-000001"},
+        ),
+        ToolUseBlock(
+            id="tool-broad",
+            name="mcp__codegate__knowledge_search",
+            input={"query": "모든 문서"},
+        ),
+    ]
+    tool_results = {
+        "tool-route": _tool_result_block(
+            "tool-route",
+            "knowledge_search",
+            {"documents": [{"document_id": "REG-000001"}]},
+        ),
+        "tool-target": _tool_result_block(
+            "tool-target",
+            "document_get",
+            {"document": {"document_id": "REG-000001"}},
+        ),
+        "tool-broad": _tool_result_block(
+            "tool-broad",
+            "knowledge_search",
+            {"documents": [{"document_id": "REG-000001"}]},
+        ),
+    }
+
+    with pytest.raises(AgentGatewayError, match="위치 검색 도구 계약"):
+        _validate_tool_trace(
+            decision,
+            tool_uses,
+            tool_results,
+            expected_graph_version="2026-07-21.2-demo",
+            selected_document_id=None,
+        )
 
 
 def test_ready_target_must_appear_in_the_preceding_search_result() -> None:

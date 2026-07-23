@@ -149,24 +149,27 @@ const OAUTH_SUCCESS_HTML = `<!doctype html>
     <p class="message">Google 계정이 안전하게 연결되었습니다.<br>이제 Folding에서 작업을 이어갈 수 있어요.</p>
 
     <div class="closing" aria-live="polite">
-      <span id="closing-label">3초 후 창이 자동으로 닫힙니다.</span>
+      <span id="closing-label">3초 후 창 닫기를 시도하고 Folding으로 돌아갑니다.</span>
       <div class="progress" aria-hidden="true"></div>
     </div>
   </main>
   <script>
     (() => {
       const label = document.getElementById('closing-label');
+      const closeKey = navigator.platform.includes('Mac') ? '⌘W' : 'Ctrl+W';
       let seconds = 3;
       const countdown = window.setInterval(() => {
         seconds -= 1;
-        if (seconds > 0) label.textContent = seconds + '초 후 창이 자동으로 닫힙니다.';
+        if (seconds > 0) {
+          label.textContent = seconds + '초 후 창 닫기를 시도하고 Folding으로 돌아갑니다.';
+        }
       }, 1_000);
       const closeWindow = () => {
         window.clearInterval(countdown);
         label.textContent = 'Folding으로 돌아가는 중…';
         window.close();
         window.setTimeout(() => {
-          label.textContent = '창이 닫히지 않으면 직접 닫고 Folding으로 돌아가세요.';
+          label.textContent = '브라우저가 이 탭을 닫지 못하게 하면 ' + closeKey + '로 닫아도 안전합니다.';
         }, 250);
       };
       window.setTimeout(closeWindow, 3_000);
