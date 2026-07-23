@@ -6,7 +6,8 @@
   바로 열 수 있게 연결했다.
 - 검증: 원본과 저장소 사본의 SHA-256 일치, 14,705,041바이트 파일 크기와 GitHub 일반 파일 제한
   이내임을 확인했다.
-- 전달 상태: 전용 저장소 main push와 `ghdtjdwn_complete` 이름 변경을 진행한다.
+- 전달 결과: 영상 commit `6064670`을 main에 push하고 저장소 이름을
+  `dotenv-uploaded/ghdtjdwn_complete`로 변경했다.
 
 ## 2026-07-23 — 단일 저장소 새 컴퓨터 재현 경로
 
