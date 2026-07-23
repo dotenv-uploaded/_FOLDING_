@@ -1,5 +1,66 @@
 # 트러블슈팅 기록
 
+## 2026-07-23 — 복원된 HWP 편집의 위키 동기화 실패와 주간보고 검색 0건
+
+### 상황, 기대와 영향
+
+삭제 후 파일시스템에서 복원된 `일일업무.hwp`의 작성자를 바꾸면 원본 적용 뒤 LLMWIKI 동기화가
+실패했다. 같은 대화에서 여러 업무 문서를 종합해 `주간업무보고서.hwpx`를 만들도록 요청하면
+`not_found`가 정상적인 검색 결과로 처리되지 않고 현재 turn 도구 계약 오류로 바뀌었다. 전자는 원본과
+검색 버전이 어긋나는 부분 완료를 만들었고, 후자는 실제 폴더에 관련 문서가 있어도 생성 승인 화면에
+도달하지 못하게 했다.
+
+### 재현, 증거와 원인
+
+- 실패한 실행 `exec_d56125cd751d8078719dbf3236aa9a25`는 원본 SHA가 변경된 뒤
+  `file_status=applied`, `sync_status=failed`로 남았다. 같은 문서의 이전 승인 삭제 tombstone이
+  Backend DB에 남은 반면, Electron 전체 입력 동기화가 복원 문서를 active build에 다시 게시한 것이
+  직접 원인이었다.
+- pending 실행 사이에 Electron normalizer가 XLSX 입력을 새 revision으로 재생성했다. 앱이 전달한 전체
+  입력 snapshot과 현재 snapshot은 같았지만 candidate 검증은 해당 실행과 무관한 입력 descriptor
+  변경을 무조건 거부했다.
+- Claude는 붙여 쓴 `주간업무보고서.hwpx` 같은 query로 빈 검색 결과를 받고, 구조화 결과에는 의미가
+  같은 짧은 query를 반환했다. 빈 결과도 byte-for-byte query가 같아야 한다는 후단 검증 때문에
+  `AGENT_TOOL_TRACE_INVALID`가 발생했다.
+- 한국어 파일명형 복합어를 한 token으로 취급해 `주간업무보고서`가 `주간`, `업무`, `보고서`가 포함된
+  실제 자료와 매칭되지 않았다.
+
+검증을 없애거나 모든 candidate 차이를 신뢰하는 방법은 외부 입력 변경을 승인 실행에 섞을 수 있어
+제외했다. 오래된 tombstone을 시작 시점에 일괄 삭제하는 방법도 실제 삭제 복구 상태를 잃으므로
+제외했다.
+
+### 해결과 검증
+
+입력 event의 현재 source hash가 검증된 뒤, active manifest에 존재하는 같은 문서의 tombstone만 정확한
+삭제 execution 소유권으로 해제한다. 앱 snapshot attestation과 현재 전체 입력 snapshot이 일치할 때만
+동시 normalizer 변경을 허용하며, candidate의 각 fragment 경로와 SHA도 현재 입력 파일과 다시
+대조한다.
+
+`not_found`는 유효한 현재 graph의 실제 빈 검색 결과와 의미 정렬 점수가 있는 query만 구조화 결과에
+다시 결박한다. 한국어 문서 검색어가 둘 이상의 알려진 문서 복합어를 붙여 쓴 경우에만 하위 term을
+추가해 기존 정확 파일명 검색을 보존한다.
+
+실패 실행을 같은 ID로 재처리해 `build-33d85e0c8aec1f833d97`을 게시했다. 실행은
+`completed/applied/published`가 됐고 tombstone과 pending sync가 제거됐다. 원본 SHA
+`90841dcb…`는 유지됐으며 정규화 문서와 active build 모두 작성자 `성선제`를 포함한다. 집중 회귀
+테스트 99개와 Backend 전체 pytest 285개, Ruff·mypy, Electron Vitest 156개·typecheck·production
+build가 통과했다. 실제 corpus에서는 붙여 쓴 생성 파일명 query가 업무진행 기록과 주간 성과 문서를
+반환했다.
+
+### 재발 방지와 남은 위험
+
+복원 판정은 changed/added event, active manifest와 exact tombstone ownership 세 조건을 모두 요구한다.
+앱 attestation은 candidate 자체를 신뢰하는 서명이 아니므로 candidate fragment를 현재 입력에 다시
+결박한다. 실제 Claude 호출과 Electron 승인 UI를 포함한 live canary는 앱 재실행 뒤 확인한다.
+
+- tombstone을 왜 publish 뒤가 아니라 candidate 준비 전에 해제하나? active build가 이미 복원 문서를
+  포함해 tombstone이 현재 상태와 모순되고, 그대로 두면 candidate의 존재 자체를 삭제 위반으로
+  거부하기 때문이다.
+- 앱 snapshot이면 모든 변경을 허용하나? 아니다. 전체 snapshot 일치와 문서별 candidate 경로·SHA
+  일치가 모두 필요하다.
+- query 불일치를 왜 허용하나? 유효한 빈 결과, 현재 graph, 의미 정렬이라는 제한된 경우에만 실제 tool
+  query로 결과를 결박하며 임의 검색이나 remembered evidence는 허용하지 않는다.
+
 ## 2026-07-23 — 복수 업무 문서를 지정한 HWPX 생성이 clarification으로 종료
 
 ### 상황, 기대와 영향

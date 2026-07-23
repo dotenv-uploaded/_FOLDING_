@@ -61,6 +61,16 @@ DOCUMENT_TYPE_AUTHORITY_PRIOR = {
     "manual": 0.005,
     "report": 0.0,
 }
+KOREAN_DOCUMENT_COMPOUND_TERMS = (
+    "진행사항",
+    "보고서",
+    "주간",
+    "일일",
+    "업무",
+    "성과",
+    "보고",
+    "문서",
+)
 
 
 class KnowledgeRepository:
@@ -736,6 +746,13 @@ class KnowledgeRepository:
                     token = token[: -len(particle)]
                     break
             tokens.append(token)
+            compound_terms = [
+                term
+                for term in KOREAN_DOCUMENT_COMPOUND_TERMS
+                if term != token and term in token
+            ]
+            if len(compound_terms) >= 2:
+                tokens.extend(compound_terms)
         return tokens
 
     def _expanded_tokens(self, query: str) -> list[str]:

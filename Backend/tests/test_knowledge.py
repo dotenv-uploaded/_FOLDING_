@@ -460,3 +460,14 @@ def test_search_normalizes_common_korean_particles() -> None:
         "근거",
         "찾아줘",
     ]
+
+
+def test_search_splits_filename_style_korean_document_compounds() -> None:
+    assert KnowledgeRepository._tokens("주간업무보고서.hwpx") == [
+        "주간업무보고서",
+        "보고서",
+        "주간",
+        "업무",
+        "보고",
+        "hwpx",
+    ]

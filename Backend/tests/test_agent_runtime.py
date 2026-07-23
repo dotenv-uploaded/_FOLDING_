@@ -1146,6 +1146,49 @@ def test_not_found_requires_a_valid_empty_result_for_the_exact_search_query() ->
     )
 
 
+def test_not_found_binds_an_aligned_empty_tool_query_before_trace_validation() -> None:
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "not_found",
+            "intent": "create_file",
+            "assistant_text": "이번 주 업무보고 문서를 찾지 못했습니다.",
+            "search_query": "이번 주 업무보고 문서들",
+            "target_document_id": None,
+            "source_sha256": None,
+            "operation": None,
+        }
+    )
+    tool_use = ToolUseBlock(
+        id="tool-empty",
+        name="mcp__codegate__knowledge_search",
+        input={"query": "이번 주 업무보고"},
+    )
+    results = {
+        "tool-empty": _tool_result_block(
+            "tool-empty",
+            "knowledge_search",
+            {"documents": []},
+        )
+    }
+
+    rebound = _bind_search_query_to_tool_evidence(
+        decision,
+        [tool_use],
+        results,
+        expected_graph_version="2026-07-21.2-demo",
+    )
+
+    assert rebound.search_query == "이번 주 업무보고"
+    _validate_tool_trace(
+        rebound,
+        [tool_use],
+        results,
+        expected_graph_version="2026-07-21.2-demo",
+        selected_document_id=None,
+    )
+
+
 def test_tool_error_requires_an_observed_failed_tool_result() -> None:
     decision = AgentDecision.model_validate(
         {

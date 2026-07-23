@@ -1008,6 +1008,27 @@ def _bind_search_query_to_tool_evidence(
         tool_use.input.get("query") == decision.search_query for tool_use in search_uses
     ):
         return decision
+    if decision.outcome is AgentOutcome.NOT_FOUND:
+        empty_queries: list[tuple[float, str]] = []
+        for tool_use in search_uses:
+            query = tool_use.input.get("query")
+            if not isinstance(query, str) or not query or len(query) > 4_000:
+                continue
+            try:
+                payload = _validated_tool_result_payload(
+                    tool_use,
+                    tool_results.get(tool_use.id),
+                    expected_graph_version=expected_graph_version,
+                )
+            except AgentGatewayError:
+                continue
+            alignment = _query_alignment_score(decision.search_query, query)
+            if payload.get("documents") == [] and alignment > 0:
+                empty_queries.append((alignment, query))
+        if empty_queries:
+            _, query = max(empty_queries, key=lambda candidate: candidate[0])
+            return decision.model_copy(update={"search_query": query})
+        return decision
     if decision.outcome is not AgentOutcome.READY:
         return decision
     candidates: list[tuple[float, str]] = []

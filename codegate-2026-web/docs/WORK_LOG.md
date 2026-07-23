@@ -1,5 +1,21 @@
 # Work log
 
+## 2026-07-23 — 복원 HWP 동기화 복구와 주간보고 생성 검색 안정화
+
+- 목표: 복원된 `일일업무.hwp` 편집의 부분 완료를 실제 위키 게시까지 복구하고, 붙여 쓴 HWPX 생성
+  파일명과 빈 검색 결과가 내부 도구 오류를 만들지 않게 한다.
+- 변경: active manifest에 복원된 문서의 stale 삭제 tombstone을 검증된 update event에서만 해제한다.
+  앱이 증명한 전체 normalized-input snapshot의 동시 migration은 candidate fragment가 현재 입력
+  경로·SHA와 일치할 때만 허용한다. Claude의 정렬된 빈 검색 query를 실제 tool evidence에 결박하고,
+  한국어 파일명형 문서 복합어를 제한적으로 분해해 주간·업무·보고서 자료를 찾게 했다.
+- 영향: Backend LLMWIKI 복구 검증, agent tool-trace 검증, 지식 검색 token화와 회귀 테스트. 원본 승인,
+  ACL, exact plan hash, HWPX no-overwrite 생성 경계는 변경하지 않았다.
+- 검증: 실패 실행을 재처리해 `build-33d85e0c8aec1f833d97` 게시와
+  `completed/applied/published` 상태, 원본 SHA 유지, active build 작성자 `성선제`, sync 실패 0건을
+  확인했다. Backend 전체 pytest 285개와 Ruff·mypy, Electron Vitest 156개·typecheck·production
+  build, 실제 corpus 검색을 통과했다.
+- 전달 상태: 전체 품질 게이트와 전용 `ghdtjdwn` 저장소 반영을 진행 중이다.
+
 ## 2026-07-23 — 복수 업무 문서를 종합하는 HWPX 생성 라우팅
 
 - 목표: 여러 이번 주 업무보고 문서를 근거로 진행사항·완료 업무·이슈·다음 주 계획을 정리한 HWPX 생성
