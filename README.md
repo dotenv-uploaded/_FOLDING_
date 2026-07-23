@@ -108,19 +108,118 @@ Claude는 사용자의 의도를 해석하고 읽을 대상을 제안하지만, 
 결정론적 경계를 유지합니다. Agent가 문서를 “잘 이해하는가”와 실제 원본을 “안전하게 바꿀 수
 있는가”를 서로 다른 검증 문제로 다룹니다.
 
-### 구현 규모와 검증
+### 구현 범위
 
 | 항목 | 현재 저장소 기준 |
 | --- | --- |
 | Architecture Decision Record | Backend 경계, 지식 게시, crash recovery, prompt contract, HWP 왕복 편집, 삭제·생성 lifecycle 등 [ADR 11개](Backend/docs/adr) |
 | Application API | chat, documents, change plans, approval, execution, retry, Undo, health를 포함한 10개 endpoint |
-| Backend 자동화 검증 | Pytest 286개 통과, line coverage 84% |
-| 정적 검증 | Ruff lint와 mypy 통과 |
 | 실제 통합 경로 | Claude Agent SDK → 승인 변경 → 원본 write → doc2md → LLMWIKI publish → 변경 근거 재검색 → Undo |
 
 세부 책임과 설계 근거는 [성주 역할 및 백엔드 로드맵](Backend/docs/ROLE_AND_ROADMAP.md),
 [통합 계약](Backend/docs/INTEGRATION_CONTRACT.md), [Backend 작업 기록](Backend/docs/WORK_LOG.md)에
 정리되어 있습니다.
+
+## 어디서 실행되는가
+
+Folding은 모든 기능을 서버로 보내는 웹 서비스도, 네트워크 없이 동작하는 완전한 오프라인 앱도
+아닙니다. 파일 capability와 변경 책임은 사용자 기기에 두고, 계정 확인과 모델 추론만 외부
+서비스를 사용하는 local-first hybrid 구조입니다.
+
+```mermaid
+flowchart TB
+    USER[사용자]
+
+    subgraph LOCAL[사용자 PC · Local Trust Boundary]
+        RENDERER[Electron Renderer<br/>React UI · diff 승인 · graph]
+        MAIN[Electron Main<br/>OS folder capability · process supervisor]
+        SIDECAR[FastAPI Sidecar<br/>Claude SDK control loop · ACL · plan · execution]
+        DOC2MD[doc2md<br/>Office · PDF · HWP/HWPX → Markdown]
+        KORDOC[Kordoc<br/>HWP/HWPX parse · patch · create · reparse]
+        WIKI[LLMWIKI<br/>search · relation · immutable build]
+        DATA[(Local Data<br/>원본 · SQLite · backup · index · session state)]
+
+        RENDERER --> MAIN
+        MAIN --> SIDECAR
+        MAIN --> DOC2MD
+        SIDECAR --> KORDOC
+        SIDECAR --> WIKI
+        DOC2MD --> WIKI
+        MAIN --> DATA
+        SIDECAR --> DATA
+        WIKI --> DATA
+    end
+
+    subgraph CLOUD[외부 서비스 · Network Boundary]
+        AUTH[CODEGATE Cloud API<br/>OAuth flow · session rotation · provisioning]
+        GOOGLE[Google OAuth<br/>사용자 신원 확인]
+        CLAUDE[Anthropic API<br/>Claude model inference]
+        ENRICH[Optional LLM Provider<br/>관계 enrichment]
+    end
+
+    USER --> RENDERER
+    MAIN -- OAuth + PKCE --> AUTH
+    AUTH <--> GOOGLE
+    SIDECAR -- 질문 + 선택된 tool context --> CLAUDE
+    WIKI -. 설정한 경우에만 .-> ENRICH
+
+    classDef local fill:#EEF3FF,stroke:#2B5DFD,stroke-width:1.5px,color:#0D1630;
+    classDef cloud fill:#F7F8FA,stroke:#8A92AB,stroke-width:1.5px,color:#0D1630;
+    class RENDERER,MAIN,SIDECAR,DOC2MD,KORDOC,WIKI,DATA local;
+    class AUTH,GOOGLE,CLAUDE,ENRICH cloud;
+```
+
+### 사용자 PC에서 처리
+
+| 구성요소 | 로컬에서 맡는 일 | 로컬에 남는 데이터 |
+| --- | --- | --- |
+| Electron Renderer | 대화, citation, 그래프, exact diff와 승인 UI | 화면 상태 |
+| Electron Main | 폴더 선택 권한, 원본 scan, process supervision, OAuth callback | OS capability, 암호화된 CODEGATE session |
+| FastAPI sidecar | Claude SDK 제어 루프, 검색, ACL, change plan, 실행 상태, retry·Undo | conversation state, execution journal, audit |
+| doc2md | PDF·Office·HWP/HWPX를 canonical Markdown으로 변환 | 정규화 Markdown과 변환 cache |
+| LLMWIKI | stable ID, chunk, relation, FTS·vector·graph와 불변 build 생성 | `current.json`, content-addressed builds, index |
+| Kordoc writer | HWP/HWPX patch·생성 후 재파싱 검증 | 임시 candidate와 검증된 최종 원본 |
+| File transaction | backup, journal, `fsync`, atomic replace와 복구 | 사용자 원본, immutable backup, SQLite |
+
+이 구성요소는 loopback으로만 연결됩니다. Electron은 비어 있는 `127.0.0.1` 포트에서 sidecar를
+시작하고 정확한 renderer origin만 CORS로 허용합니다. cloud session token은 sidecar process에
+전달하지 않으며, child process에는 실행에 필요한 최소 환경변수만 넘깁니다.
+
+### 외부 API와 서버에서 처리
+
+| 외부 경계 | 처리하는 것 | 처리하지 않는 것 |
+| --- | --- | --- |
+| CODEGATE Cloud API | Google OAuth 시작·교환, PKCE 검증, CODEGATE access/refresh session 발급·회전, provisioning 확인 | 사용자 원본 문서, 로컬 검색, 문서 변경, backup, 지식 그래프 빌드 |
+| Google OAuth | 계정 선택과 Google 신원 확인 | 로컬 폴더 권한과 문서 내용 |
+| Anthropic API | 사용자 요청과 local tool context를 바탕으로 intent·target·구조화 제안 생성 | 실제 파일 write, diff 승인, ACL 판정, atomic replace, Undo |
+| Optional enrichment provider | 명시적으로 설정한 경우 문서 관계 유형 후보 생성 | 근거 없는 신규 엣지 확정, active build 게시 |
+
+Claude Agent SDK process와 tool 실행은 로컬이지만 모델 추론은 Anthropic API에서 수행됩니다.
+따라서 사용자 질문, system instruction, 그리고 `knowledge_search`, `document_get`,
+`knowledge_document_read`, `source_file_read`가 현재 요청에 맞춰 반환한 문서 텍스트는 모델
+context로 전송될 수 있습니다. 반면 원본 파일 바이너리, 등록 폴더 전체, backup, SQLite, 로컬
+index, 절대 파일 경로와 CODEGATE OAuth token은 이 추론 경로로 보내지 않습니다.
+
+클라우드 로그인은 “누구인가”를 확인하고, OS 폴더 선택은 “어느 파일을 다룰 수 있는가”를
+결정합니다. 로그인 성공만으로 로컬 파일 권한이 생기지 않으며, 로그아웃해도 원본이나 로컬 지식
+버전을 삭제하지 않습니다.
+
+## 프로젝트의 강점
+
+| 강점 | 구현으로 확인되는 이유 |
+| --- | --- |
+| 로컬 파일에 맞춘 신뢰 경계 | 원본·변환·검색·write·backup을 사용자 PC에 두고 cloud identity, model inference와 분리했습니다. 서버에 로컬 filesystem capability를 위임하지 않습니다. |
+| Prompt가 아닌 코드로 지키는 승인 | 모델에는 범용 파일 도구가 없습니다. ACL, base hash, exact `plan_hash`, 사용자 승인과 deterministic writer가 실제 변경 권한을 결정합니다. |
+| 답변과 관계를 다시 추적할 수 있음 | canonical quote, stable document/section ID, revision과 graph version을 함께 반환합니다. 지식 그래프 엣지도 출발 section과 원문 quote를 가져야 합니다. |
+| 실패해도 이전 정상 상태를 유지 | 원본 변경은 backup·journal·atomic replace로 복구하고, 지식 검색은 모든 index가 검증된 immutable build만 공개해 부분 version 노출을 막습니다. |
+| 한국 업무 문서의 실제 lifecycle 지원 | HWP/HWPX를 읽는 데서 끝나지 않고 runtime attestation, patch·재파싱 equality, no-overwrite 생성과 Undo까지 같은 승인 흐름으로 연결합니다. |
+| 모델과 문서 형식이 바뀌어도 유지되는 구조 | Claude는 typed proposal, doc2md는 canonical conversion, LLMWIKI는 versioned artifact, Backend는 policy와 transaction을 담당해 각 구성요소를 계약으로 교체할 수 있습니다. |
+| 운영 상태가 사용자에게 보임 | 파일 적용과 지식 동기화를 별도 상태로 보여 주고, retry 가능한 실패와 terminal 상태를 구분해 “파일은 바뀌었지만 검색 반영은 대기 중”인 상황을 숨기지 않습니다. |
+| 재현 가능한 통합 저장소 | 네 구성요소와 lockfile, bootstrap·run script, ADR·troubleshooting 기록, 실제 시연 자산과 자동화 검증을 하나의 공개 monorepo에서 확인할 수 있습니다. |
+
+이 프로젝트의 중심은 LLM 응답 자체보다 **로컬 문서를 근거로 판단하고, 사용자가 승인한 변경만
+복구 가능한 방식으로 실행한 뒤, 다음 검색이 새 지식 버전을 일관되게 보게 만드는 전체 흐름**에
+있습니다.
 
 ## 문서 작업의 한 흐름
 
@@ -268,25 +367,6 @@ OS 폴더 선택으로 별도 획득하고, cloud API client와 loopback sidecar
 dependency graph의 digest를 확인하고, patch 결과를 다시 parse해 요청 결과와 일치할 때만 원본을
 교체합니다.
 
-## 검증
-
-현재 monorepo를 기준으로 다음 검증을 통과했습니다.
-
-| 범위 | 결과 |
-| --- | --- |
-| Backend / Agent Runtime | Pytest 286개 통과, line coverage 84% |
-| Electron / React | Vitest 159개 통과, 환경 의존 integration 1개 skip |
-| doc2md | Pytest 117개 통과 |
-| XLSX 안전 정규화 | 집중 테스트 8개 통과 |
-| 통합 launcher | 집중 테스트 3개 통과 |
-| 정적 검증 | TypeScript typecheck, Node 구문 검사 통과 |
-| 공개 트리 | gitleaks finding 0건 |
-
-XLSX는 request-local copy만 정규화해 원본 bytes를 보존하며 ZIP/XML resource abuse와 외부
-relationship을 거부합니다. Electron은 child process 종료를 추적하고 sidecar에 필요한 최소 환경만
-전달합니다. 실패 원인과 복구 과정은 회귀 테스트와
-[`TROUBLESHOOTING.md`](Backend/docs/TROUBLESHOOTING.md)에 함께 기록합니다.
-
 ## 실행
 
 ### 준비 사항
@@ -319,7 +399,7 @@ Google 로그인을 다시 하고 사용할 문서 폴더를 직접 선택해야
 
 API key, OAuth 세션, 사용자 문서, 로컬 지식 인덱스는 Git에 포함되지 않습니다.
 
-## 더 읽기
+## 더 보기
 
 - [통합 계약](Backend/docs/INTEGRATION_CONTRACT.md)
 - [로컬 런타임](Backend/docs/LOCAL_RUNTIME.md)
@@ -327,3 +407,6 @@ API key, OAuth 세션, 사용자 문서, 로컬 지식 인덱스는 Git에 포�
 - [Frontend 명세](codegate-2026-web/docs/FRONTEND_SPEC.md)
 - [작업 기록](codegate-2026-web/docs/WORK_LOG.md)
 - [문서 변환기 설계](codegate-2026-api/services/doc2md/README.md)
+- [Backend·Agent 트러블슈팅](Backend/docs/TROUBLESHOOTING.md)
+- [Electron 통합 트러블슈팅](codegate-2026-web/docs/TROUBLESHOOTING.md)
+- [문서 변환 트러블슈팅](codegate-2026-api/docs/TROUBLESHOOTING.md)

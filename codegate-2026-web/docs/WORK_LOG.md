@@ -1,5 +1,21 @@
 # Work log
 
+## 2026-07-23 — README 로컬·클라우드 실행 경계와 강점 보강
+
+- 목표: 어떤 구성요소가 사용자 PC에서 실행되고 어떤 기능이 외부 API·서버를 사용하는지, 그 배치가
+  제품의 강점으로 어떻게 이어지는지 공개 README에서 한눈에 설명한다.
+- 변경: Electron·sidecar·doc2md·Kordoc·LLMWIKI·로컬 상태와 CODEGATE Cloud API·Google OAuth·
+  Anthropic inference·선택적 enrichment provider를 분리한 구조도와 책임 표를 추가했다. 모델
+  context로 전송될 수 있는 선택 문서 텍스트와 로컬에 남는 원본·backup·index·OAuth 경계도 명시했다.
+- 문서 구성: 독립 검증 섹션은 제거하고 구현 범위만 남겼다. Backend·Electron·문서 변환
+  트러블슈팅 링크는 README 마지막 `더 보기`로 모았다.
+- 강점: local-first capability, 코드 기반 승인, 추적 가능한 근거, crash·publish 복구, HWP/HWPX
+  lifecycle, 계약 기반 모듈화, 상태 가시성과 monorepo 재현성을 구현 근거와 연결했다.
+- 영향: 루트 README와 공개 설명만 변경한다. runtime 배치, 네트워크 요청과 사용자 데이터는
+  변경하지 않는다.
+- 검증과 전달: 현재 launcher·OAuth·sidecar 환경·agent tool 계약과 문구를 대조하고 GitHub GFM
+  렌더링, 로컬 링크, staged 공개 트리의 비밀정보를 확인한 뒤 `ghdtjdwn_complete` main에 반영한다.
+
 ## 2026-07-23 — README Backend·Agent Runtime 담당 영역 보강
 
 - 목표: 공개 README에서 성주 담당 영역이 단순 Backend 한 줄로 축소되지 않고, 제품의 Agent
