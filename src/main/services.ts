@@ -90,6 +90,8 @@ export class AppServices {
   private currentBuildState: BuildState | null = null;
   private readonly scanPreviews = new Map<string, ScanPreview>();
   private knowledgeSyncRequested = false;
+  /** 사용자가 `지금 빌드` 를 눌렀는가 — 이때만 위키를 통째로 다시 만든다. */
+  private knowledgeRebuildRequested = false;
   private knowledgeSyncRunning = false;
   private knowledgeSyncTimer: NodeJS.Timeout | null = null;
 
@@ -582,6 +584,27 @@ export class AppServices {
           sidecarState.error ?? '검색 엔진을 준비하지 못했습니다. 실행 로그를 확인해 주세요.',
         );
       }
+      /*
+       * 사용자가 직접 `지금 빌드` 를 눌렀으면 **위키를 실제로 다시 만든다.**
+       *
+       * 사이드카는 활성 빌드가 있으면 재시작해도 그걸 그대로 채택한다. 그래서 예전에는
+       * 버튼을 눌러도 문서만 다시 변환되고 위키는 그대로였다 — 배경에서 만든 요약 13개가
+       * 캐시에만 쌓이고 활성 빌드는 4개인 채 남았던 이유다. 버튼을 눌렀는데 아무것도
+       * 바뀌지 않는 것이 가장 나쁘다.
+       *
+       * 자동 동기화(파일 변경·부팅)에서는 부르지 않는다. 그쪽은 승인된 편집 경로가 이미
+       * 처리하고, 매번 전체 재빌드를 돌리면 비싸다.
+       */
+      if (this.knowledgeRebuildRequested) {
+        this.knowledgeRebuildRequested = false;
+        this.emitKnowledgeBuildState({
+          status: 'assembling',
+          progress: 92,
+          phase: { name: 'assemble', done: 0, total: 1 },
+          message: '위키를 다시 만드는 중',
+        });
+        await this.sidecar.rebuildKnowledge();
+      }
       this.store.replaceRootFiles(refreshedRoot, completedFileRows(rows));
       this.emitTree();
       this.emitKnowledgeBuildState({
@@ -664,6 +687,8 @@ export class AppServices {
     if (this.store.listRoots().length === 0) {
       throw new UserFacingError('등록된 폴더가 없습니다. 폴더를 먼저 추가해 주세요.');
     }
+    // 수동 빌드는 위키를 실제로 다시 만든다 — watchdog 가 놓친 변경을 되찾는 탈출구다.
+    this.knowledgeRebuildRequested = true;
     this.requestKnowledgeSync('문서를 다시 확인하는 중');
   }
 

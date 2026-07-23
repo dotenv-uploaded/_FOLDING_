@@ -66,6 +66,23 @@ export class SidecarClient {
     });
   }
 
+  /**
+   * 현재 입력·요약으로 위키를 **다시 만들어 활성화**한다.
+   *
+   * 자동 경로는 승인된 문서 편집만 반영하므로, 문서 편집이 아닌 변화(새로 만든 요약,
+   * watchdog 가 놓친 파일 수정)는 이 호출로만 위키에 닿는다.
+   *
+   * 요약을 처음 만들 때는 문서당 몇 초씩 걸린다 — 타임아웃을 넉넉히 둔다.
+   */
+  rebuildKnowledge(signal?: AbortSignal): Promise<{ knowledge_version: string }> {
+    return httpJson(joinUrl(this.baseUrl, 'knowledge/rebuild'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal,
+      failureMessage: '위키를 다시 만들지 못했습니다.',
+    });
+  }
+
   chat(conversationId: string, message: string, signal?: AbortSignal): Promise<ChatResponse> {
     return httpJson(joinUrl(this.baseUrl, 'chat/messages'), {
       method: 'POST',
