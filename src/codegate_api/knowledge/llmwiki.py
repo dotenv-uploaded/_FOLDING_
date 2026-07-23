@@ -608,6 +608,54 @@ class NativeLLMWikiCatalog:
                 return
             self._load(build, validate_sources=not allow_stale_sources)
 
+    def refresh_enrichment(self) -> None:
+        """요약 캐시를 채운다. 활성 빌드는 건드리지 않는다 — 느리지만 안전하다."""
+        self._runner.enrich()
+
+    def rebuild(self) -> str:
+        """현재 입력으로 **빌드를 새로 만들어 활성화**한다. 수동 재빌드의 실체.
+
+        왜 필요한가
+        -----------
+        `process_pending` 은 *승인된 문서 편집* 전용이다 — 바뀐 문서마다 승인 이력을
+        요구하고 나머지는 descriptor 가 같아야 한다. 그래서 **문서 편집이 아닌 변화**는
+        활성 빌드에 도달할 길이 없었다. 배경에서 만든 요약 14개가 캐시에만 쌓이고 활성
+        빌드는 4개인 채로 남은 게 그 결과다. "빌드가 완료됐는데 반영 안 된 캐시가 있다"는
+        상태 자체가 모순이다.
+
+        `bootstrap()` 이 첫 빌드를 만들 때 쓰는 것과 **똑같은 원시연산**(stage → activate)을
+        쓰되, 부모를 `None` 이 아니라 현재 활성 빌드로 준다. 활성화는 그 부모가 그대로일
+        때만 성립하므로(`expected_current_build_id`), 도중에 다른 경로가 빌드를 바꾸면
+        조용히 덮어쓰지 않고 실패한다.
+
+        staleness 를 추측하지 않는다 — 사용자가 재빌드를 눌렀으면 재빌드한다. watchdog 가
+        놓친 수정을 되찾는 탈출구가 그것이다.
+
+        비싼 enrichment 는 여기서 부르지 않는다. 호출자가 락 밖에서 `refresh_enrichment()`
+        을 먼저 돌린 뒤 이걸 부른다 — 이 메서드는 짧고 위험한 구간만 담당한다.
+        """
+        with self._lock:
+            active = self._adapter.current_native_build()
+            expected_build_id = active.build_id if active is not None else None
+
+        build_id = self._runner.stage()
+        prepared = self._prepare(self._adapter.native_build(build_id), validate_sources=True)
+        self._record_digest(prepared, parent_build_id=expected_build_id, status="validated")
+        self._runner.activate(
+            build_id=build_id,
+            expected_current_build_id=expected_build_id,
+        )
+
+        current = self._adapter.current_native_build()
+        if current is None or current.build_id != build_id:
+            raise LLMWikiCompatibilityError("LLMWIKI rebuild activation did not persist")
+        if _native_build_digest(current) != prepared.native_digest:
+            raise LLMWikiCompatibilityError("rebuilt LLMWIKI build differs from validation")
+        with self._lock:
+            self._promote(current, prepared.repository)
+        self._record_digest(prepared, parent_build_id=expected_build_id, status="active")
+        return current.build_id
+
     def enrich_in_background(self) -> None:
         """요약·키워드·관계를 **뒤따라** 만든다. 활성 빌드는 건드리지 않는다.
 
@@ -632,7 +680,7 @@ class NativeLLMWikiCatalog:
 
         def run() -> None:
             try:
-                self._runner.enrich()
+                self.refresh_enrichment()
             except Exception:  # noqa: BLE001 - 배경 작업은 절대 서비스를 죽이지 않는다
                 logger.exception("LLMWIKI background enrichment failed")
 
@@ -863,6 +911,20 @@ class NativeLLMWikiPipeline:
         self._locks = lock_manager
         self._doc2md = doc2md
         self._lock = asyncio.Lock()
+
+    async def rebuild(self) -> str:
+        """수동 재빌드 — 현재 입력·요약으로 빌드를 새로 만들어 활성화한다.
+
+        `process_pending` 과 **같은 락**을 쓴다. 둘 다 활성 빌드를 바꾸므로 겹치면
+        서로의 부모 빌드를 어긋나게 만든다.
+
+        느린 enrichment 는 락 **밖**에서 먼저 돌린다. 캐시를 채울 뿐 활성 빌드를 건드리지
+        않아 안전하고, 이걸 락 안에 두면 문서 편집이 그만큼(첫 실행 약 80초) 막힌다.
+        """
+        await asyncio.to_thread(self._catalog.refresh_enrichment)
+        async with self._lock:
+            async with self._locks.acquire_publish():
+                return await asyncio.to_thread(self._catalog.rebuild)
 
     async def process_pending(self) -> str:
         async with self._lock:

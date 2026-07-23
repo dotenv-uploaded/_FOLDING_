@@ -238,6 +238,11 @@ class AuthMeResponse(StrictModel):
     authz_source: str
 
 
+class KnowledgeRebuildResponse(StrictModel):
+    status: Literal["rebuilt"]
+    knowledge_version: str
+
+
 class DemoResetResponse(StrictModel):
     status: Literal["reset"]
     knowledge_version: str

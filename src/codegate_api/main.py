@@ -10,7 +10,16 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from codegate_api.api import auth_session, change_plans, chat, demo, documents, executions, health
+from codegate_api.api import (
+    auth_session,
+    change_plans,
+    chat,
+    demo,
+    documents,
+    executions,
+    health,
+    knowledge,
+)
 from codegate_api.config import Settings, get_settings
 from codegate_api.container import build_container
 from codegate_api.rate_limit import FixedWindowRateLimiter
@@ -153,6 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(documents.router, prefix="/api/v1")
     application.include_router(change_plans.router, prefix="/api/v1")
     application.include_router(executions.router, prefix="/api/v1")
+    application.include_router(knowledge.router, prefix="/api/v1")
     application.include_router(demo.router, prefix="/api/v1")
     return application
 
