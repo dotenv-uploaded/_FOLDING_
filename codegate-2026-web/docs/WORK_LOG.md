@@ -10,11 +10,15 @@
   한국어 파일명형 문서 복합어를 제한적으로 분해해 주간·업무·보고서 자료를 찾게 했다.
 - 영향: Backend LLMWIKI 복구 검증, agent tool-trace 검증, 지식 검색 token화와 회귀 테스트. 원본 승인,
   ACL, exact plan hash, HWPX no-overwrite 생성 경계는 변경하지 않았다.
+- 실행 설정: Claude Agent SDK가 지원하는 `opus` alias를 기본 모델로 지정하고 환경변수 예시도 같은
+  값으로 맞췄다. `CODEGATE_CLAUDE_MODEL`을 명시하면 기존처럼 실행별 override할 수 있다.
 - 검증: 실패 실행을 재처리해 `build-33d85e0c8aec1f833d97` 게시와
   `completed/applied/published` 상태, 원본 SHA 유지, active build 작성자 `성선제`, sync 실패 0건을
   확인했다. Backend 전체 pytest 285개와 Ruff·mypy, Electron Vitest 156개·typecheck·production
-  build, 실제 corpus 검색을 통과했다.
-- 전달 상태: 전체 품질 게이트와 전용 `ghdtjdwn` 저장소 반영을 진행 중이다.
+  build, 실제 corpus 검색을 통과했다. Opus 변경 뒤 typecheck와 production build는 통과했고, 실행 중인
+  앱과 동시에 다시 돌린 Vitest는 155개 통과·환경 의존 1개 skip·process-group 재시작 timing 1개
+  실패였다.
+- 전달 상태: 동기화·검색 수정은 PR #4로 main에 병합했다. Opus 기본값 변경을 후속 반영한다.
 
 ## 2026-07-23 — 복수 업무 문서를 종합하는 HWPX 생성 라우팅
 
