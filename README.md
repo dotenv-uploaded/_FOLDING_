@@ -327,7 +327,6 @@ API key, OAuth 세션, 사용자 문서, 로컬 지식 인덱스는 Git에 포�
 - [로컬 런타임](Backend/docs/LOCAL_RUNTIME.md)
 - [아키텍처 결정 기록](Backend/docs/adr)
 - [Frontend 명세](codegate-2026-web/docs/FRONTEND_SPEC.md)
-- [작업 기록](codegate-2026-web/docs/WORK_LOG.md)
 - [문서 변환기 설계](codegate-2026-api/services/doc2md/README.md)
 - [Backend·Agent 트러블슈팅](Backend/docs/TROUBLESHOOTING.md)
 - [Electron 통합 트러블슈팅](codegate-2026-web/docs/TROUBLESHOOTING.md)
