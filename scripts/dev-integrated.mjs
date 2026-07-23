@@ -37,6 +37,50 @@ try {
   // release 성격의 integrations:smoke는 별도로 deep health를 끝까지 검증한다.
   await waitForHealth(`${doc2mdUrl}/health`, doc2md);
 
+  /*
+   * OAuth 백엔드(cloud-api)도 이 스택이 함께 띄운다.
+   *
+   * 예전에는 사람이 따로 띄워 두는 프로세스였다. 그래서 스택을 재기동할 때마다 조용히
+   * 사라졌고, 앱은 멀쩡한데 **로그인만 안 되는** 상태가 반복됐다. 원인은 언제나
+   * `ECONNREFUSED 127.0.0.1:8000` 이었는데, 그걸 알아내는 데 매번 왕복이 들었다.
+   *
+   * 설정이 없으면 조용히 건너뛴다 — cloud-api 없이 도는 구성(로컬 인증 모드)도 있다.
+   */
+  const cloudApiBin = process.env.CODEGATE_CLOUD_API_BIN;
+  if (cloudApiBin && existsSync(cloudApiBin)) {
+    // 실행 파일은 `<root>/.venv/bin/<name>` 에 있다 — root 는 세 단계 위다. cloud-api 는
+    // 자기 `.env` 를 cwd 에서 읽으므로 여기를 틀리면 설정을 통째로 못 읽고 죽는다.
+    const cloudApiRoot =
+      process.env.CODEGATE_CLOUD_API_ROOT ??
+      path.dirname(path.dirname(path.dirname(cloudApiBin)));
+    /*
+     * **cloud-api 가 죽어도 스택은 산다.**
+     *
+     * 이건 로그인을 위한 보조 서비스지 앱의 심장이 아니다. 그런데 `waitForHealth` 로
+     * 임계 경로에 묶었더니, cloud-api 하나가 설정 오류로 못 뜨자 doc2md 와 Electron 까지
+     * 통째로 내려갔다. 보조 서비스의 실패가 전부를 멈추게 하면 안 된다.
+     */
+    try {
+      const cloudApi = start(cloudApiBin, [], {
+        cwd: cloudApiRoot,
+        env: safeProcessEnvironment(process.env),
+        name: 'cloud-api',
+      });
+      children.push(cloudApi);
+      await waitForHealth('http://127.0.0.1:8000/api/v1/health', cloudApi);
+    } catch (error) {
+      console.warn(
+        `[codegate:dev] cloud-api 를 띄우지 못했습니다 — Google 로그인만 실패합니다: ${error.message}`,
+      );
+    }
+  } else if (process.env.CODEGATE_AUTH_MODE === 'cloud') {
+    // 클라우드 인증을 쓰겠다고 해놓고 백엔드가 없으면 로그인만 조용히 실패한다. 미리 말한다.
+    console.warn(
+      '[codegate:dev] CODEGATE_AUTH_MODE=cloud 인데 CODEGATE_CLOUD_API_BIN 이 없습니다 — ' +
+        'Google 로그인이 실패합니다. cloud-api 를 따로 띄우거나 이 변수를 설정하세요.',
+    );
+  }
+
   // 로컬 바이너리를 직접 부른다. `pnpm exec` 를 거치면 packageManager 핀이 맞지 않는
   // 컴퓨터에서 pnpm 이 버전 전환을 시도하다 죽고, 그 실패가 "electron 종료 코드 1" 로만
   // 보여 원인을 찾기 어려웠다. 중간 단계를 없애면 그런 실패가 아예 생기지 않는다.
