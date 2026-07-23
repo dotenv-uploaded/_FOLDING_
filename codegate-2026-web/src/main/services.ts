@@ -829,7 +829,7 @@ function sidecarRuntimePaths(options: ServicesOptions, sourceRoot: string): Side
         : false,
     deterministicAgent:
       process.env.CODEGATE_AGENT_MODE === 'deterministic' || process.env.CODEGATE_MOCK === '1',
-    claudeModel: process.env.CODEGATE_CLAUDE_MODEL ?? 'opus',
+    claudeModel: process.env.CODEGATE_CLAUDE_MODEL ?? 'sonnet',
     claudeTimeoutSeconds: localClaudeTimeoutSeconds(),
     tenantId: process.env.CODEGATE_LLMWIKI_TENANT_ID ?? 'local',
     wikiId: process.env.CODEGATE_LLMWIKI_WIKI_ID ?? 'workspace',
