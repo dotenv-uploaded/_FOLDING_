@@ -3,6 +3,10 @@
 Folding은 로컬 문서를 검증 가능한 지식 버전으로 정리하고, 근거 기반 검색과 승인형 문서 변경을
 제공하는 데스크톱 문서 에이전트 프로젝트입니다.
 
+## 완성본 시연
+
+[완성본 시연 영상 보기](docs/demo/folding-final-demo.mov)
+
 ## 구성
 
 - `codegate-2026-web`: Electron 데스크톱 앱과 승인 UI
