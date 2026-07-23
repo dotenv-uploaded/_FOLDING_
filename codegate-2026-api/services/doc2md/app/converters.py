@@ -28,7 +28,7 @@ from pathlib import Path
 import pyhwp2md
 from markitdown import MarkItDown, MarkItDownException
 
-from app import images, kordoc, ocr, progress, render
+from app import images, kordoc, ocr, progress, render, xlsx
 from app.errors import Diagnostic, diagnostic
 from app.schemas import RawConversion
 
@@ -56,6 +56,8 @@ def convert(path: Path, job=None) -> RawConversion:
 
     if ext in HWP_EXTS:
         result = _convert_hwp(path, ext, warnings, job)
+    elif ext == ".xlsx":
+        result = _convert_xlsx(path, ext, warnings, job)
     elif ext == ".pptx":
         result = _convert_pptx(path, ext, warnings, job)
     elif ext == ".pdf":
@@ -162,6 +164,27 @@ def _convert_pptx(
     if texts:
         body = _splice_by_placeholder(body, found, texts)
         return _finish(body, ext, "markitdown+ocr", warnings)
+    return _finish(body, ext, "markitdown", warnings)
+
+
+def _convert_xlsx(
+    path: Path, ext: str, warnings: list[Diagnostic], job=None
+) -> RawConversion:
+    """Read the visible value of merged ranges once, from an immutable copy."""
+
+    progress.update(job, phase="convert", total=1, current=0, message="xlsx 변환 중")
+    try:
+        with xlsx.extraction_copy(path) as extraction_path:
+            try:
+                body = _markitdown.convert(str(extraction_path)).markdown
+            except MarkItDownException as error:
+                raise ConversionFailedError(
+                    f"markitdown conversion failed: {error}"
+                ) from error
+            except Exception as error:
+                raise ConversionFailedError("markitdown conversion failed") from error
+    except xlsx.XlsxNormalizationError as error:
+        raise ConversionFailedError(f"xlsx conversion failed: {error}") from error
     return _finish(body, ext, "markitdown", warnings)
 
 

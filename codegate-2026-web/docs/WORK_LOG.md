@@ -1,5 +1,19 @@
 # Work log
 
+## 2026-07-23 — 분리 저장소 잔여 파일 통합
+
+- 목표: 공개 monorepo 하나만으로 심사와 재현이 가능하도록 분리된 로컬 저장소에만 남아 있던
+  Supabase migration, XLSX 안전 정규화, 통합 launcher helper와 회귀 테스트를 모두 포함한다.
+- 변경: Custom Access Token hook migration을 복원했다. doc2md는 XLSX를 request-local copy에서
+  정규화해 병합 hidden-cell 중복과 ZIP/XML resource abuse를 차단하고 원본 bytes를 보존한다.
+  Electron launcher는 child 종료 판정과 최소 환경 전달을 별도 helper로 사용하며 Windows `.cmd`
+  실행과 `DOC2MD_DATA_ROOT` 전달을 보존한다.
+- 영향: Backend 배포 자산, doc2md XLSX converter와 dependency lock, Electron 통합 개발 launcher.
+  사용자 문서 승인·원본 쓰기 계약은 변경하지 않는다.
+- 검증: XLSX 집중 테스트 8개, doc2md 전체 117개, launcher 집중 테스트 3개, Electron 전체
+  159개 통과·환경 의존 1개 skip, TypeScript typecheck와 Node 구문 검사를 통과했다.
+- 전달 상태: 공개 `ghdtjdwn_complete` main 반영과 fresh clone 확인을 진행한다.
+
 ## 2026-07-23 — README 시연 영상 호환성 수정
 
 - 문제와 원인: README의 저장소 MOV 파일 링크가 GitHub에서 플레이어 대신 바이너리 파일 화면으로

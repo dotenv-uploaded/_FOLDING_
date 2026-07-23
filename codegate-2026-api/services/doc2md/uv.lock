@@ -743,6 +743,7 @@ name = "doc2md"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "defusedxml" },
     { name = "fastapi" },
     { name = "markitdown", extra = ["docx", "pdf", "pptx", "xlsx"] },
     { name = "numpy" },
@@ -779,6 +780,7 @@ uri = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'agent'", specifier = ">=0.2.124" },
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fsspec", marker = "extra == 'uri'", specifier = ">=2024.6" },
     { name = "httpx", marker = "extra == 'agent'", specifier = ">=0.27" },

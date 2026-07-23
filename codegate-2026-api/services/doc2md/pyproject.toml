@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Native-Python document-to-markdown conversion API (markitdown + pyhwp2md)"
 requires-python = ">=3.11"
 dependencies = [
+    "defusedxml>=0.7.1",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",

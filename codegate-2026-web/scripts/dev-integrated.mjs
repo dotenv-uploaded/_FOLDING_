@@ -5,6 +5,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { waitForTrackedExit } from './child-process-lifecycle.mjs';
+import { safeProcessEnvironment } from './safe-process-environment.mjs';
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceDir = path.resolve(projectDir, '..');
@@ -61,14 +63,20 @@ try {
     stdio: 'inherit',
   });
   children.push(electron);
-  await waitForExit(electron);
+  await waitForTrackedExit(electron);
 } finally {
   removeSignalHandlers();
   await cleanup();
 }
 
 function start(command, args, { cwd, env, name, stdio = ['ignore', 'inherit', 'inherit'] }) {
-  const child = spawn(command, args, { cwd, env, stdio, detached: process.platform !== 'win32' });
+  const child = spawn(command, args, {
+    cwd,
+    env,
+    stdio,
+    detached: process.platform !== 'win32',
+    shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd'),
+  });
   const tracked = { child, name, spawnError: null };
   child.once('error', (error) => {
     tracked.spawnError = error;
@@ -111,52 +119,6 @@ async function waitForHealth(url, tracked) {
     await delay(250);
   }
   throw new Error(`doc2md 준비 시간이 초과됐습니다: ${lastError}`);
-}
-
-function waitForExit(tracked) {
-  return new Promise((resolve, reject) => {
-    if (tracked.spawnError) {
-      reject(tracked.spawnError);
-      return;
-    }
-    if (tracked.child.exitCode !== null) {
-      if (tracked.child.exitCode === 0) resolve();
-      else reject(new Error(`${tracked.name} process가 종료 코드 ${tracked.child.exitCode}로 끝났습니다.`));
-      return;
-    }
-    tracked.child.once('error', reject);
-    tracked.child.once('exit', (code, signal) => {
-      if (signal === 'SIGINT' || signal === 'SIGTERM' || code === 0) resolve();
-      else reject(new Error(`${tracked.name} process가 종료 코드 ${code ?? signal}로 끝났습니다.`));
-    });
-  });
-}
-
-function safeProcessEnvironment(baseEnv) {
-  const safe = {};
-  for (const name of [
-    'PATH',
-    'Path',
-    'PATHEXT',
-    'SystemRoot',
-    'SYSTEMROOT',
-    'WINDIR',
-    'HOME',
-    'USERPROFILE',
-    'TMPDIR',
-    'TMP',
-    'TEMP',
-    'LANG',
-    'LC_ALL',
-    'TZ',
-    'SSL_CERT_FILE',
-    'SSL_CERT_DIR',
-    'UV_CACHE_DIR',
-    'XDG_CACHE_HOME',
-  ]) {
-    if (baseEnv[name] !== undefined) safe[name] = baseEnv[name];
-  }
-  return safe;
 }
 
 function delay(ms) {
