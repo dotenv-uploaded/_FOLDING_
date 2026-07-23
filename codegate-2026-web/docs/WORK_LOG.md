@@ -12,7 +12,8 @@
   사용자 문서 승인·원본 쓰기 계약은 변경하지 않는다.
 - 검증: XLSX 집중 테스트 8개, doc2md 전체 117개, launcher 집중 테스트 3개, Electron 전체
   159개 통과·환경 의존 1개 skip, TypeScript typecheck와 Node 구문 검사를 통과했다.
-- 전달 상태: 공개 `ghdtjdwn_complete` main 반영과 fresh clone 확인을 진행한다.
+- 전달 결과: commit `22cacb5`를 공개 `ghdtjdwn_complete` main에 push했다. staged 공개 트리의
+  gitleaks finding은 0건이며 fresh clone에서 원격 파일 완전성을 확인한다.
 
 ## 2026-07-23 — README 시연 영상 호환성 수정
 
