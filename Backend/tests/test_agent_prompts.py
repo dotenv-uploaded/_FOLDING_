@@ -274,6 +274,7 @@ def test_sdk_output_schema_is_a_focused_typed_decision_union() -> None:
         "assistant_text",
         "search_query",
         "target_document_id",
+        "source_document_ids",
         "target_filename",
         "document_markdown",
     }
@@ -328,6 +329,7 @@ def test_sdk_output_union_converts_only_representable_cross_field_states() -> No
                 "assistant_text": "새 문서 미리보기를 준비했습니다.",
                 "search_query": "이번주 보고서",
                 "target_document_id": "REG-000001",
+                "source_document_ids": ["REG-000001", "REG-000002"],
                 "target_filename": "주간업무보고서.hwpx",
                 "document_markdown": "# 주간업무보고서\n\n이번 주 업무",
             }
@@ -336,8 +338,25 @@ def test_sdk_output_union_converts_only_representable_cross_field_states() -> No
 
     assert create_ready.outcome.value == "ready"
     assert create_ready.intent == "create_file"
+    assert create_ready.source_document_ids == ["REG-000001", "REG-000002"]
     assert create_ready.target_filename == "주간업무보고서.hwpx"
     assert create_ready.document_markdown.startswith("# 주간업무보고서")
+
+    with pytest.raises(ValidationError):
+        AgentStructuredOutput.model_validate(
+            {
+                "decision": {
+                    "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+                    "decision_type": "ready_create_file",
+                    "assistant_text": "새 문서 미리보기를 준비했습니다.",
+                    "search_query": "이번주 보고서",
+                    "target_document_id": "REG-000001",
+                    "source_document_ids": ["REG-000002", "REG-000002"],
+                    "target_filename": "주간업무보고서.hwpx",
+                    "document_markdown": "# 주간업무보고서\n\n이번 주 업무",
+                }
+            }
+        ).to_decision()
 
     with pytest.raises(ValidationError):
         AgentStructuredOutput.model_validate(

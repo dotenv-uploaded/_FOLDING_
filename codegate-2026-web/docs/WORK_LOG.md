@@ -1,5 +1,18 @@
 # Work log
 
+## 2026-07-23 — 복수 업무 문서를 종합하는 HWPX 생성 라우팅
+
+- 목표: 여러 이번 주 업무보고 문서를 근거로 진행사항·완료 업무·이슈·다음 주 계획을 정리한 HWPX 생성
+  요청이 재질문으로 끝나지 않고 승인 미리보기까지 이어지게 한다.
+- 변경: Backend 생성 결정을 단일 source에서 순서가 고정된 최대 20개 source로 확장했다. 검색어에서는
+  출력 section 요구를 제거하고, 검색된 각 문서의 ID와 canonical 본문을 현재 turn에서 검증한다.
+  ChatService는 모든 source의 ACL과 존재를 다시 확인한 뒤 기존 Electron 생성 승인 계약으로 전달한다.
+- 영향: agent structured output·prompt·tool trace, ChatService 생성 응답과 관련 회귀 테스트. 실제 파일
+  생성, no-overwrite, 재파싱과 사용자 승인 경계는 변경하지 않았다.
+- 검증: 사용자 문장 기반 API 테스트를 포함한 Backend 전체 pytest 281개, Ruff·mypy, Electron 전체
+  Vitest 156개 통과·환경 의존 integration 1개 skip, TypeScript typecheck와 production build 성공.
+- 전달 상태: 로컬 구현과 집중 검증 완료. 전체 Backend gate, commit·push·PR·merge와 앱 재실행은 진행 중.
+
 ## 2026-07-23 — 기존 XLSX 입력의 병합 hidden-cell 교정 마이그레이션
 
 - 목표: doc2md의 XLSX 병합 hidden-cell 중복 수정이 이미 등록된 같은-SHA 문서에도 한 번 적용되게 한다.
