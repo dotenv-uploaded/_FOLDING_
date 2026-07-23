@@ -161,6 +161,12 @@ class AgentRunResult(BaseModel):
     provider: str
     session_id: str | None = None
     tool_calls: list[str] = Field(default_factory=list)
+    #: 이번 호출이 실제로 쓴 비용(USD). SDK 가 `ResultMessage.total_cost_usd` 로 알려준다.
+    #:
+    #: 구독제라 사용량을 사람 단위로 세야 하는데, 이 값을 버리면 셀 근거가 없다. 토큰 수로
+    #: 되계산하면 모델·캐시·도구 호출마다 단가가 달라 어긋난다 — 제공자가 계산해 준 금액을
+    #: 그대로 쓴다. 알 수 없으면 `None` 이고, 그 경우 0원으로 치지 않고 모름으로 남긴다.
+    cost_usd: float | None = None
 
 
 class AgentGateway(Protocol):
@@ -413,6 +419,7 @@ class ClaudeAgentGateway:
                             session_id=returned_session_id,
                             tool_calls=tool_calls,
                             decision=decision,
+                            cost_usd=response.total_cost_usd,
                         )
         except TimeoutError as error:
             raise AgentGatewayError(

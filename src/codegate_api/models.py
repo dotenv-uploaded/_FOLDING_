@@ -201,6 +201,16 @@ class ChatMessageRequest(StrictModel):
     )
 
 
+class UsageView(StrictModel):
+    """이번 응답이 쓴 비용. 구독 사용량을 세는 근거다.
+
+    `cost_usd` 가 None 이면 제공자가 금액을 주지 않은 것이다. 0 으로 치지 않는다 —
+    모르는 것과 안 쓴 것은 다르고, 0 으로 세면 사용량이 조용히 새어 나간다.
+    """
+
+    cost_usd: float | None = None
+
+
 class ChatMessageResponse(StrictModel):
     conversation_id: str
     message_id: str
@@ -209,6 +219,7 @@ class ChatMessageResponse(StrictModel):
     documents: list[DocumentResult]
     change_plan: ChangePlanView | None = None
     error: ApiError | None = None
+    usage: UsageView | None = None
 
 
 class HealthResponse(StrictModel):

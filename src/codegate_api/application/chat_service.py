@@ -14,6 +14,7 @@ from codegate_api.models import (
     ChatMessageResponse,
     DocumentResult,
     ResponseType,
+    UsageView,
 )
 from codegate_api.state.store import StateStore
 
@@ -59,11 +60,20 @@ class ChatService:
                 )
                 if replay is not None:
                     return ChatMessageResponse.model_validate_json(replay)
+            # 사용량은 응답 경로가 12갈래라 각 return 마다 붙이지 않는다. 안쪽에서 이 통에
+            # 담아 두고, 여기서 한 번만 응답에 얹는다 — 붙이는 곳을 하나로 두어야 새 분기가
+            # 생겨도 계측이 조용히 빠지지 않는다.
+            usage_holder: dict[str, float | None] = {}
             response = await self._create_serialized(
                 request=request,
                 repository=repository,
                 access_context=access_context,
+                usage_holder=usage_holder,
             )
+            if response.usage is None and "cost_usd" in usage_holder:
+                response = response.model_copy(
+                    update={"usage": UsageView(cost_usd=usage_holder["cost_usd"])}
+                )
             if idempotency_key:
                 self._state.put_chat_idempotency(
                     tenant_id=tenant_id,
@@ -77,6 +87,7 @@ class ChatService:
     async def _create_serialized(
         self,
         *,
+        usage_holder: dict[str, float | None] | None = None,
         request: ChatMessageRequest,
         repository: KnowledgeRepository,
         access_context: AccessContext,
@@ -133,6 +144,8 @@ class ChatService:
                 access_context=access_context,
                 resume_session_id=resume_session_id,
             )
+            if usage_holder is not None:
+                usage_holder["cost_usd"] = result.cost_usd
         except AgentGatewayError as error:
             if authenticated:
                 self._state.record_agent_run(
