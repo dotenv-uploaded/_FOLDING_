@@ -4,7 +4,9 @@
 
 - 목표와 변경: Electron sidecar의 Claude 기본 alias와 환경변수 예시를 `sonnet`으로 맞췄다.
 - 영향: 모델 routing 설정만 변경하며 agent·승인·문서 처리 계약은 그대로다.
-- 검증과 전달: 설정 정합성을 확인한 뒤 전용 `ghdtjdwn` 저장소 main 반영과 앱 재시작을 진행한다.
+- 검증과 전달: TypeScript typecheck 통과. commit `189be80`을 전용 `ghdtjdwn` 저장소 main에
+  push했고, 저장 OAuth 세션을 복구 가능한 백업으로 이동한 뒤 실 OAuth·Sonnet으로 앱을 재시작해
+  로그인 화면을 확인했다.
 
 ## 2026-07-23 — 복수 업무보고 HWPX 생성 route 고정
 
