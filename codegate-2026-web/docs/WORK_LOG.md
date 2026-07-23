@@ -49,7 +49,7 @@
 - 검증: 실제 설치 Kordoc으로 HWPX 생성·재파싱과 전체 sidecar 승인 흐름을 실행했다. TypeScript
   typecheck, 전체 Vitest 156개 통과(환경 의존 통합 테스트 1개 skip), Electron production build가
   성공했다.
-- 전달 상태: 로컬 구현과 검증 완료. commit, push, PR, 배포는 수행하지 않음.
+- 전달 결과: 전용 monorepo commit `228f17f`로 push하고 PR #1을 통해 main 병합 절차를 실행함.
 
 ## 2026-07-22 — 파일 삭제 개별 승인과 복원 안내 연결
 
