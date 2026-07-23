@@ -5,9 +5,9 @@ Folding은 로컬 문서를 검증 가능한 지식 버전으로 정리하고, �
 
 ## 완성본 시연
 
-[![Folding 완성본 시연 영상](docs/demo/folding-final-demo-poster.jpg)](https://github.com/dotenv-uploaded/ghdtjdwn_complete/raw/refs/heads/main/docs/demo/folding-final-demo.mp4)
+![Folding 완성본 시연 영상](docs/demo/folding-final-demo.gif)
 
-이미지를 누르면 H.264 MP4 시연 영상이 재생됩니다.
+[고화질 MP4로 보기](https://github.com/dotenv-uploaded/ghdtjdwn_complete/blob/main/docs/demo/folding-final-demo.mp4?raw=1)
 
 ## 구성
 

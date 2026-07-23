@@ -5,11 +5,13 @@
 - 문제와 원인: README의 저장소 MOV 파일 링크가 GitHub에서 플레이어 대신 바이너리 파일 화면으로
   열렸다. GitHub Markdown은 저장소의 HTML `video` 태그를 제거하며 영상 플레이어는 첨부 파일
   URL에 적용되는 동작이었다.
-- 변경: 원본을 브라우저 호환 H.264/yuv420p MP4로 변환하고 개인정보가 표시되지 않는 앱 화면
-  썸네일을 추가했다. README에는 GitHub가 실제 렌더링하는 클릭형 썸네일과 MP4 raw 링크를 사용했다.
-- 검증: 203.79초 MP4의 codec, pixel format, fast-start container와 GitHub Markdown 렌더 결과를
-  확인했다. 기존 MOV는 현재 tree에서 제거하고 원본 파일은 보존했다.
-- 전달 상태: 전용 저장소 main 반영과 원격 MP4 응답 검증을 진행한다.
+- 변경: 로그인과 폴더 경로가 표시되는 첫 구간을 제외하고 계정 라벨 영역을 배경색으로 가린
+  브라우저 호환 H.264/yuv420p MP4를 만들었다. README 안에서 별도 플레이어 없이 전체 공개 구간이
+  재생되는 560×482 GIF를 추가하고, 고화질 MP4는 GitHub 파일 페이지의 raw 보기로 연결한다.
+- 검증: MP4 전체 frame decode, codec, pixel format, fast-start container와 GitHub Markdown
+  렌더 결과를 확인했다. GIF는 5fps, 188.8초로 전체 공개 구간과 GitHub 이미지 제한을 충족한다.
+  기존 MOV는 현재 tree에서 제거하고 로컬 원본 파일은 보존했다.
+- 전달 상태: 공개 전 원본 영상 이력 제거와 force-with-lease 반영을 진행한다.
 
 ## 2026-07-23 — 완성본 시연 영상 공개
 
