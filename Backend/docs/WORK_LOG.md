@@ -458,4 +458,4 @@
   회귀 테스트 15개·typecheck·production build가 통과했다. 실제 사용자 데이터의 격리 복사본에서도
   sidecar startup과 index load가 완료됐다. Real OAuth integrated runtime에서도 health `ok`,
   converter·graph·index·worker·agent 준비와 pending/failed/stale sync event 0건을 확인했다.
-- 전달 결과: 로컬 구현과 검증 완료. GitHub 전달 결과는 PR 생성 뒤 갱신한다.
+- 전달 결과: 전용 monorepo commit `5d2e23e`로 push하고 PR #2를 통해 main 병합 절차를 실행함.
