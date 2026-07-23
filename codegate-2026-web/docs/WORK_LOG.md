@@ -1,5 +1,18 @@
 # Work log
 
+## 2026-07-23 — 복수 업무보고 HWPX 생성 route 고정
+
+- 목표: 사용자가 참고 파일을 하나씩 지정하지 않아도 에이전트가 이번 주 업무보고 문서를 검색·검증해
+  `주간업무보고서.hwpx` 생성 미리보기를 만들게 한다.
+- 변경: 명시적인 HWPX 생성 요청의 파일명과 source 검색 주제를 application-owned routing hint로
+  전달한다. 에이전트는 관련 업무진행 기록과 주간 성과 자료를 검색한 뒤 각 stable ID와 canonical
+  본문을 현재 turn에서 직접 검증한다. 복수 프로젝트·형식이라는 이유만으로 재질문하지 않게 했다.
+- 영향: Backend agent turn envelope, system prompt, 생성 검색어와 회귀 테스트. evidence, ACL, 승인,
+  no-overwrite HWPX 쓰기 경계는 그대로다.
+- 검증: agent prompt/runtime 집중 테스트 94개, Ruff·mypy 통과. 실 OAuth·Opus 앱과 sidecar health
+  200 확인.
+- 전달 상태: 전용 `ghdtjdwn` 저장소 반영을 진행 중이다.
+
 ## 2026-07-23 — 복원 HWP 동기화 복구와 주간보고 생성 검색 안정화
 
 - 목표: 복원된 `일일업무.hwp` 편집의 부분 완료를 실제 위키 게시까지 복구하고, 붙여 쓴 HWPX 생성

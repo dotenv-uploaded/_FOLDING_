@@ -23,6 +23,7 @@ from codegate_api.agent.gateway import (
     ClaudeAgentGateway,
     _bind_search_query_to_tool_evidence,
     _classify_sdk_result_error,
+    _creation_routing_context,
     _creation_search_query,
     _extract_document_id,
     _normalize_structured_enum_casing,
@@ -63,7 +64,16 @@ def test_creation_query_keeps_source_subject_and_drops_requested_output_sections
         "다음 주 계획을 정리한 주간업무보고서.hwpx를 만들어줘."
     )
 
-    assert _creation_search_query(message, "주간업무보고서.hwpx") == "이번 주 업무보고 문서들을"
+    assert _creation_search_query(
+        message,
+        "주간업무보고서.hwpx",
+    ) == "업무 진행사항 기록 주간 성과 데이터 리포트"
+    assert _creation_routing_context(message) == {
+        "intent": "create_file",
+        "target_filename": "주간업무보고서.hwpx",
+        "source_search_query": "업무 진행사항 기록 주간 성과 데이터 리포트",
+        "source_selection": "all_directly_relevant_results",
+    }
 
 
 def test_routing_document_ids_support_korean_particles_in_recent_user_context() -> None:

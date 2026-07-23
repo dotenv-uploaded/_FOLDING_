@@ -211,6 +211,23 @@ def test_turn_prompt_preserves_absent_selected_document_as_null() -> None:
     assert json.loads(prompt)["trusted_context"]["selected_document_id"] is None
 
 
+def test_turn_prompt_includes_application_routed_creation_without_promoting_evidence() -> None:
+    creation_request = {
+        "intent": "create_file",
+        "target_filename": "주간업무보고서.hwpx",
+        "source_search_query": "업무 진행사항 기록 주간 성과 데이터 리포트",
+        "source_selection": "all_directly_relevant_results",
+    }
+    prompt = build_turn_prompt(
+        user_message="이번 주 업무보고 문서들을 참고해 주간업무보고서.hwpx를 만들어줘",
+        selected_document_id=None,
+        graph_version="graph-v7",
+        creation_request=creation_request,
+    )
+
+    assert json.loads(prompt)["trusted_context"]["creation_request"] == creation_request
+
+
 def test_turn_prompt_keeps_follow_up_history_untrusted_and_ordered() -> None:
     history = [
         {

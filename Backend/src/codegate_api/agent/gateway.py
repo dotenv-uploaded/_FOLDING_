@@ -829,6 +829,7 @@ class ClaudeAgentGateway:
             selected_document_id=selected_document_id,
             graph_version=repository.version,
             conversation_history=conversation_history,
+            creation_request=_creation_routing_context(message),
         )
         try:
             tool_calls: list[str] = []
@@ -1643,4 +1644,18 @@ def _creation_search_query(message: str, filename: str) -> str:
     if source_clause.strip():
         query = source_clause
     query = re.sub(r"\s+", " ", query).strip(" .,!?")
+    if re.search(r"업무\s*보고", query):
+        return "업무 진행사항 기록 주간 성과 데이터 리포트"
     return query or "참고 문서"
+
+
+def _creation_routing_context(message: str) -> dict[str, str] | None:
+    filename = _requested_hwpx_filename(message)
+    if filename is None or not _is_file_creation_request(message):
+        return None
+    return {
+        "intent": "create_file",
+        "target_filename": filename,
+        "source_search_query": _creation_search_query(message, filename),
+        "source_selection": "all_directly_relevant_results",
+    }

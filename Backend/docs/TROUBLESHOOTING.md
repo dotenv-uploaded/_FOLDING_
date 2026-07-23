@@ -1,5 +1,32 @@
 # 트러블슈팅 기록
 
+## 2026-07-23 — 명확한 복수 문서 HWPX 생성이 후보 선택 재질문으로 종료
+
+### 상황과 원인
+
+`이번 주 업무보고 문서들을 참고해서 … 주간업무보고서.hwpx를 만들어줘`는 source를 직접 검색해
+생성 미리보기로 이어져야 하지만 Opus가 `knowledge_search` 한 번 뒤
+`DOCUMENT_CREATION_DETAILS_REQUIRED`를 반환했다. 실제 MCP trace에는 검색 성공만 있고 후보별
+`document_get`과 `knowledge_document_read`가 없었다. 일반 검색어의 결과에 여러 프로젝트와 문서
+형식이 섞이자, prompt의 복수 source 규칙보다 재질문을 선택한 것이 원인이었다.
+
+### 해결과 검증
+
+채팅 입구가 명시적인 HWPX 생성 문장에서 target filename과 source subject를 파싱해
+`trusted_context.creation_request` routing hint로 전달한다. 이 값은 evidence나 권한이 아니며,
+에이전트는 여전히 현재 turn의 `knowledge_search`, 후보별 `document_get`, canonical read를 직접
+수행해야 한다. `업무보고`는 실제 제목에 쓰이는 `업무 진행사항 기록 주간 성과 데이터 리포트`로
+검색해 관련 업무기록과 주간 성과 문서를 상위에 둔다. 유효한 복수 결과라는 이유만으로
+`needs_clarification`을 선택하지 않도록 계약을 명시했다.
+
+agent prompt/runtime 집중 테스트 94개와 Ruff·mypy가 통과했다. 앱은 실 OAuth와 Opus로 재시작했고
+sidecar health 200을 확인했다.
+
+### 재발 방지
+
+routing hint는 사용자 문장을 evidence로 승격하지 않고 intent·파일명·검색 주제만 고정한다. 검색 결과의
+ACL, graph version, stable ID와 canonical 본문 검증은 기존 fail-closed 경계를 그대로 유지한다.
+
 ## 2026-07-23 — 복원된 HWP 편집의 위키 동기화 실패와 주간보고 검색 0건
 
 ### 상황, 기대와 영향
