@@ -11,7 +11,9 @@
 - 검증: MP4 전체 frame decode, codec, pixel format, fast-start container와 GitHub Markdown
   렌더 결과를 확인했다. GIF는 5fps, 188.8초로 전체 공개 구간과 GitHub 이미지 제한을 충족한다.
   기존 MOV는 현재 tree에서 제거하고 로컬 원본 파일은 보존했다.
-- 전달 상태: 공개 전 원본 영상 이력 제거와 force-with-lease 반영을 진행한다.
+- 전달 결과: 복구용 bundle을 만든 뒤 원본 MOV와 이전 MP4를 main 이력에서 제거하고
+  force-with-lease로 교체했다. gitleaks finding 0건을 확인한 후 저장소를 public으로 전환했으며,
+  비로그인 요청에서 저장소·README·GIF·MP4가 모두 HTTP 200을 반환했다.
 
 ## 2026-07-23 — 단일 저장소 새 컴퓨터 재현 경로
 
