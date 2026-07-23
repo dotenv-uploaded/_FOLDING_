@@ -351,6 +351,23 @@ class LLMWikiCompatibilityAdapter:
         }
         return actual_paths == expected_paths
 
+    def document_inputs_match(self, build: NativeBuild, document_id: str) -> bool:
+        """Verify that one candidate descriptor points to the attested live inputs."""
+
+        manifest = build.manifest_by_id.get(document_id)
+        if manifest is None:
+            return False
+        ingest = _native_ingest(manifest, document_id)
+        for fragment in ingest.fragments:
+            relative = fragment.relative_path.removeprefix("source-md/")
+            try:
+                path = _safe_child(self._input_root, relative)
+                if path.is_symlink() or _sha256(path.read_bytes()) != fragment.sha256:
+                    return False
+            except (LLMWikiCompatibilityError, OSError):
+                return False
+        return True
+
     def input_changes_are_known(
         self,
         build: NativeBuild,
@@ -871,6 +888,13 @@ class NativeLLMWikiCatalog:
             active = self.current_native_build()
             if active.build_id != expected_current_build_id:
                 raise LLMWikiCompatibilityError("active LLMWIKI build changed before validation")
+        app_attested_inputs = (
+            self._expected_input_snapshot_sha256 is not None
+            and secrets.compare_digest(
+                self._adapter.input_snapshot_sha256(),
+                self._expected_input_snapshot_sha256,
+            )
+        )
         candidate = self._adapter.native_build(build_id)
         expected_document_ids = (
             set(active.manifest_by_id) - removed_document_ids
@@ -920,7 +944,13 @@ class NativeLLMWikiCatalog:
                     raise LLMWikiCompatibilityError(
                         f"LLMWIKI candidate contains an unapproved input: {document_id}"
                     )
-            elif candidate_ingest.descriptor_sha256 != active_ingest.descriptor_sha256:
+            elif (
+                candidate_ingest.descriptor_sha256 != active_ingest.descriptor_sha256
+                and (
+                    not app_attested_inputs
+                    or not self._adapter.document_inputs_match(candidate, document_id)
+                )
+            ):
                 raise LLMWikiCompatibilityError(
                     f"LLMWIKI candidate changed an unrelated input: {document_id}"
                 )
@@ -1108,6 +1138,7 @@ class NativeLLMWikiPipeline:
                 input_changes = await asyncio.to_thread(self._apply_inputs, events)
                 if isinstance(input_changes, set | frozenset):
                     input_changes = NativeInputChanges(changed=frozenset(input_changes))
+                self._reconcile_restored_deletion_records(input_changes)
                 allowed_missing_link_targets = self._state.llmwiki_deleted_document_ids()
                 if not set(input_changes.removed) <= allowed_missing_link_targets:
                     raise LLMWikiCompatibilityError(
@@ -1205,6 +1236,36 @@ class NativeLLMWikiPipeline:
                     retryable=error_retryable,
                 )
                 raise LLMWikiCompatibilityError(str(error)) from error
+
+    def _reconcile_restored_deletion_records(
+        self,
+        input_changes: NativeInputChanges,
+    ) -> None:
+        """Clear a tombstone only after a live, active document was changed again.
+
+        A user may restore a deleted file through the filesystem. The Electron input sync then
+        publishes that document in a later full build, while the Backend deletion record remains
+        durable. `_apply_inputs` has already verified the current source and event hash here, so an
+        active manifest plus a changed/added event is proof that the tombstone is stale.
+        """
+
+        restored_candidates = set(input_changes.changed | input_changes.added)
+        if not restored_candidates:
+            return
+        repository = self._catalog.snapshot()
+        for record in self._state.llmwiki_deleted_documents():
+            if record.document_id not in restored_candidates:
+                continue
+            manifest = repository.get_manifest(
+                record.document_id,
+                access_context=_internal_access_context(),
+            )
+            if manifest is None:
+                continue
+            self._state.clear_llmwiki_deleted_document(
+                document_id=record.document_id,
+                deleted_execution_id=record.deleted_execution_id,
+            )
 
     def _complete_published(
         self,

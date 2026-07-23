@@ -466,6 +466,24 @@ class _PipelineState:
     def llmwiki_deleted_document_ids(self) -> set[str]:
         return set(self.deleted_document_ids)
 
+    def llmwiki_deleted_documents(self) -> tuple[SimpleNamespace, ...]:
+        return tuple(
+            SimpleNamespace(
+                document_id=document_id,
+                deleted_execution_id=f"exec_deleted_{document_id}",
+            )
+            for document_id in sorted(self.deleted_document_ids)
+        )
+
+    def clear_llmwiki_deleted_document(
+        self,
+        *,
+        document_id: str,
+        deleted_execution_id: str,
+    ) -> None:
+        assert deleted_execution_id == f"exec_deleted_{document_id}"
+        self.deleted_document_ids.discard(document_id)
+
     def record_sync_task(self, *_args: object, **kwargs: object) -> None:
         if (
             self._fail_completion_once
@@ -1018,7 +1036,9 @@ def test_native_catalog_prepares_before_cas_activation(tmp_path: Path) -> None:
     assert runner.activations == [(candidate_id, parent_version)]
 
 
-def test_native_catalog_rejects_unrelated_candidate_input(tmp_path: Path) -> None:
+def test_native_catalog_rejects_unrelated_candidate_input_not_matching_attested_files(
+    tmp_path: Path,
+) -> None:
     fixture = _create_native_fixture(tmp_path)
     candidate_id = "build-22222222222222222222"
     _clone_native_build(fixture, candidate_id, ingest_sha256="f" * 64)
@@ -1032,6 +1052,9 @@ def test_native_catalog_rejects_unrelated_candidate_input(tmp_path: Path) -> Non
     )
     catalog.bootstrap()
     parent_version = catalog.snapshot().version
+    catalog._expected_input_snapshot_sha256 = (  # noqa: SLF001
+        fixture.adapter.input_snapshot_sha256()
+    )
 
     with pytest.raises(LLMWikiCompatibilityError, match="unrelated input"):
         catalog.prepare_candidate(
@@ -1042,6 +1065,45 @@ def test_native_catalog_rejects_unrelated_candidate_input(tmp_path: Path) -> Non
 
     assert fixture.adapter.current_native_build().build_id == parent_version  # type: ignore[union-attr]
     assert catalog.snapshot().version == parent_version
+
+
+def test_native_catalog_accepts_an_unrelated_input_from_the_app_attested_snapshot(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    state = StateStore(tmp_path / "state.sqlite3")
+    state.initialize()
+    catalog = NativeLLMWikiCatalog(
+        adapter=fixture.adapter,
+        runner=object(),  # type: ignore[arg-type]
+        source_resolver=SourceUriResolver(fixture.source_root),
+        state_store=state,
+    )
+    catalog.bootstrap()
+    parent_version = catalog.snapshot().version
+    fixture.input_path.write_text(
+        _frontmatter(
+            fixture.before_sha256,
+            "<!-- section: 보존 기간 -->\n\n앱이 재정규화한 입력이다.\n",
+        ),
+        encoding="utf-8",
+    )
+    attested_sha256 = fixture.adapter.input_snapshot_sha256()
+    catalog._expected_input_snapshot_sha256 = attested_sha256  # noqa: SLF001
+    candidate_id = "build-99999999999999999999"
+    _clone_native_build(
+        fixture,
+        candidate_id,
+        ingest_sha256=_sha256(fixture.input_path.read_bytes()),
+    )
+
+    prepared = catalog.prepare_candidate(
+        candidate_id,
+        expected_current_build_id=parent_version,
+        changed_document_ids=set(),
+    )
+
+    assert prepared.build.build_id == candidate_id
 
 
 def test_native_catalog_rejects_unrelated_candidate_input_path_change(tmp_path: Path) -> None:
@@ -1422,6 +1484,77 @@ def test_native_pipeline_reuses_active_deletion_scope_for_later_updates(
 
     assert version == "build-44444444444444444444"
     assert calls == ["stage-with-active-tombstone", "prepare-with-active-tombstone", "activate"]
+
+
+def test_native_pipeline_clears_a_stale_tombstone_for_an_active_restored_document(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    document_id = "REG-100001"
+    event = _event(
+        fixture,
+        event_id="evt_update_after_external_restore",
+        before_sha256=fixture.before_sha256,
+        after_sha256="a" * 64,
+        expected_text="1년",
+        replacement_text="3년",
+    )
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, version: str) -> None:
+            self.version = version
+
+        def get_manifest(self, candidate: str, **_kwargs: object) -> object | None:
+            return object() if candidate == document_id else None
+
+    class Catalog:
+        def __init__(self) -> None:
+            self.repository = Repository("build-0123456789abcdefabcd")
+            self.prepared = object()
+
+        def snapshot(self) -> Repository:
+            return self.repository
+
+        def stage(self) -> str:
+            calls.append("stage-without-stale-tombstone")
+            return "build-44444444444444444444"
+
+        def prepare_candidate(self, *_args: object, **kwargs: object) -> object:
+            assert kwargs["changed_document_ids"] == {document_id}
+            assert kwargs["allowed_missing_link_targets"] == set()
+            calls.append("prepare")
+            return self.prepared
+
+        def activate_candidate(self, prepared: object, **_kwargs: object) -> Repository:
+            assert prepared is self.prepared
+            calls.append("activate")
+            self.repository = Repository("build-44444444444444444444")
+            return self.repository
+
+        def recover_committed_candidate(self, _prepared: object) -> bool:
+            return False
+
+        def refresh(self, **_kwargs: object) -> Repository:
+            return self.repository
+
+    state = _PipelineState(event, deleted_document_ids={document_id})
+    pipeline = NativeLLMWikiPipeline(
+        catalog=Catalog(),  # type: ignore[arg-type]
+        file_store=object(),  # type: ignore[arg-type]
+        state_store=state,  # type: ignore[arg-type]
+        lock_manager=DocumentLockManager(tmp_path / "locks"),
+    )
+    pipeline._apply_inputs = lambda _events: NativeInputChanges(  # type: ignore[method-assign]  # noqa: SLF001
+        changed=frozenset({document_id})
+    )
+    pipeline._verify_live_sources = lambda _events: None  # type: ignore[method-assign]  # noqa: SLF001
+
+    version = asyncio.run(pipeline.process_pending())
+
+    assert version == "build-44444444444444444444"
+    assert state.deleted_document_ids == set()
+    assert calls == ["stage-without-stale-tombstone", "prepare", "activate"]
 
 
 def test_native_pipeline_reconciles_delete_after_pointer_commit(tmp_path: Path) -> None:
