@@ -11,7 +11,8 @@
   no-overwrite HWPX 쓰기 경계는 그대로다.
 - 검증: agent prompt/runtime 집중 테스트 94개, Ruff·mypy 통과. 실 OAuth·Opus 앱과 sidecar health
   200 확인.
-- 전달 상태: 전용 `ghdtjdwn` 저장소 반영을 진행 중이다.
+- 전달 결과: commit `f5199a0`을 전용 `ghdtjdwn` 저장소 main에 push했다. 실 OAuth·Opus 앱은
+  반영된 코드로 실행 중이다.
 
 ## 2026-07-23 — 복원 HWP 동기화 복구와 주간보고 생성 검색 안정화
 
