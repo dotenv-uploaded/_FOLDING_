@@ -14,7 +14,15 @@ if (existsSync(envFile)) loadEnvFile(envFile);
 const doc2mdRoot =
   process.env.CODEGATE_DOC2MD_PROJECT_ROOT ??
   path.join(workspaceDir, 'codegate-2026-api', 'services', 'doc2md');
-const configuredPython = process.env.CODEGATE_DOC2MD_PYTHON;
+const installedPython = path.join(
+  doc2mdRoot,
+  '.venv',
+  process.platform === 'win32' ? 'Scripts' : 'bin',
+  process.platform === 'win32' ? 'python.exe' : 'python',
+);
+const configuredPython =
+  process.env.CODEGATE_DOC2MD_PYTHON ??
+  (existsSync(installedPython) ? installedPython : undefined);
 const command = configuredPython ?? 'uv';
 const prefix = configuredPython
   ? []

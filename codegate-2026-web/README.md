@@ -24,8 +24,9 @@ pnpm test
 pnpm dev:integrated
 ```
 
-`dev:integrated`는 doc2md를 `uv run --isolated --python 3.12`로 먼저 띄우고 URL을 Electron에
-전달한다. 이미 별도로 실행한 doc2md를 쓸 때만 `CODEGATE_DOC2MD_URL=... pnpm dev`를 사용한다.
+`dev:integrated`는 doc2md의 `.venv`가 있으면 그 Python으로, 없으면
+`uv run --isolated --python 3.12`로 먼저 띄우고 URL을 Electron에 전달한다. 이미 별도로 실행한
+doc2md를 쓸 때만 `CODEGATE_DOC2MD_URL=... pnpm dev`를 사용한다.
 
 실제 네 저장소 프로세스를 함께 검증하려면 다음 smoke를 실행한다. Converter는 프로젝트 안에
 `.venv`를 만들지 않고 `uv --isolated --python 3.12` 환경에서 실행한다.

@@ -1,5 +1,20 @@
 # Work log
 
+## 2026-07-23 — 단일 저장소 새 컴퓨터 재현 경로
+
+- 목표: 현재 동작하는 Electron·Backend·doc2md·LLMWIKI 조합을 개인 설정이나 기존 가상환경에
+  의존하지 않고 새 컴퓨터에서 같은 저장소만으로 설치·실행하게 한다.
+- 변경: pnpm과 uv lockfile을 고정해 전체 로컬 runtime을 준비하는 루트 bootstrap과 실제
+  Google OAuth·고정 callback·Claude Sonnet으로 실행하는 스크립트를 추가했다. doc2md는 bootstrap이
+  만든 Python 3.12 가상환경을 자동 재사용하고, 없을 때만 기존 isolated uv 경로로 fallback한다.
+  환경변수 예시는 monorepo 기본 경로와 실제 cloud API를 사용하며 자격증명은 계속 제외한다.
+- 영향: 개발 설치·실행 경로와 문서만 변경한다. 문서 조회·승인·생성·삭제 계약과 사용자 데이터
+  형식은 변경하지 않는다.
+- 검증: Bash 구문 검사, TypeScript typecheck와 임시 fresh clone bootstrap을 실행해 pnpm 11.9.0
+  frozen install, Backend Python 3.12 frozen sync, doc2md Python 3.12 frozen sync, `.env` 생성과
+  미설정 API key fail-fast를 확인했다.
+- 전달 상태: 전용 `ghdtjdwn` 저장소 main 반영을 진행한다.
+
 ## 2026-07-23 — Claude 기본 모델을 Sonnet으로 변경
 
 - 목표와 변경: Electron sidecar의 Claude 기본 alias와 환경변수 예시를 `sonnet`으로 맞췄다.
