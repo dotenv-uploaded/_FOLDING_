@@ -31,6 +31,7 @@ from codegate_api.agent.runtime import (
     ALLOWED_AGENT_TOOLS,
     SAFE_AGENT_TOOLS,
     SDK_CONTROL_TOOLS,
+    SubprocessStderrTail,
     build_claude_agent_options,
 )
 from codegate_api.agent.tools import TOOL_CONTRACT_VERSION
@@ -316,7 +317,6 @@ class ClaudeAgentGateway:
         access_context: AccessContext,
         resume_session_id: str | None = None,
     ) -> AgentRunResult:
-        del conversation_id
         session_id = str(uuid4())
         effective_session_id = _canonical_session_id(resume_session_id or session_id)
         state_root = self._settings.resolved_agent_state_root()
@@ -325,6 +325,9 @@ class ClaudeAgentGateway:
             raise AgentGatewayError(
                 "AGENT_SESSION_INVALID", "Claude session 경로가 유효하지 않습니다."
             )
+        # 서브프로세스가 죽으면 SDK 는 "Check stderr output for details" 만 올리고 정작
+        # 그 stderr 를 버린다. 콜백을 붙여 붙잡아 뒀다가 실패했을 때 함께 남긴다.
+        stderr_tail = SubprocessStderrTail()
         options = build_claude_agent_options(
             repository,
             working_directory=self._settings.resolved_source_root(),
@@ -334,6 +337,7 @@ class ClaudeAgentGateway:
             model=self._settings.claude_model,
             session_id=None if resume_session_id else session_id,
             resume=resume_session_id,
+            stderr=stderr_tail,
         )
         prompt = build_turn_prompt(
             user_message=message,
@@ -428,12 +432,50 @@ class ClaudeAgentGateway:
             # 원인을 반드시 남긴다. 여기서 통째로 삼키는 바람에 "Claude Agent SDK 호출에
             # 실패했습니다"만 보였고, 실제 원인(API 크레딧 소진)을 찾으려고 Anthropic API를
             # 직접 찔러 봐야 했다. 로그 한 줄이면 바로 알 수 있는 일이었다.
-            logger.exception("agent gateway call failed: %s", error)
+            #
+            # 서브프로세스가 죽은 경우(ProcessError)에는 SDK 가 stderr 를 버리므로,
+            # 붙잡아 둔 마지막 줄들을 함께 남긴다 — 그게 진짜 원인이 적힌 곳이다.
+            tail = stderr_tail.text()
+            logger.exception(
+                "agent gateway call failed: %s%s",
+                error,
+                f"\n--- subprocess stderr (last lines) ---\n{tail}" if tail else "",
+            )
+            # 이어받을 세션이 없어서 죽은 경우라면, 세션 없이 한 번 더 시도한다.
+            #
+            # 이어받기가 불가능하다는 이유로 **대화 전체가 실패할 이유는 없다.** 사용자에게는
+            # 앞선 대화가 화면에 그대로 보이는데 답만 안 나오는 상태였다. 이어지는 맥락은
+            # 잃더라도 질문에는 답하는 편이 낫고, 무엇을 잃었는지는 로그에 남긴다.
+            #
+            # 한 번만 재시도한다 — `resume_session_id=None` 으로 부르므로 이 분기에 다시
+            # 들어오지 않는다.
+            if resume_session_id is not None and _is_missing_session(tail):
+                logger.warning(
+                    "resume failed for session %s; retrying without it", resume_session_id
+                )
+                return await self.decide(
+                    message=message,
+                    selected_document_id=selected_document_id,
+                    conversation_id=conversation_id,
+                    repository=repository,
+                    access_context=access_context,
+                    resume_session_id=None,
+                )
             raise AgentGatewayError(
                 "AGENT_UNAVAILABLE",
                 f"Claude Agent SDK 호출에 실패했습니다. ({type(error).__name__})",
             ) from error
         raise AgentGatewayError("AGENT_RESULT_MISSING", "Claude 최종 응답을 받지 못했습니다.")
+
+
+def _is_missing_session(stderr_tail: str) -> bool:
+    """이어받을 대화가 없어서 죽었는가.
+
+    CLI 는 이 경우 `No conversation found with session ID: <id>` 를 stderr 로 남긴다.
+    다른 실패(크레딧 소진, 네트워크)까지 재시도하면 같은 오류를 두 번 내고 두 배로 느려질
+    뿐이므로, 이 문구일 때만 되살린다.
+    """
+    return "No conversation found with session ID" in stderr_tail
 
 
 def build_agent_gateway(settings: Settings) -> AgentGateway:

@@ -98,8 +98,13 @@ def test_claude_agent_options_disable_builtin_tools() -> None:
     assert options.env == {
         "CLAUDE_CONFIG_DIR": str(Path(".runtime/test-claude").resolve()),
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
-        "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
     }
+    # 전사본 저장을 끄면 안 된다. 껐더니 CLI 가 대화를 남기지 않아, 다음 턴의 `resume` 이
+    # 항상 "No conversation found" 로 죽었다 — 대화 두 번째 질문부터 실패했다.
+    assert "CLAUDE_CODE_SKIP_PROMPT_HISTORY" not in options.env
+    # 자동 메모리는 계속 꺼 둔다. 작업 디렉터리가 사용자의 문서 폴더라, 켜면 신뢰할 수 없는
+    # 문서가 지시를 주입하는 통로가 된다.
+    assert options.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert "Edit" in options.disallowed_tools
     assert "Bash" in options.disallowed_tools
     assert set(options.mcp_servers) == {"codegate"}
@@ -786,3 +791,31 @@ def test_claude_gateway_rejects_non_uuid_resume_session(tmp_path: Path) -> None:
                 resume_session_id="../../outside",
             )
         )
+
+
+def test_missing_session_은_되살릴_실패로_판정된다() -> None:
+    """이어받을 대화가 없어서 죽은 경우만 재시도한다.
+
+    크레딧 소진·네트워크 오류까지 재시도하면 같은 오류를 두 번 내고 두 배로 느려질 뿐이다.
+    """
+    from codegate_api.agent.gateway import _is_missing_session
+
+    assert _is_missing_session(
+        "No conversation found with session ID: 72be106c-5449-4352-8e02-6bcf5829168e"
+    )
+    assert not _is_missing_session("Your credit balance is too low")
+    assert not _is_missing_session("")
+
+
+def test_stderr_tail_은_마지막_줄만_보관한다() -> None:
+    """SDK 가 버리는 stderr 를 붙잡되, 정상 실행의 잡음까지 쌓아두지 않는다."""
+    from codegate_api.agent.runtime import SubprocessStderrTail
+
+    tail = SubprocessStderrTail(limit=3)
+    for i in range(10):
+        tail(f"line {i}\n")
+    assert tail.text() == "line 7\nline 8\nline 9"
+
+    empty = SubprocessStderrTail()
+    empty("   \n")
+    assert empty.text() == ""
