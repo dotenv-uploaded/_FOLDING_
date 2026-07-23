@@ -39,6 +39,64 @@
 시연에서는 로그인과 폴더 등록부터 문서 질의, 근거 확인, HWP 작성자 변경 승인, 여러 업무 문서를
 바탕으로 한 주간업무보고서 HWPX 생성까지 하나의 흐름으로 확인할 수 있습니다.
 
+## 문서 작업의 한 흐름
+
+| 탐색 | 변경 | 생성 |
+| --- | --- | --- |
+| 질문과 관련된 문서를 에이전트가 검색하고 현재 turn에서 원문을 검증합니다. | 대상·원본 hash·exact diff를 결박한 변경 계획을 만들고 사용자 승인을 기다립니다. | 여러 근거 문서를 검색해 초안을 구성하고 새 HWPX 전체 diff를 먼저 보여 줍니다. |
+| 답변의 사실 문장은 문서 ID, revision, section이 포함된 canonical quote로 돌아갑니다. | 승인 후 backup, journal, atomic replace, 지식 버전 게시를 수행하며 Undo가 가능합니다. | 승인 후 Kordoc으로 생성·재파싱하고 기존 파일을 덮어쓰지 않는 방식으로 게시합니다. |
+
+읽기는 HWP/HWPX, PDF, DOCX, XLSX, PPT/PPTX, CSV, HTML, Markdown, TXT를 정규화합니다.
+원본 변경은 검증 가능한 writer가 있는 Markdown/TXT와 로컬 Kordoc attestation을 통과한
+HWP/HWPX에만 열리며, 그 밖의 형식은 읽기 전용으로 유지됩니다.
+
+## 프로젝트의 강점
+
+| 강점 | 구현으로 확인되는 이유 |
+| --- | --- |
+| 로컬 파일에 맞춘 신뢰 경계 | 원본·변환·검색·write·backup을 사용자 PC에 두고 cloud identity, model inference와 분리했습니다. 서버에 로컬 filesystem capability를 위임하지 않습니다. |
+| Prompt가 아닌 코드로 지키는 승인 | 모델에는 범용 파일 도구가 없습니다. ACL, base hash, exact `plan_hash`, 사용자 승인과 deterministic writer가 실제 변경 권한을 결정합니다. |
+| 답변과 관계를 다시 추적할 수 있음 | canonical quote, stable document/section ID, revision과 graph version을 함께 반환합니다. 지식 그래프 엣지도 출발 section과 원문 quote를 가져야 합니다. |
+| 실패해도 이전 정상 상태를 유지 | 원본 변경은 backup·journal·atomic replace로 복구하고, 지식 검색은 모든 index가 검증된 immutable build만 공개해 부분 version 노출을 막습니다. |
+| 한국 업무 문서의 실제 lifecycle 지원 | HWP/HWPX를 읽는 데서 끝나지 않고 runtime attestation, patch·재파싱 equality, no-overwrite 생성과 Undo까지 같은 승인 흐름으로 연결합니다. |
+| 모델과 문서 형식이 바뀌어도 유지되는 구조 | Claude는 typed proposal, doc2md는 canonical conversion, LLMWIKI는 versioned artifact, Backend는 policy와 transaction을 담당해 각 구성요소를 계약으로 교체할 수 있습니다. |
+| 운영 상태가 사용자에게 보임 | 파일 적용과 지식 동기화를 별도 상태로 보여 주고, retry 가능한 실패와 terminal 상태를 구분해 “파일은 바뀌었지만 검색 반영은 대기 중”인 상황을 숨기지 않습니다. |
+| 재현 가능한 통합 저장소 | 네 구성요소와 lockfile, bootstrap·run script, ADR·troubleshooting 기록, 실제 시연 자산과 자동화 검증을 하나의 공개 monorepo에서 확인할 수 있습니다. |
+
+이 프로젝트의 중심은 LLM 응답 자체보다 **로컬 문서를 근거로 판단하고, 사용자가 승인한 변경만
+복구 가능한 방식으로 실행한 뒤, 다음 검색이 새 지식 버전을 일관되게 보게 만드는 전체 흐름**에
+있습니다.
+
+## 아키텍처
+
+```mermaid
+flowchart LR
+    U[사용자] --> UI[Electron + React<br/>대화 · 근거 · 승인 · Undo]
+
+    subgraph DEVICE[사용자 기기]
+        UI --> MAIN[Electron Main<br/>폴더 capability · OAuth · process supervision]
+        MAIN --> SIDE[FastAPI Sidecar<br/>Claude Agent SDK · ACL · change plan]
+        MAIN --> DOC[doc2md<br/>HWP/HWPX · Office · PDF · OCR]
+        SIDE --> DOC
+        DOC --> CANON[Canonical Markdown<br/>stable document / section ID]
+        SIDE --> WIKI[LLMWIKI<br/>FTS · vector · graph]
+        CANON --> WIKI
+        WIKI --> VER[Immutable knowledge version]
+        VER --> SIDE
+        SIDE --> WRITER[Approved writer<br/>backup · journal · atomic replace]
+    end
+
+    MAIN -. Authorization Code + PKCE .-> AUTH[Google OAuth / Cloud API]
+    SIDE -. model inference .-> CLAUDE[Anthropic API]
+    WRITER --> FILES[(사용자 원본 문서)]
+    FILES --> DOC
+```
+
+클라우드 로그인은 사용자 신원을 확인하지만 로컬 파일 권한을 만들지 않습니다. 파일 capability는
+OS 폴더 선택으로 별도 획득하고, cloud API client와 loopback sidecar client를 분리해 cloud bearer가
+로컬 서비스로 전달되지 않게 합니다. Anthropic key, 사용자 문서, 절대 경로, 세션 상태는 renderer와
+저장소에 두지 않습니다.
+
 ## 어디서 실행되는가
 
 Folding은 모든 기능을 서버로 보내는 웹 서비스도, 네트워크 없이 동작하는 완전한 오프라인 앱도
@@ -126,34 +184,6 @@ index, 절대 파일 경로와 CODEGATE OAuth token은 이 추론 경로로 보�
 클라우드 로그인은 “누구인가”를 확인하고, OS 폴더 선택은 “어느 파일을 다룰 수 있는가”를
 결정합니다. 로그인 성공만으로 로컬 파일 권한이 생기지 않으며, 로그아웃해도 원본이나 로컬 지식
 버전을 삭제하지 않습니다.
-
-## 프로젝트의 강점
-
-| 강점 | 구현으로 확인되는 이유 |
-| --- | --- |
-| 로컬 파일에 맞춘 신뢰 경계 | 원본·변환·검색·write·backup을 사용자 PC에 두고 cloud identity, model inference와 분리했습니다. 서버에 로컬 filesystem capability를 위임하지 않습니다. |
-| Prompt가 아닌 코드로 지키는 승인 | 모델에는 범용 파일 도구가 없습니다. ACL, base hash, exact `plan_hash`, 사용자 승인과 deterministic writer가 실제 변경 권한을 결정합니다. |
-| 답변과 관계를 다시 추적할 수 있음 | canonical quote, stable document/section ID, revision과 graph version을 함께 반환합니다. 지식 그래프 엣지도 출발 section과 원문 quote를 가져야 합니다. |
-| 실패해도 이전 정상 상태를 유지 | 원본 변경은 backup·journal·atomic replace로 복구하고, 지식 검색은 모든 index가 검증된 immutable build만 공개해 부분 version 노출을 막습니다. |
-| 한국 업무 문서의 실제 lifecycle 지원 | HWP/HWPX를 읽는 데서 끝나지 않고 runtime attestation, patch·재파싱 equality, no-overwrite 생성과 Undo까지 같은 승인 흐름으로 연결합니다. |
-| 모델과 문서 형식이 바뀌어도 유지되는 구조 | Claude는 typed proposal, doc2md는 canonical conversion, LLMWIKI는 versioned artifact, Backend는 policy와 transaction을 담당해 각 구성요소를 계약으로 교체할 수 있습니다. |
-| 운영 상태가 사용자에게 보임 | 파일 적용과 지식 동기화를 별도 상태로 보여 주고, retry 가능한 실패와 terminal 상태를 구분해 “파일은 바뀌었지만 검색 반영은 대기 중”인 상황을 숨기지 않습니다. |
-| 재현 가능한 통합 저장소 | 네 구성요소와 lockfile, bootstrap·run script, ADR·troubleshooting 기록, 실제 시연 자산과 자동화 검증을 하나의 공개 monorepo에서 확인할 수 있습니다. |
-
-이 프로젝트의 중심은 LLM 응답 자체보다 **로컬 문서를 근거로 판단하고, 사용자가 승인한 변경만
-복구 가능한 방식으로 실행한 뒤, 다음 검색이 새 지식 버전을 일관되게 보게 만드는 전체 흐름**에
-있습니다.
-
-## 문서 작업의 한 흐름
-
-| 탐색 | 변경 | 생성 |
-| --- | --- | --- |
-| 질문과 관련된 문서를 에이전트가 검색하고 현재 turn에서 원문을 검증합니다. | 대상·원본 hash·exact diff를 결박한 변경 계획을 만들고 사용자 승인을 기다립니다. | 여러 근거 문서를 검색해 초안을 구성하고 새 HWPX 전체 diff를 먼저 보여 줍니다. |
-| 답변의 사실 문장은 문서 ID, revision, section이 포함된 canonical quote로 돌아갑니다. | 승인 후 backup, journal, atomic replace, 지식 버전 게시를 수행하며 Undo가 가능합니다. | 승인 후 Kordoc으로 생성·재파싱하고 기존 파일을 덮어쓰지 않는 방식으로 게시합니다. |
-
-읽기는 HWP/HWPX, PDF, DOCX, XLSX, PPT/PPTX, CSV, HTML, Markdown, TXT를 정규화합니다.
-원본 변경은 검증 가능한 writer가 있는 Markdown/TXT와 로컬 Kordoc attestation을 통과한
-HWP/HWPX에만 열리며, 그 밖의 형식은 읽기 전용으로 유지됩니다.
 
 ## 지식 그래프
 
@@ -245,36 +275,6 @@ flowchart LR
 변경된 입력은 staging에서 변환되고 FTS·vector·graph artifact 검증을 거칩니다. 검증이 끝난
 `build-<hash>`만 불변 버전으로 설치하며, `current.json` 포인터는 compare-and-swap 방식으로
 교체됩니다. 새 빌드가 실패해도 읽기 요청은 직전 정상 버전을 계속 사용합니다.
-
-## 아키텍처
-
-```mermaid
-flowchart LR
-    U[사용자] --> UI[Electron + React<br/>대화 · 근거 · 승인 · Undo]
-
-    subgraph DEVICE[사용자 기기]
-        UI --> MAIN[Electron Main<br/>폴더 capability · OAuth · process supervision]
-        MAIN --> SIDE[FastAPI Sidecar<br/>Claude Agent SDK · ACL · change plan]
-        MAIN --> DOC[doc2md<br/>HWP/HWPX · Office · PDF · OCR]
-        SIDE --> DOC
-        DOC --> CANON[Canonical Markdown<br/>stable document / section ID]
-        SIDE --> WIKI[LLMWIKI<br/>FTS · vector · graph]
-        CANON --> WIKI
-        WIKI --> VER[Immutable knowledge version]
-        VER --> SIDE
-        SIDE --> WRITER[Approved writer<br/>backup · journal · atomic replace]
-    end
-
-    MAIN -. Authorization Code + PKCE .-> AUTH[Google OAuth / Cloud API]
-    SIDE -. model inference .-> CLAUDE[Anthropic API]
-    WRITER --> FILES[(사용자 원본 문서)]
-    FILES --> DOC
-```
-
-클라우드 로그인은 사용자 신원을 확인하지만 로컬 파일 권한을 만들지 않습니다. 파일 capability는
-OS 폴더 선택으로 별도 획득하고, cloud API client와 loopback sidecar client를 분리해 cloud bearer가
-로컬 서비스로 전달되지 않게 합니다. Anthropic key, 사용자 문서, 절대 경로, 세션 상태는 renderer와
-저장소에 두지 않습니다.
 
 ## 구현 구성
 
