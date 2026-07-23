@@ -2,6 +2,7 @@
  * 메인 프로세스 서비스 컨테이너 — L2·L3·L4 와 에이전트 호스트를 한 곳에서 조립한다.
  * IPC 핸들러(`ipc.ts`)와 앱 부트스트랩(`index.ts`)은 이 객체만 본다.
  */
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -16,8 +17,9 @@ import type {
   ScanPreview,
   Session,
   WikiGraph,
+  UsageStatus,
 } from '@contracts';
-import { AuthError, IPC_EVENTS } from '@contracts';
+import { AuthError, IPC_EVENTS, USAGE_BLOCKED_MESSAGE, USAGE_LIMIT_KRW } from '@contracts';
 import { AuthService, SafeStorageAuthStorage } from '@main/auth';
 import { SafeStorageLlmKeyStore, type LlmKeyStore } from '@main/auth/llm-key';
 import { ManagedLlmKeyStore, readInternalApiKey } from '@main/auth/internal-key';
@@ -230,7 +232,10 @@ export class AppServices {
       },
     });
 
-    const { createAgent, source } = await loadCreateAgent();
+    // 비용은 services 가 생기기 전에 배선된다 — watcher 와 같은 지연 참조를 쓴다.
+    const { createAgent, source } = await loadCreateAgent((costUsd) => {
+      self?.recordUsage(costUsd, 'chat');
+    });
 
     // 자격증명 ① 백엔드 토큰(auth)과 ② Anthropic 키(환경변수)는 여기서도 섞이지 않는다.
     const agentRoots: string[] = [];
@@ -461,7 +466,74 @@ export class AppServices {
    * 이라고 답하므로, 막는 것보다 답하게 두는 편이 정직하고 쓸모 있다.
    */
   sendChat(conversationId: string, text: string): { messageId: string } {
+    // 한도를 넘겼으면 **보내기 전에** 막는다. 보내고 나서 막으면 이미 돈이 나간 뒤다.
+    const usage = this.usageStatus();
+    if (usage.blocked) {
+      throw new UserFacingError(USAGE_BLOCKED_MESSAGE);
+    }
     return this.chat.send(conversationId, text);
+  }
+
+  /* ------------------------------------------------------------ 구독 사용량 */
+
+  /** 지금 이 사용자를 가리키는 키. 로그인 전이면 이 기기 몫으로 센다. */
+  private usageSubject(): string {
+    return this.auth.getSession().subjectId ?? 'local';
+  }
+
+  /**
+   * 사용량 현황.
+   *
+   * 저장은 USD(제공자가 계산해 준 값), 표시는 원. 환산을 여기 한 곳에서만 해서 화면마다
+   * 다른 환율이 쓰이는 일이 없게 한다.
+   */
+  usageStatus(): UsageStatus {
+    const subject = this.usageSubject();
+    const { costUsd, calls } = this.store.usageTotal(subject);
+    const extraKrw = this.store.creditTotalKrw(subject);
+    const usedKrw = Math.round(costUsd * usdToKrwRate());
+    const remainingKrw = USAGE_LIMIT_KRW + extraKrw - usedKrw;
+    return {
+      usedKrw,
+      limitKrw: USAGE_LIMIT_KRW,
+      extraKrw,
+      remainingKrw,
+      blocked: remainingKrw <= 0,
+      calls,
+    };
+  }
+
+  /** 호출 한 건의 비용을 기록한다. 금액을 모르면(null) 기록하지 않는다. */
+  recordUsage(costUsd: number | null | undefined, source: string): void {
+    this.store.recordUsage({
+      id: randomUUID(),
+      subjectId: this.usageSubject(),
+      costUsd: costUsd ?? null,
+      source,
+      createdAt: new Date().toISOString(),
+    });
+    this.options.send(IPC_EVENTS.usageChanged, this.usageStatus());
+  }
+
+  /**
+   * 크레딧 추가.
+   *
+   * **결제는 아직 없다.** 지금은 화면과 한도 해제 흐름을 잇는 자리이고, 실제 결제가 붙으면
+   * 이 함수가 결제 확인 뒤에 불리게 된다. 결제 없이 크레딧이 늘어난다는 사실을 감추지 않는다.
+   */
+  purchaseCredit(amountKrw: number): UsageStatus {
+    if (!Number.isInteger(amountKrw) || amountKrw <= 0) {
+      throw new UserFacingError('구매 금액이 올바르지 않습니다.');
+    }
+    this.store.addCreditKrw({
+      id: randomUUID(),
+      subjectId: this.usageSubject(),
+      amountKrw,
+      createdAt: new Date().toISOString(),
+    });
+    const status = this.usageStatus();
+    this.options.send(IPC_EVENTS.usageChanged, status);
+    return status;
   }
 
   async undoExecution(messageId: string, executionId: string): Promise<ExecutionSummary> {
@@ -821,6 +893,17 @@ function sidecarRuntimePaths(options: ServicesOptions, sourceRoot: string): Side
     tenantId: process.env.CODEGATE_LLMWIKI_TENANT_ID ?? 'local',
     wikiId: process.env.CODEGATE_LLMWIKI_WIKI_ID ?? 'workspace',
   };
+}
+
+/**
+ * USD → 원 환산율.
+ *
+ * 고정값이 아니라 설정으로 뺀 이유는, 이 숫자가 **사용자에게 청구되는 금액**으로 보이기
+ * 때문이다. 환율이 크게 움직였는데 코드를 고쳐야만 반영되면 표시가 사실과 어긋난다.
+ */
+function usdToKrwRate(): number {
+  const configured = Number(process.env.CODEGATE_USD_KRW_RATE);
+  return Number.isFinite(configured) && configured > 0 ? configured : 1_400;
 }
 
 function sidecarBinary(options: ServicesOptions): string {

@@ -34,6 +34,8 @@ export interface ChatResponse {
   assistant_text: string;
   documents: DocumentResponse[];
   change_plan: ChangePlanResponse | null;
+  /** 이번 호출이 실제로 쓴 비용. 구독 사용량을 세는 근거다. */
+  usage?: { cost_usd: number | null } | null;
   error: { code: string; message: string; retryable: boolean } | null;
 }
 

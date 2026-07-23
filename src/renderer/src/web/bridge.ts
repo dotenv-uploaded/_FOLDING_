@@ -11,7 +11,9 @@ import type {
   Root,
   ScanPreview,
   Session,
+  UsageStatus,
 } from '@contracts';
+import { USAGE_LIMIT_KRW } from '@contracts';
 import type { CodegateApi } from '../../../preload/api';
 
 const SUPPORTED_EXTENSIONS = new Set(['hwp', 'hwpx', 'docx', 'pdf', 'md', 'txt']);
@@ -215,6 +217,27 @@ export function createWebBridge(): CodegateApi {
       },
       onChanged(callback: Listener<FileNode[]>): () => void {
         return subscribe(treeListeners, callback);
+      },
+    },
+
+    usage: {
+      // 웹 데모에는 구독 계정이 없다. 한도가 걸리지 않도록 넉넉한 값을 돌려주되,
+      // 결제·차단 흐름은 데스크톱에서만 의미가 있다는 사실을 숨기지 않는다.
+      async status(): Promise<UsageStatus> {
+        return {
+          usedKrw: 0,
+          limitKrw: USAGE_LIMIT_KRW,
+          extraKrw: 0,
+          remainingKrw: USAGE_LIMIT_KRW,
+          blocked: false,
+          calls: 0,
+        };
+      },
+      async purchase(): Promise<UsageStatus> {
+        return this.status();
+      },
+      onChanged(): () => void {
+        return () => {};
       },
     },
 

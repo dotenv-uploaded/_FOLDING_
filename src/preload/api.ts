@@ -13,6 +13,7 @@ import type {
   Root,
   ScanPreview,
   Session,
+  UsageStatus,
   WikiGraph,
 } from '@contracts';
 
@@ -46,6 +47,13 @@ export interface CodegateApi {
   tree: {
     get(): Promise<FileNode[]>;
     onChanged(callback: (tree: FileNode[]) => void): () => void;
+  };
+  usage: {
+    /** 지금까지 쓴 금액·한도·남은 금액 */
+    status(): Promise<UsageStatus>;
+    /** 크레딧 추가. **결제는 아직 붙지 않았다** — 화면과 한도 해제 흐름만 잇는다. */
+    purchase(amountKrw: number): Promise<UsageStatus>;
+    onChanged(callback: (status: UsageStatus) => void): () => void;
   };
   chat: {
     list(): Promise<Conversation[]>;

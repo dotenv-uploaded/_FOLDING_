@@ -16,6 +16,7 @@ import type {
   Root,
   ScanPreview,
   Session,
+  UsageStatus,
   WikiGraph,
 } from '@contracts';
 
@@ -67,6 +68,14 @@ const api: CodegateApi = {
   tree: {
     get: (): Promise<FileNode[]> => ipcRenderer.invoke(IPC.treeGet),
     onChanged: (cb: (t: FileNode[]) => void) => subscribe<FileNode[]>(IPC_EVENTS.treeChanged, cb),
+  },
+
+  usage: {
+    status: (): Promise<UsageStatus> => ipcRenderer.invoke(IPC.usageStatus),
+    purchase: (amountKrw: number): Promise<UsageStatus> =>
+      ipcRenderer.invoke(IPC.usagePurchase, amountKrw),
+    onChanged: (cb: (s: UsageStatus) => void) =>
+      subscribe<UsageStatus>(IPC_EVENTS.usageChanged, cb),
   },
 
   chat: {

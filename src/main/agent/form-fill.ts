@@ -102,10 +102,34 @@ async function extractWithAnthropic(
     }),
   });
   if (!response.ok) {
-    throw new Error(`Anthropic 호출 실패 (HTTP ${response.status}).`);
+    throw new Error(`Anthropic 호출 실패 — ${await providerReason(response)}`);
   }
   const payload = (await response.json()) as { content?: { text?: string }[] };
   return parseFilled(payload.content?.map((block) => block.text ?? '').join('') ?? '', names);
+}
+
+/**
+ * 제공자가 준 실패 사유를 한 줄로 뽑는다.
+ *
+ * 상태 코드만 남기면 "HTTP 400" 뿐이고, 크레딧 소진인지 잘못된 모델명인지 알 수 없다.
+ * 실제로 Anthropic 은 "credit balance is too low" 라고 정확히 말해 주고 있었는데 그
+ * 본문을 버려서, 원인을 찾으려고 API 를 따로 찔러 봐야 했다.
+ *
+ * 응답 본문만 읽는다 — 요청에 담긴 키는 건드리지 않는다.
+ */
+async function providerReason(response: Response): Promise<string> {
+  const fallback = `HTTP ${response.status}`;
+  try {
+    const body = (await response.json()) as {
+      error?: { message?: unknown; type?: unknown } | string;
+    };
+    const error = body.error;
+    if (typeof error === 'string') return `${fallback} ${error}`;
+    const message = typeof error?.message === 'string' ? error.message : null;
+    return message ? `${fallback} ${message}` : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 async function extractWithGemini(
@@ -128,7 +152,7 @@ async function extractWithGemini(
     }),
   });
   if (!response.ok) {
-    throw new Error(`Gemini 호출 실패 (HTTP ${response.status}).`);
+    throw new Error(`Gemini 호출 실패 — ${await providerReason(response)}`);
   }
   const payload = (await response.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
@@ -149,61 +173,57 @@ export interface FillKeys {
  * 모델에게 **적힌 것만 옮기라**고 못 박는다. 적히지 않은 칸은 빈 문자열로 두게 해서,
  * 뒤에서 "몇 칸이 비었는지" 그대로 사용자에게 알릴 수 있게 한다.
  *
- * 제공자를 둘 다 받는 이유
- * ----------------------
- * 이 경로는 사이드카를 거치지 않으므로, 여기만 살아 있으면 **채팅으로 양식을 채우는 일은
- * 계속 된다.** 한쪽 계정이 막혀도 시연이 멈추지 않게 두 곳을 순서대로 시도한다.
+ * 제공자는 하나다 — 폴백하지 않는다
+ * ------------------------------
+ * 설정한 제공자로만 부른다. 실패하면 **다른 제공자로 몰래 넘어가지 않고 그대로 실패한다.**
  *
- * **Anthropic(Claude) 경로는 그대로 살아 있다.** 순서만 `CODEGATE_FILL_PROVIDER` 로 고른다:
+ *     CODEGATE_FILL_PROVIDER=anthropic   # Claude (기본)
+ *     CODEGATE_FILL_PROVIDER=gemini
  *
- *     CODEGATE_FILL_PROVIDER=anthropic   # 예전 그대로 Claude 를 먼저 부른다
- *     CODEGATE_FILL_PROVIDER=gemini      # Gemini 를 먼저 (설정이 없을 때의 기본)
+ * 예전에는 실패 시 다른 쪽으로 넘어갔는데, 그게 두 가지를 망친다. 첫째, **어떤 답은
+ * Claude 가 어떤 답은 Gemini 가** 만들어 품질과 말투가 눈에 안 보이게 갈린다. 둘째,
+ * 크레딧이 끊긴 것 같은 진짜 고장이 "조금 느리다"로 위장돼 며칠씩 안 드러난다. 실제로
+ * Anthropic 크레딧이 바닥난 걸 폴백이 가려서, 앱은 멀쩡해 보이는데 Claude 는 한 번도
+ * 안 불리고 있었다.
  *
- * 기본을 Gemini 로 둔 것은 취향이 아니라 관측 결과다 — Anthropic 키는 있는데 크레딧이
- * 없어서 매번 실패했고, 그때마다 왕복 한 번이 통째로 버려져 화면에서 눈에 띄게 느려졌다.
- * 크레딧이 충전되면 위 변수만 바꾸면 원래 순서로 돌아온다. 둘 다 없으면 그 사실을 알린다.
+ * 고장은 고장으로 보여야 고친다.
  */
 export async function extractValues(
   message: string,
   names: string[],
   keys: FillKeys,
   sources: string = '',
-  preferred: string = process.env.CODEGATE_FILL_PROVIDER ?? 'gemini',
+  provider: string = process.env.CODEGATE_FILL_PROVIDER ?? 'anthropic',
 ): Promise<Record<string, string>> {
-  const providers: { name: string; key: string | null; run: (key: string) => Promise<Record<string, string>> }[] = [
-    { name: 'gemini', key: keys.gemini, run: (k) => extractWithGemini(message, names, k, sources) },
-    {
-      name: 'anthropic',
+  const runners: Record<string, { key: string | null; run: (key: string) => Promise<Record<string, string>> }> = {
+    anthropic: {
       key: keys.anthropic,
       run: (k) => extractWithAnthropic(message, names, k, sources),
     },
-  ];
-  // 선호하는 쪽을 앞으로. 나머지는 순서를 유지한 채 뒤따른다 — 하나가 막혀도 멈추지 않는다.
-  const ordered = [
-    ...providers.filter((p) => p.name === preferred),
-    ...providers.filter((p) => p.name !== preferred),
-  ];
-  const attempts = ordered
-    .filter((p): p is typeof p & { key: string } => Boolean(p.key))
-    .map((p) => ({ name: p.name, run: () => p.run(p.key) }));
+    gemini: { key: keys.gemini, run: (k) => extractWithGemini(message, names, k, sources) },
+  };
 
-  if (attempts.length === 0) {
-    throw new UserFacingError('문서 분석 서비스에 연결하지 못했습니다. LLM 키를 확인해 주세요.');
+  const selected = runners[provider];
+  if (!selected) {
+    throw new UserFacingError(
+      `알 수 없는 LLM 제공자입니다: ${provider} (anthropic 또는 gemini)`,
+    );
+  }
+  if (!selected.key) {
+    throw new UserFacingError(`${provider} API 키가 설정되지 않았습니다.`);
   }
 
-  let last: unknown;
-  for (const attempt of attempts) {
-    try {
-      return await attempt.run();
-    } catch (error) {
-      // 어느 제공자가 왜 떨어졌는지 남긴다. 조용히 다음으로 넘어가면 "느리다"만 남는다.
-      logError(`form-fill:extract:${attempt.name}`, error);
-      last = error;
-    }
+  try {
+    return await selected.run(selected.key);
+  } catch (error) {
+    // 무엇이 왜 실패했는지 남긴다. 사용자에게도 제공자 이름을 그대로 보여준다 —
+    // "문서 분석 실패" 만 뜨면 키 문제인지 네트워크인지 알 수 없다.
+    logError(`form-fill:extract:${provider}`, error);
+    throw new UserFacingError(
+      `양식에 넣을 내용을 만들지 못했습니다 (${provider}). ` +
+        `${error instanceof Error ? error.message : ''}`.trim(),
+    );
   }
-  throw new UserFacingError(
-    `양식에 넣을 내용을 만들지 못했습니다. ${last instanceof Error ? last.message : ''}`.trim(),
-  );
 }
 
 /**

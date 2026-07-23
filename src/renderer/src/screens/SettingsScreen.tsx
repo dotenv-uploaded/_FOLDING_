@@ -4,6 +4,7 @@ import type { useWorkspace } from '@/state/useWorkspace';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/ui/Dialog';
 import { Button } from '@/ui/Button';
 import { Badge } from '@/ui/Badge';
+import { UsagePanel } from '@/components/UsagePanel';
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -59,6 +60,12 @@ export function SettingsScreen({
                 계정 provisioning이 끝나기 전에는 문서 쓰기 승인을 실행하지 않습니다.
               </p>
             )}
+          </section>
+
+          {/* ── 구독 사용량 ── */}
+          <section>
+            <h3 className="fold-eyebrow mb-3">구독</h3>
+            <UsagePanel />
           </section>
 
           {/* ── 등록 폴더 ── */}

@@ -125,6 +125,13 @@ export function registerIpcHandlers(
   handle(IPC.chatAbort, '응답을 중단하지 못했습니다.', (conversationId: string) => {
     services.chat.abort(conversationId);
   });
+  /* --------------------------------------------------------- L4 사용량 */
+
+  handle(IPC.usageStatus, '사용량을 불러오지 못했습니다.', () => services.usageStatus());
+  handle(IPC.usagePurchase, '크레딧을 추가하지 못했습니다.', (amountKrw: number) =>
+    services.purchaseCredit(amountKrw),
+  );
+
   handle(IPC.chatDelete, '채팅을 삭제하지 못했습니다.', (conversationId: string) => {
     services.chat.remove(conversationId);
   });

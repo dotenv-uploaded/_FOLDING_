@@ -13,11 +13,15 @@ import {
 } from '@main/sidecar/client';
 import { sourceUriToRelativePath } from '@main/util/vpath';
 
-export function createSidecarAgent(deps: AgentDeps): Agent {
+export function createSidecarAgent(
+  deps: AgentDeps,
+  /** 이번 호출의 비용(USD). 구독 사용량을 세는 쪽이 받아 간다. */
+  onUsage?: (costUsd: number | null) => void,
+): Agent {
   const client = new SidecarClient(deps.config.backendUrl);
   return {
     send(userText, options): AsyncIterable<AgentEvent> {
-      return run(client, deps, userText, options.conversationId, options.signal);
+      return run(client, deps, userText, options.conversationId, options.signal, onUsage);
     },
   };
 }
@@ -28,9 +32,12 @@ async function* run(
   userText: string,
   conversationId: string,
   signal?: AbortSignal,
+  onUsage?: (costUsd: number | null) => void,
 ): AsyncGenerator<AgentEvent> {
   yield { type: 'tool_start', name: 'sidecar_chat', summary: '로컬 위키에서 근거 검색' };
   const response = await client.chat(conversationId, userText, signal);
+  // 비용은 답변보다 먼저 확정된다 — 실패로 빠지기 전에 기록해 사용량이 새지 않게 한다.
+  onUsage?.(response.usage?.cost_usd ?? null);
   const citations = citationsFrom(response);
 
   if (response.assistant_text) {

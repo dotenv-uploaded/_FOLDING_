@@ -466,6 +466,71 @@ export class Store {
     this.db.prepare(`UPDATE messages SET ${sets.join(', ')} WHERE id = @id`).run(params);
   }
 
+  /* ------------------------------------------------------------ 사용량 */
+
+  /**
+   * 호출 하나의 비용을 남긴다.
+   *
+   * 제공자가 금액을 주지 않으면(`null`) **기록하지 않는다.** 0 으로 적으면 "안 썼다"가 되어
+   * 사용량이 조용히 새고, 구독 한도가 실제보다 늦게 걸린다. 모르는 것은 모르는 채로 둔다.
+   */
+  recordUsage(event: {
+    id: string;
+    subjectId: string;
+    costUsd: number | null;
+    source: string;
+    createdAt: string;
+  }): void {
+    if (event.costUsd === null || !Number.isFinite(event.costUsd) || event.costUsd <= 0) return;
+    this.db
+      .prepare(
+        `INSERT INTO usage_events (id, subject_id, cost_usd, source, created_at)
+         VALUES (@id, @subjectId, @costUsd, @source, @createdAt)`,
+      )
+      .run({
+        id: event.id,
+        subjectId: event.subjectId,
+        costUsd: event.costUsd,
+        source: event.source,
+        createdAt: event.createdAt,
+      });
+  }
+
+  /** 이 사람이 지금까지 쓴 총액(USD)과 호출 횟수. */
+  usageTotal(subjectId: string): { costUsd: number; calls: number } {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS calls
+         FROM usage_events WHERE subject_id = ?`,
+      )
+      .get(subjectId) as { cost: number; calls: number } | undefined;
+    return { costUsd: row?.cost ?? 0, calls: row?.calls ?? 0 };
+  }
+
+  /** 추가로 구매한 크레딧 총액(원). 구매 UI 가 붙기 전까지는 0 이다. */
+  creditTotalKrw(subjectId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(amount_krw), 0) AS total FROM usage_credits WHERE subject_id = ?`,
+      )
+      .get(subjectId) as { total: number } | undefined;
+    return row?.total ?? 0;
+  }
+
+  addCreditKrw(entry: {
+    id: string;
+    subjectId: string;
+    amountKrw: number;
+    createdAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO usage_credits (id, subject_id, amount_krw, created_at)
+         VALUES (@id, @subjectId, @amountKrw, @createdAt)`,
+      )
+      .run(entry);
+  }
+
   /** 앱이 강제 종료돼 streaming=1 로 남은 메시지 정리 (부팅 시 1회). */
   clearStaleStreaming(): void {
     this.db.prepare(`UPDATE messages SET streaming = 0 WHERE streaming = 1`).run();

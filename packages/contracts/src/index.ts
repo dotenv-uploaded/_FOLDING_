@@ -217,6 +217,34 @@ export interface Session {
   authzSource?: string;
 }
 
+/**
+ * 구독 사용량. 설정 화면이 보여주고, 한도를 넘으면 요청이 막힌다.
+ *
+ * 금액은 원 단위 정수다 — 화면에 원으로 보여주므로 표시 직전에 반올림하면 합계와 항목이
+ * 어긋난다. 저장은 USD 로 하고(제공자가 계산해 준 값), 환산은 이 경계에서 한 번만 한다.
+ */
+export interface UsageStatus {
+  /** 지금까지 쓴 금액 */
+  usedKrw: number;
+  /** 구독에 포함된 한도 */
+  limitKrw: number;
+  /** 추가 구매한 크레딧 */
+  extraKrw: number;
+  /** 남은 금액 (한도 + 크레딧 − 사용) */
+  remainingKrw: number;
+  /** 한도를 넘겨 요청이 막히는 상태인가 */
+  blocked: boolean;
+  /** 지금까지 호출 횟수 */
+  calls: number;
+}
+
+/** 구독에 포함된 1인 한도. 이걸 넘기면 추가 크레딧을 사야 한다. */
+export const USAGE_LIMIT_KRW = 20_000;
+
+/** 한도를 넘겼을 때 사용자에게 보여줄 문장. */
+export const USAGE_BLOCKED_MESSAGE =
+  '이번 달 사용 한도를 모두 썼습니다. 설정에서 크레딧을 추가하면 이어서 쓸 수 있습니다.';
+
 /** 좌측 채팅 목록의 한 줄. */
 export interface Conversation {
   id: string;
@@ -337,6 +365,10 @@ export const IPC = {
   /** 대화 하나를 기록째 지운다 — 되돌릴 수 없다. */
   chatDelete: 'chat:delete',
 
+  // L4 — 구독 사용량
+  usageStatus: 'usage:status',
+  usagePurchase: 'usage:purchase',
+
   executionRetry: 'execution:retry',
   executionUndo: 'execution:undo',
 
@@ -364,6 +396,8 @@ export const IPC_EVENTS = {
   approvalRequest: 'approval:request',
   buildState: 'build:state:changed',
   treeChanged: 'tree:changed',
+  /** 사용량이 바뀌었다 — 설정 화면이 즉시 따라간다 */
+  usageChanged: 'usage:changed',
   sessionChanged: 'auth:session:changed',
   /** sidecar 기동·재기동 상태 — 엔진이 준비되기 전 UI 가 멈춘 듯 보이지 않게 한다 */
   sidecarState: 'sidecar:state:changed',

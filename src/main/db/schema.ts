@@ -83,4 +83,30 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE messages ADD COLUMN changed_path TEXT;
   `,
+
+  // v5 — 구독 사용량.
+  //
+  // 호출 하나마다 한 줄을 남긴다. 합계만 들고 있으면 "왜 이만큼 나왔는지" 되짚을 수 없고,
+  // 잘못 기록된 한 건을 골라낼 수도 없다.
+  //
+  // 비용은 **제공자가 계산해 준 USD 를 그대로** 저장한다. 원화로 바꿔 저장하면 그날 환율이
+  // 값에 박제돼, 환율이 바뀌면 과거 기록이 소급해 틀려진다. 환산은 보여줄 때 한다.
+  `
+  CREATE TABLE IF NOT EXISTS usage_events (
+    id         TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    cost_usd   REAL NOT NULL,
+    source     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_usage_subject ON usage_events (subject_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS usage_credits (
+    id         TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    amount_krw INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_credits_subject ON usage_credits (subject_id);
+  `,
 ];

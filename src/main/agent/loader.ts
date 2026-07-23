@@ -15,7 +15,10 @@ export interface LoadedAgentFactory {
   source: AgentSource;
 }
 
-export async function loadCreateAgent(): Promise<LoadedAgentFactory> {
+export async function loadCreateAgent(
+  /** 호출 비용을 받아 구독 사용량에 더한다. */
+  onUsage?: (costUsd: number | null) => void,
+): Promise<LoadedAgentFactory> {
   if (process.env.CODEGATE_MOCK === '1') {
     console.info('[codegate:agent] CODEGATE_MOCK=1 — 내장 목 에이전트를 사용합니다.');
     return { createAgent: createMockAgent, source: 'mock' };
@@ -28,6 +31,6 @@ export async function loadCreateAgent(): Promise<LoadedAgentFactory> {
    * 여러 칸을 한꺼번에 채워 **새 파일**을 만드는 일과는 모양이 다르다. 억지로 태우지 않는다.
    * 승인 게이트는 그대로 거친다 — 파일이 생기기 전에 사용자가 보고 승인한다.
    */
-  const createAgent: CreateAgent = (deps) => createFormFillAgent(deps, createSidecarAgent(deps));
+  const createAgent: CreateAgent = (deps) => createFormFillAgent(deps, createSidecarAgent(deps, onUsage));
   return { createAgent, source: 'real' };
 }
