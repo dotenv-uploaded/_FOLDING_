@@ -11,8 +11,9 @@
   않는다.
 - 검증: Backend 전체 Pytest 286개가 통과했고 line coverage 84%를 확인했다. Ruff lint와 mypy는
   통과했으며 format check는 이번 문서 변경과 무관한 기존 Python 5개 파일의 차이를 보고했다.
-  GitHub GFM 렌더링, 로컬 링크와 staged 공개 트리의 비밀정보를 확인한 뒤
-  `ghdtjdwn_complete` main에 반영한다.
+  GitHub GFM 렌더링, 로컬 링크 17개와 staged 공개 트리의 비밀정보를 확인했다. commit
+  `21b1439`를 공개 `ghdtjdwn_complete` main에 push하고 비로그인 요청에서 README와 연결된 역할·ADR
+  문서가 HTTP 200으로 제공되는 것을 확인했다.
 
 ## 2026-07-23 — README 지식 그래프 설명과 시연 화면 보강
 
