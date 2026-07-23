@@ -50,6 +50,70 @@
 원본 변경은 검증 가능한 writer가 있는 Markdown/TXT와 로컬 Kordoc attestation을 통과한
 HWP/HWPX에만 열리며, 그 밖의 형식은 읽기 전용으로 유지됩니다.
 
+## 지식 그래프
+
+![Folding 지식 그래프 화면](docs/demo/knowledge-graph-overview.png)
+
+<p align="center">
+  활성 지식 버전의 문서 15개와 빌드된 관계 32개를 시각화한 실제 시연 화면
+</p>
+
+Folding의 지식 그래프는 문서 내용을 임의로 연결한 그림이 아니라, **어떤 문서의 어느 섹션이
+다른 문서를 어떻게 참조하는지** 보존하는 관계 계층입니다. 노드는 stable `document_id`를 가진
+문서이고, 방향이 있는 엣지는 `references`, `implements`, `based_on`, `supersedes`와 같은
+문서 간 관계입니다.
+
+### 왜 필요한가
+
+키워드 검색은 질문과 같은 단어가 들어 있는 문서를 찾는 데는 유용하지만, 문서 사이의 맥락까지
+설명하지는 못합니다. 예를 들어 계획서가 어떤 요구사항을 근거로 작성됐는지, 운영 문서가 어떤
+정책을 구현하는지, 새 문서가 무엇을 대체하는지는 단어의 유사도만으로 확정하기 어렵습니다.
+
+지식 그래프는 이 간격을 다음과 같이 보완합니다.
+
+| 역할 | Folding에서의 사용 |
+| --- | --- |
+| 연관 문서 발견 | 검색된 문서와 직접 연결된 현재 문서 중 `VERIFIED` 관계를 에이전트 결과의 `relations`로 함께 제공합니다. |
+| 관계의 설명 가능성 | 엣지마다 `from_section_id`와 `evidence_quote`를 보존해 연결이 생긴 원문 위치를 추적합니다. |
+| 문서 집합의 무결성 | 존재하지 않는 문서를 가리키는 링크는 빌드를 실패시킵니다. 승인된 삭제만 정확한 tombstone 범위에서 예외로 처리합니다. |
+| 변경 후 일관성 | 문서 수정·삭제·Undo마다 그래프를 포함한 새 불변 지식 버전을 만들고, 완성된 버전만 활성화합니다. |
+| 사용자 탐색 | 그래프 화면에서 문서를 선택해 이웃 관계를 강조하고 원본 문서로 바로 이동할 수 있습니다. |
+
+현재 그래프는 검색 결과에 검증된 직접 관계를 제공하고 전체 문서 지도를 탐색하는 범위에 집중합니다.
+근거 없는 자동 multi-hop 추론을 사실처럼 제시하지 않습니다.
+
+### 관계가 만들어지는 과정
+
+```mermaid
+flowchart LR
+    S[원본 문서] --> C[doc2md<br/>Canonical Markdown]
+    C --> I[stable document ID<br/>section anchor]
+    I --> E[명시적 내부 링크 추출]
+    E --> R[관계 유형 분류<br/>references · implements · based_on · supersedes]
+    R --> V[Schema · 대상 존재 · 원문 quote 검증]
+    V --> P[manifest.jsonl<br/>retrieval/links.jsonl]
+    P --> B[content-addressed<br/>immutable build]
+    B --> A[Backend ACL filter<br/>VERIFIED relations]
+    B --> G[Electron SVG<br/>force-directed graph]
+```
+
+1. doc2md가 원본을 canonical Markdown으로 바꾸고 문서 ID와 안정된 section anchor를 부여합니다.
+2. LLMWIKI builder가 Markdown의 내부 링크를 추출합니다. 승인된 enrichment가 있으면 명시적 링크의
+   관계 유형만 구체화할 수 있으며, 새 연결을 근거 없이 만들지는 않습니다. 이 분류 결과는
+   Backend에서 `PROPOSED`로 유지되고 명시적 원문 링크만 `VERIFIED`가 됩니다.
+3. 각 엣지는 JSON Schema Draft 2020-12로 검증됩니다. 출발 문서·섹션, 대상 문서, 관계 유형,
+   링크가 실제로 적힌 `evidence_quote`가 모두 있어야 합니다.
+4. `manifest.jsonl`과 `retrieval/links.jsonl`은 checksum에 포함되고 내용 hash 기반의 불변 build로
+   게시됩니다. FTS·vector·graph 산출물 중 하나라도 일치하지 않으면 기존 정상 build를 유지합니다.
+5. Backend는 요청의 graph version을 고정하고 ACL을 먼저 적용합니다. 현재 사용자가 읽을 수 있고
+   원본 hash가 최신인 대상의 `VERIFIED` 관계만 에이전트에 전달합니다.
+
+그래프 화면은 별도 시각화 라이브러리 없이 React와 SVG로 구현했습니다. 결정적인 초기 배치 위에서
+노드 반발력, 엣지 스프링, 중앙 인력, 감쇠를 계산하는 force-directed simulation을
+`requestAnimationFrame`으로 실행합니다. 에너지가 임계값 아래로 내려가면 계산을 멈추고
+드래그할 때만 다시 시작해 Electron 유휴 CPU 사용을 줄입니다. 확대·축소, 노드 드래그, 문서 유형별
+색상, 선택한 문서의 관계 강조와 원본 열기를 지원합니다.
+
 ## 설계에서 지키는 것
 
 ### 근거와 추론을 분리합니다
