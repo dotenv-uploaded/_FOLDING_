@@ -79,6 +79,7 @@ def _decision(
     search_query: str = "개인정보 보관 기간",
     target_filename: str | None = None,
     document_markdown: str | None = None,
+    source_document_ids: list[str] | None = None,
 ) -> AgentDecision:
     operation = None
     if expected_text is not None and replacement_text is not None:
@@ -96,6 +97,13 @@ def _decision(
             "assistant_text": "검증 상태를 확인했습니다.",
             "search_query": search_query,
             "target_document_id": target_document_id,
+            "source_document_ids": (
+                source_document_ids
+                if source_document_ids is not None
+                else [target_document_id]
+                if intent == "create_file" and target_document_id is not None
+                else []
+            ),
             "source_sha256": source_sha256,
             "operation": operation,
             "target_filename": target_filename,
@@ -197,6 +205,7 @@ def test_agent_routes_report_creation_to_grounded_hwpx_preview(
             outcome=AgentOutcome.READY,
             intent="create_file",
             target_document_id="REG-000001",
+            source_document_ids=["REG-000001", "REG-000002"],
             search_query="이번주 보고서",
             target_filename="주간업무보고서.hwpx",
             document_markdown="# 주간업무보고서\n\n- 이번 주 업무 근거",
@@ -208,7 +217,10 @@ def test_agent_routes_report_creation_to_grounded_hwpx_preview(
         headers=auth_headers,
         json={
             "conversation_id": "weekly-report-create",
-            "message": "이번주 보고서를 보고 주간업무보고서.hwpx를 만들어줘",
+            "message": (
+                "이번 주 업무보고 문서들을 참고해서 핵심 진행사항, 완료 업무, 이슈, "
+                "다음 주 계획을 정리한 주간 업무보고서.hwpx를 만들어줘."
+            ),
         },
     )
 
@@ -217,10 +229,15 @@ def test_agent_routes_report_creation_to_grounded_hwpx_preview(
     assert body["generated_document"] == {
         "filename": "주간업무보고서.hwpx",
         "markdown": "# 주간업무보고서\n\n- 이번 주 업무 근거",
-        "source_document_ids": ["REG-000001"],
+        "source_document_ids": ["REG-000001", "REG-000002"],
     }
+    assert [document["document_id"] for document in body["documents"]] == [
+        "REG-000001",
+        "REG-000002",
+    ]
     assert body["change_plan"] is None
     assert agent.calls == 1
+    assert agent.requests[0]["message"].startswith("이번 주 업무보고 문서들을 참고해서")
 
 
 def test_filename_scoped_content_deletion_is_not_mistaken_for_file_deletion(

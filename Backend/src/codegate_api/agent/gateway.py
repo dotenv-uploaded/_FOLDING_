@@ -178,6 +178,13 @@ class AgentDecision(BaseModel):
         max_length=96,
         description="Stable ID verified by a CODEGATE tool in the current turn, otherwise null.",
     )
+    source_document_ids: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Ordered current-turn verified source IDs for a ready HWPX creation, otherwise empty."
+        ),
+    )
     source_sha256: str | None = Field(
         ...,
         pattern=r"^[0-9a-f]{64}$",
@@ -225,12 +232,15 @@ class AgentDecision(BaseModel):
         ):
             raise ValueError("file creation decisions cannot contain source edits or source hash")
         if self.intent != "create_file" and (
-            self.target_filename is not None or self.document_markdown is not None
+            self.source_document_ids
+            or self.target_filename is not None
+            or self.document_markdown is not None
         ):
             raise ValueError("only file creation decisions can contain generated document fields")
         if self.outcome is not AgentOutcome.READY and (
             self.operation is not None
             or self.source_sha256 is not None
+            or self.source_document_ids
             or self.target_filename is not None
             or self.document_markdown is not None
         ):
@@ -268,12 +278,21 @@ class AgentDecision(BaseModel):
             and self.intent == "create_file"
             and (
                 self.target_document_id is None
+                or not self.source_document_ids
+                or self.target_document_id != self.source_document_ids[0]
+                or len(set(self.source_document_ids)) != len(self.source_document_ids)
+                or any(
+                    re.fullmatch(DOCUMENT_ID_PATTERN, source_id) is None
+                    or len(source_id) > 96
+                    for source_id in self.source_document_ids
+                )
                 or self.target_filename is None
                 or self.document_markdown is None
             )
         ):
             raise ValueError(
-                "a ready file creation requires a verified source, HWPX filename, and Markdown"
+                "a ready file creation requires ordered verified sources, an HWPX filename, "
+                "and Markdown"
             )
         if self.operation is not None and self.intent != "change":
             raise ValueError("only a change decision can contain an operation")
@@ -351,11 +370,16 @@ class ReadyDeleteFileOutput(_StructuredDecisionBase):
 class ReadyCreateFileOutput(_StructuredDecisionBase):
     decision_type: Literal["ready_create_file"] = Field(
         description=(
-            "Use only when one verified source document supports a new HWPX document proposal."
+            "Use only when one or more verified source documents support a new HWPX proposal."
         )
     )
     target_document_id: VerifiedDocumentId = Field(
-        description="Source document ID verified by a CODEGATE tool in the current turn."
+        description="Primary source ID; must equal the first source_document_ids entry."
+    )
+    source_document_ids: list[VerifiedDocumentId] = Field(
+        min_length=1,
+        max_length=20,
+        description="Ordered unique source IDs verified and read in the current turn.",
     )
     target_filename: str = Field(
         min_length=6,
@@ -435,6 +459,7 @@ class AgentStructuredOutput(BaseModel):
                     "outcome": AgentOutcome.READY,
                     "intent": "locate",
                     "target_document_id": value.target_document_id,
+                    "source_document_ids": [],
                     "source_sha256": None,
                     "operation": None,
                     "target_filename": None,
@@ -448,6 +473,7 @@ class AgentStructuredOutput(BaseModel):
                     "outcome": AgentOutcome.READY,
                     "intent": "change",
                     "target_document_id": value.target_document_id,
+                    "source_document_ids": [],
                     "source_sha256": value.source_sha256,
                     "operation": value.operation,
                     "target_filename": None,
@@ -461,6 +487,7 @@ class AgentStructuredOutput(BaseModel):
                     "outcome": AgentOutcome.READY,
                     "intent": "create_file",
                     "target_document_id": value.target_document_id,
+                    "source_document_ids": value.source_document_ids,
                     "source_sha256": None,
                     "operation": None,
                     "target_filename": value.target_filename,
@@ -474,6 +501,7 @@ class AgentStructuredOutput(BaseModel):
                     "outcome": AgentOutcome.READY,
                     "intent": "delete_file",
                     "target_document_id": value.target_document_id,
+                    "source_document_ids": [],
                     "source_sha256": None,
                     "operation": None,
                     "target_filename": None,
@@ -487,6 +515,7 @@ class AgentStructuredOutput(BaseModel):
                 "outcome": outcome,
                 "intent": value.intent,
                 "target_document_id": None,
+                "source_document_ids": [],
                 "source_sha256": None,
                 "operation": None,
                 "target_filename": None,
@@ -557,17 +586,30 @@ class DeterministicAgentGateway:
         requested_filename = _requested_hwpx_filename(message)
         if requested_filename is not None and _is_file_creation_request(message):
             search_query = _creation_search_query(message, requested_filename)
-            document_id = selected_document_id or _extract_document_id(message)
-            if document_id is None:
-                candidates = repository.search(search_query, access_context=access_context)
-                if len(candidates) == 1:
-                    document_id = candidates[0].document_id
-            source = (
-                repository.read_canonical_text(document_id, access_context=access_context)
-                if document_id is not None
-                else None
+            requested_document_id = selected_document_id or _extract_document_id(message)
+            source_document_ids = (
+                [requested_document_id]
+                if requested_document_id is not None
+                else [
+                    candidate.document_id
+                    for candidate in repository.search(
+                        search_query,
+                        access_context=access_context,
+                        top_k=20,
+                    )
+                ]
             )
-            if source is None:
+            sources = [
+                (
+                    document_id,
+                    repository.read_canonical_text(
+                        document_id,
+                        access_context=access_context,
+                    ),
+                )
+                for document_id in source_document_ids
+            ]
+            if not sources or any(source is None for _, source in sources):
                 return AgentRunResult(
                     provider="deterministic",
                     decision=AgentDecision(
@@ -575,7 +617,7 @@ class DeterministicAgentGateway:
                         outcome=AgentOutcome.NEEDS_CLARIFICATION,
                         intent="create_file",
                         assistant_text=(
-                            "새 문서에 사용할 근거 문서 하나를 더 명확히 지정해야 합니다."
+                            "새 문서에 사용할 근거 문서를 더 명확히 지정해야 합니다."
                         ),
                         search_query=search_query,
                         target_document_id=None,
@@ -584,6 +626,11 @@ class DeterministicAgentGateway:
                     ),
                 )
             title = requested_filename.rsplit(".", 1)[0]
+            grounded_sections = "\n\n".join(
+                f"## 근거 문서 {index}\n\n{source[1].strip()}"
+                for index, (_, source) in enumerate(sources, start=1)
+                if source is not None
+            )
             return AgentRunResult(
                 provider="deterministic",
                 decision=AgentDecision(
@@ -592,11 +639,12 @@ class DeterministicAgentGateway:
                     intent="create_file",
                     assistant_text="현재 문서 근거로 새 HWPX 생성 미리보기를 준비했습니다.",
                     search_query=search_query,
-                    target_document_id=document_id,
+                    target_document_id=source_document_ids[0],
+                    source_document_ids=source_document_ids,
                     source_sha256=None,
                     operation=None,
                     target_filename=requested_filename,
-                    document_markdown=f"# {title}\n\n{source[1].strip()}",
+                    document_markdown=f"# {title}\n\n{grounded_sections}",
                 ),
             )
         if _is_whole_file_deletion_request(message):
@@ -1157,23 +1205,93 @@ def _validate_tool_trace(
     if decision.intent == "create_file":
         canonical_tool = "mcp__codegate__knowledge_document_read"
         canonical_indices = [index for index, name in enumerate(names) if name == canonical_tool]
-        if len(canonical_indices) != 1 or source_tool in names or target is None:
+        source_ids = decision.source_document_ids
+        if (
+            len(canonical_indices) != len(source_ids)
+            or source_tool in names
+            or target is None
+            or not source_ids
+            or target != source_ids[0]
+        ):
             raise AgentGatewayError(
                 "AGENT_TOOL_TRACE_INVALID",
                 "Claude가 현재 turn의 새 문서 근거 확인 계약을 지키지 않았습니다.",
             )
-        canonical_index = canonical_indices[0]
-        canonical_use = codegate_tool_uses[canonical_index]
-        canonical_payload = result_payloads[canonical_use.id]
-        if (
-            canonical_use.input.get("document_id") != target
-            or canonical_payload.get("document_id") != target
-            or target_get_indices[0] >= canonical_index
-            or canonical_index != len(codegate_tool_uses) - 1
+        source_get_indices: dict[str, int] = {}
+        for source_id in source_ids:
+            get_indices = [
+                index
+                for index, tool_use in enumerate(codegate_tool_uses)
+                if tool_use.name == "mcp__codegate__document_get"
+                and tool_use.input.get("document_id") == source_id
+            ]
+            if len(get_indices) != 1:
+                raise AgentGatewayError(
+                    "AGENT_TOOL_TRACE_INVALID",
+                    "Claude가 생성 근거 문서를 현재 turn에서 각각 한 번 확인하지 않았습니다.",
+                )
+            get_index = get_indices[0]
+            get_payload = result_payloads[codegate_tool_uses[get_index].id]
+            if _document_id_from_result(get_payload) != source_id:
+                raise AgentGatewayError(
+                    "AGENT_TOOL_RESULT_INVALID",
+                    "Claude가 생성 근거 문서 결과를 검증하지 못했습니다.",
+                )
+            source_get_indices[source_id] = get_index
+        direct_source_ids = {
+            source_id
+            for source_id in source_ids
+            if source_id == selected_document_id
+            or (
+                selected_document_id is None
+                and routing_document_ids is not None
+                and source_id in routing_document_ids
+            )
+        }
+        if any(
+            source_id not in direct_source_ids
+            and not any(
+                search_index < source_get_indices[source_id]
+                and source_id
+                in _search_result_document_ids(
+                    result_payloads[codegate_tool_uses[search_index].id]
+                )
+                for search_index in matching_search_indices
+            )
+            for source_id in source_ids
         ):
             raise AgentGatewayError(
                 "AGENT_TOOL_TRACE_INVALID",
-                "Claude의 새 문서 근거 확인 순서나 대상이 일치하지 않습니다.",
+                "Claude의 생성 근거 문서가 현재 검색 결과와 일치하지 않습니다.",
+            )
+        if list(source_get_indices.values()) != sorted(source_get_indices.values()):
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude가 생성 근거 문서를 결정된 순서대로 확인하지 않았습니다.",
+            )
+        canonical_ids: list[str] = []
+        for canonical_index in canonical_indices:
+            canonical_use = codegate_tool_uses[canonical_index]
+            canonical_payload = result_payloads[canonical_use.id]
+            canonical_id = canonical_use.input.get("document_id")
+            if (
+                not isinstance(canonical_id, str)
+                or canonical_payload.get("document_id") != canonical_id
+                or canonical_id not in source_get_indices
+                or source_get_indices[canonical_id] >= canonical_index
+            ):
+                raise AgentGatewayError(
+                    "AGENT_TOOL_TRACE_INVALID",
+                    "Claude의 새 문서 근거 확인 순서나 대상이 일치하지 않습니다.",
+                )
+            canonical_ids.append(canonical_id)
+        expected_tail = list(
+            range(len(codegate_tool_uses) - len(source_ids), len(codegate_tool_uses))
+        )
+        if canonical_ids != source_ids or canonical_indices != expected_tail:
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude가 검증된 모든 생성 근거를 순서대로 읽지 않았습니다.",
             )
         return
     if decision.intent == "locate":
@@ -1496,5 +1614,12 @@ def _is_file_creation_request(message: str) -> bool:
 def _creation_search_query(message: str, filename: str) -> str:
     query = message.replace(filename, " ")
     query = re.sub(r"(?:만들|생성|작성)(?:어|해)?(?:\s*줘|\s*주세요)?", " ", query)
+    source_clause = re.split(
+        r"(?:참고해서|참고하여|참고해|[을를]\s+보고)(?:\s|$)",
+        query,
+        maxsplit=1,
+    )[0]
+    if source_clause.strip():
+        query = source_clause
     query = re.sub(r"\s+", " ", query).strip(" .,!?")
     return query or "참고 문서"

@@ -1,5 +1,48 @@
 # 트러블슈팅 기록
 
+## 2026-07-23 — 복수 업무 문서를 지정한 HWPX 생성이 clarification으로 종료
+
+### 상황, 기대와 영향
+
+`이번 주 업무보고 문서들을 참고해서 핵심 진행사항, 완료 업무, 이슈, 다음 주 계획을 정리한 주간
+업무보고서.hwpx를 만들어줘`라고 요청하면 관련 문서들을 종합한 생성 승인 미리보기가 나와야 했다.
+실제로는 생성 의도까지는 분류했지만 “참고할 문서와 만들 HWPX 파일명을 더 구체적으로 적어주세요”로
+종료돼, 폴더에 여러 일일·주간 업무 자료가 있어도 주간 보고서를 만들 수 없었다.
+
+### 증거, 원인과 검토한 대안
+
+- `DOCUMENT_CREATION_DETAILS_REQUIRED` 응답은 `create_file`의 `needs_clarification` 경로에서 발생했다.
+- agent prompt, structured output과 tool-trace 검증이 모두 생성 근거를 정확히 한 문서로 제한했다.
+- 긴 요청의 `핵심 진행사항`, `완료 업무`, `이슈`, `다음 주 계획`도 검색어에 남아 source 검색을
+  불필요하게 좁혔다.
+- 복수 표현을 최고 점수 문서 하나로 축소하는 방법은 사용자가 요청한 종합 범위를 잃는다. 검색 snippet만
+  합치는 방법은 canonical 본문 검증을 우회하므로 제외했다.
+
+### 해결과 검증
+
+`ready_create_file`이 순서가 고정된 고유 `source_document_ids` 1~20개를 표현하게 했다. Agent는 source
+주제만 한 번 검색하고 각 ID를 `document_get`으로 확인한 뒤 같은 순서로 canonical 본문을 모두 읽는다.
+application은 모든 source의 ACL과 존재를 다시 확인해 응답과 생성 근거 목록에 함께 넣는다. 기존
+Electron 승인, no-overwrite 생성과 재파싱 경계는 변경하지 않았다.
+
+사용자 문장 그대로의 API 회귀 테스트, 단일 source 호환 테스트, 복수 검색·검증·canonical-read trace
+테스트를 추가했다. Backend 전체 pytest 281개와 Ruff·mypy, Electron Vitest 156개·typecheck·production
+build가 통과했다.
+
+### 재발 방지와 남은 위험
+
+복수 생성은 단순 배열 출력이 아니라 검색 결과 membership, 각 `document_get`, canonical read의 개수와
+순서를 모두 검증한다. 출력 section 이름은 검색어에서 제거하되 생성 Markdown의 구성 요구로 유지한다.
+최대 20개 제한을 두어 prompt 크기와 생성 지연을 제한한다. 실제 provider와 사용자 corpus를 사용한
+통합 확인과 Electron 재실행은 delivery 단계에서 별도로 검증한다.
+
+- 왜 한 문서만 자동 선택하지 않았나? 사용자가 복수 문서 종합을 명시했으므로 정보 손실과 임의 선택이
+  발생하기 때문이다.
+- 왜 검색 결과만 합치지 않았나? snippet은 부분 근거라 완료·이슈·계획을 충실하게 재구성할 수 없고,
+  현재 canonical source 검증 경계를 약화하기 때문이다.
+- 새 파일 쓰기 권한도 agent가 갖나? 아니다. Agent는 grounded Markdown proposal만 만들며 실제 HWPX
+  생성은 기존 Electron 승인과 no-overwrite 검증 뒤에만 실행된다.
+
 ## 2026-07-23 — XLSX 위치 조회가 현재 turn 도구 계약 오류로 종료
 
 ### 상황, 기대와 영향

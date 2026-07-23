@@ -23,6 +23,7 @@ from codegate_api.agent.gateway import (
     ClaudeAgentGateway,
     _bind_search_query_to_tool_evidence,
     _classify_sdk_result_error,
+    _creation_search_query,
     _extract_document_id,
     _normalize_structured_enum_casing,
     _routing_document_ids,
@@ -54,6 +55,15 @@ def test_deterministic_document_id_extraction_respects_schema_length() -> None:
     assert _extract_document_id("REG-000001 문서") == "REG-000001"
     assert _extract_document_id("REG-000001의 문서") == "REG-000001"
     assert _extract_document_id(f"{'A' * 96}-X 문서") is None
+
+
+def test_creation_query_keeps_source_subject_and_drops_requested_output_sections() -> None:
+    message = (
+        "이번 주 업무보고 문서들을 참고해서 핵심 진행사항, 완료 업무, 이슈, "
+        "다음 주 계획을 정리한 주간업무보고서.hwpx를 만들어줘."
+    )
+
+    assert _creation_search_query(message, "주간업무보고서.hwpx") == "이번 주 업무보고 문서들을"
 
 
 def test_routing_document_ids_support_korean_particles_in_recent_user_context() -> None:
@@ -807,6 +817,7 @@ def test_ready_file_creation_requires_canonical_source_after_document_verificati
             "assistant_text": "새 HWPX 미리보기를 준비했습니다.",
             "search_query": "이번주 보고서",
             "target_document_id": "REG-000001",
+            "source_document_ids": ["REG-000001"],
             "source_sha256": None,
             "operation": None,
             "target_filename": "주간업무보고서.hwpx",
@@ -841,6 +852,91 @@ def test_ready_file_creation_requires_canonical_source_after_document_verificati
         },
         expected_graph_version="2026-07-21.2-demo",
         selected_document_id="REG-000001",
+    )
+
+
+def test_ready_file_creation_accepts_multiple_searched_and_canonical_sources() -> None:
+    decision = AgentDecision.model_validate(
+        {
+            "prompt_contract_version": "2.1",
+            "outcome": "ready",
+            "intent": "create_file",
+            "assistant_text": "새 HWPX 미리보기를 준비했습니다.",
+            "search_query": "이번 주 업무보고",
+            "target_document_id": "REG-000001",
+            "source_document_ids": ["REG-000001", "REG-000002"],
+            "source_sha256": None,
+            "operation": None,
+            "target_filename": "주간 업무보고서.hwpx",
+            "document_markdown": "# 주간 업무보고서\n\n## 핵심 진행사항\n\n이번 주 업무",
+        }
+    )
+    tool_uses = [
+        ToolUseBlock(
+            id="tool-search",
+            name="mcp__codegate__knowledge_search",
+            input={"query": "이번 주 업무보고"},
+        ),
+        ToolUseBlock(
+            id="tool-get-1",
+            name="mcp__codegate__document_get",
+            input={"document_id": "REG-000001"},
+        ),
+        ToolUseBlock(
+            id="tool-get-2",
+            name="mcp__codegate__document_get",
+            input={"document_id": "REG-000002"},
+        ),
+        ToolUseBlock(
+            id="tool-canonical-1",
+            name="mcp__codegate__knowledge_document_read",
+            input={"document_id": "REG-000001"},
+        ),
+        ToolUseBlock(
+            id="tool-canonical-2",
+            name="mcp__codegate__knowledge_document_read",
+            input={"document_id": "REG-000002"},
+        ),
+    ]
+    tool_results = {
+        "tool-search": _tool_result_block(
+            "tool-search",
+            "knowledge_search",
+            {
+                "documents": [
+                    {"document_id": "REG-000001"},
+                    {"document_id": "REG-000002"},
+                ]
+            },
+        ),
+        "tool-get-1": _tool_result_block(
+            "tool-get-1",
+            "document_get",
+            {"document": {"document_id": "REG-000001"}},
+        ),
+        "tool-get-2": _tool_result_block(
+            "tool-get-2",
+            "document_get",
+            {"document": {"document_id": "REG-000002"}},
+        ),
+        "tool-canonical-1": _tool_result_block(
+            "tool-canonical-1",
+            "canonical_document",
+            {"document_id": "REG-000001", "content": "핵심 진행사항"},
+        ),
+        "tool-canonical-2": _tool_result_block(
+            "tool-canonical-2",
+            "canonical_document",
+            {"document_id": "REG-000002", "content": "완료 업무"},
+        ),
+    }
+
+    _validate_tool_trace(
+        decision,
+        tool_uses,
+        tool_results,
+        expected_graph_version="2026-07-21.2-demo",
+        selected_document_id=None,
     )
 
 

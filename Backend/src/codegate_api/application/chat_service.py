@@ -272,14 +272,13 @@ class ChatService:
             self._record_assistant(response, tenant_id, subject_id)
             return response
         if decision.intent == "create_file":
-            target_id = decision.target_document_id
-            target_document = (
-                repository.get(target_id, access_context=access_context)
-                if target_id is not None
-                else None
-            )
+            source_documents = [
+                repository.get(source_id, access_context=access_context)
+                for source_id in decision.source_document_ids
+            ]
             if (
-                target_document is None
+                not source_documents
+                or any(document is None for document in source_documents)
                 or decision.target_filename is None
                 or decision.document_markdown is None
             ):
@@ -302,11 +301,13 @@ class ChatService:
                     message_id=assistant_message_id,
                     response_type=ResponseType.DOCUMENT_CREATION_PREVIEW,
                     assistant_text=decision.assistant_text,
-                    documents=[target_document],
+                    documents=[
+                        document for document in source_documents if document is not None
+                    ],
                     generated_document=GeneratedDocument(
                         filename=decision.target_filename,
                         markdown=decision.document_markdown,
-                        source_document_ids=[target_document.document_id],
+                        source_document_ids=decision.source_document_ids,
                     ),
                 )
             self._record_assistant(response, tenant_id, subject_id)
