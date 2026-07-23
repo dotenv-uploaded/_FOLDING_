@@ -1,5 +1,16 @@
 # Work log
 
+## 2026-07-23 — README 시연 영상 호환성 수정
+
+- 문제와 원인: README의 저장소 MOV 파일 링크가 GitHub에서 플레이어 대신 바이너리 파일 화면으로
+  열렸다. GitHub Markdown은 저장소의 HTML `video` 태그를 제거하며 영상 플레이어는 첨부 파일
+  URL에 적용되는 동작이었다.
+- 변경: 원본을 브라우저 호환 H.264/yuv420p MP4로 변환하고 개인정보가 표시되지 않는 앱 화면
+  썸네일을 추가했다. README에는 GitHub가 실제 렌더링하는 클릭형 썸네일과 MP4 raw 링크를 사용했다.
+- 검증: 203.79초 MP4의 codec, pixel format, fast-start container와 GitHub Markdown 렌더 결과를
+  확인했다. 기존 MOV는 현재 tree에서 제거하고 원본 파일은 보존했다.
+- 전달 상태: 전용 저장소 main 반영과 원격 MP4 응답 검증을 진행한다.
+
 ## 2026-07-23 — 완성본 시연 영상 공개
 
 - 목표와 변경: 최종 H.264 MOV 시연 영상을 저장소의 `docs/demo`에 추가하고 루트 README에서
