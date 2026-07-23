@@ -1,5 +1,15 @@
 # Work log
 
+## 2026-07-23 — README 개인 역할 표현 축소
+
+- 목표: 제품 설명보다 개인 담당 영역이 먼저 보이지 않도록 README의 강조 수준과 분량을 조정한다.
+- 변경: 독립 담당 섹션, 이름, 전용 구조도와 상세 책임 표를 제거했다. Agent runtime의 핵심 책임은
+  로컬·클라우드 실행 경계 안의 control plane 설명 세 문장으로 축약해 제품 아키텍처의 일부로
+  유지했다.
+- 영향: 루트 README와 공개 표현만 변경하며 구현·소유권·runtime 동작은 바뀌지 않는다.
+- 검증과 전달: 이름 잔존 여부, 섹션 순서, GitHub GFM 렌더링, 로컬 링크와 staged 공개 트리의
+  비밀정보를 확인한 뒤 `ghdtjdwn_complete` main에 반영한다.
+
 ## 2026-07-23 — README 로컬·클라우드 실행 경계와 강점 보강
 
 - 목표: 어떤 구성요소가 사용자 PC에서 실행되고 어떤 기능이 외부 API·서버를 사용하는지, 그 배치가
@@ -18,10 +28,10 @@
   `ghdtjdwn_complete` main에 push했으며 GitHub Contents API와 commit 고정 raw README, 세
   트러블슈팅 문서의 비로그인 HTTP 200 응답으로 반영 결과를 확인했다.
 
-## 2026-07-23 — README Backend·Agent Runtime 담당 영역 보강
+## 2026-07-23 — README Agent Runtime 설명 보강
 
-- 목표: 공개 README에서 성주 담당 영역이 단순 Backend 한 줄로 축소되지 않고, 제품의 Agent
-  control plane과 안전·일관성 경계를 끝까지 소유한 범위로 정확히 드러나게 한다.
+- 목표: 공개 README에서 Agent control plane과 안전·일관성 경계가 실제 구현 범위에 맞게 드러나게
+  한다.
 - 변경: Claude Agent runtime, 근거·ACL 검증, exact plan 승인, 원자적 파일 transaction, crash
   recovery·Undo, outbox 기반 지식 게시와 문서 lifecycle 책임을 별도 구조도와 표로 정리했다. 모델의
   제안과 애플리케이션의 실행 권한을 분리한 설계 결정, ADR·API·테스트 규모도 함께 기록했다.
