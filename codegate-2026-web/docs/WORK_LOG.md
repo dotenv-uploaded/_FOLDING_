@@ -7,8 +7,9 @@
   로컬·클라우드 실행 경계 안의 control plane 설명 세 문장으로 축약해 제품 아키텍처의 일부로
   유지했다.
 - 영향: 루트 README와 공개 표현만 변경하며 구현·소유권·runtime 동작은 바뀌지 않는다.
-- 검증과 전달: 이름 잔존 여부, 섹션 순서, GitHub GFM 렌더링, 로컬 링크와 staged 공개 트리의
-  비밀정보를 확인한 뒤 `ghdtjdwn_complete` main에 반영한다.
+- 검증과 전달: README의 이름·담당 제목 0건, GitHub GFM 렌더링, 로컬 링크 15개와 staged 공개
+  트리의 비밀정보를 확인했다. commit `8a72736`을 공개 `ghdtjdwn_complete` main에 push하고 GitHub
+  Contents API에서 제품 중심 섹션 순서와 이름 제거를 다시 확인했다.
 
 ## 2026-07-23 — README 로컬·클라우드 실행 경계와 강점 보강
 
