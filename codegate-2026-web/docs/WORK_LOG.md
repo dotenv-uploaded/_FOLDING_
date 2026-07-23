@@ -11,7 +11,8 @@
   생성, no-overwrite, 재파싱과 사용자 승인 경계는 변경하지 않았다.
 - 검증: 사용자 문장 기반 API 테스트를 포함한 Backend 전체 pytest 281개, Ruff·mypy, Electron 전체
   Vitest 156개 통과·환경 의존 integration 1개 skip, TypeScript typecheck와 production build 성공.
-- 전달 상태: 로컬 구현과 집중 검증 완료. 전체 Backend gate, commit·push·PR·merge와 앱 재실행은 진행 중.
+- 전달 결과: commit `d3c8f62`를 push하고 PR #3을 생성했다. required check가 없는 저장소에서
+  mergeable/CLEAN 상태를 확인했으며 main 병합과 앱 재실행은 진행 중.
 
 ## 2026-07-23 — 기존 XLSX 입력의 병합 hidden-cell 교정 마이그레이션
 
