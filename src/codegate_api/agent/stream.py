@@ -204,6 +204,9 @@ async def run_open_agent(
                             # 자동으로 가려낼 수 없지만, 요청과 도구가 어긋나면(요약을 시켰는데
                             # rm 이 뜨면) 사람은 알아본다. 판단 재료를 주는 것이 요점이다.
                             "user_request": _truncate(prompt),
+                            # 답이 없으면 이만큼 뒤에 **거부로** 처리된다. 창에 남은 시간을
+                            # 보여줘, 사용자가 언제까지 결정해야 하는지 알게 한다.
+                            "timeout_seconds": registry.timeout_seconds,
                         }
                         continue
 

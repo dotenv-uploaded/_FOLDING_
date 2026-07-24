@@ -39,6 +39,24 @@ class ApprovalDecisionRequest(StrictModel):
     approved: bool
 
 
+#: 승인 대기를 스트림 전체 타임아웃보다 이만큼 일찍 끝낸다(초).
+#:
+#: 두 값이 같으면 "무응답 = 거부" 가 성립하지 않는다 — 승인이 거부로 풀리기 전에 스트림이
+#: 먼저 죽어서, 사용자는 거부되었다는 사실 대신 타임아웃 오류만 본다. 먼저 거부로 풀려야
+#: 에이전트가 "승인되지 않아 실행하지 않았다"고 제대로 말하고 끝낼 수 있다.
+_APPROVAL_TIMEOUT_MARGIN_SECONDS = 60
+
+#: 사람이 창을 보고 누르기에 최소한 필요한 시간(초).
+_APPROVAL_TIMEOUT_FLOOR_SECONDS = 30
+
+
+def _approval_timeout(stream_timeout_seconds: float) -> float:
+    return max(
+        _APPROVAL_TIMEOUT_FLOOR_SECONDS,
+        stream_timeout_seconds - _APPROVAL_TIMEOUT_MARGIN_SECONDS,
+    )
+
+
 def _canonical_state_id(conversation_id: str) -> str:
     """대화 id 를 디렉터리 이름으로 쓸 수 있게 다듬는다.
 
@@ -65,7 +83,7 @@ async def stream_agent(
     stream_id = f"stream_{uuid4().hex}"
     registry = container.approval_hub.open(
         stream_id,
-        timeout_seconds=container.settings.claude_timeout_seconds,
+        timeout_seconds=_approval_timeout(container.settings.claude_timeout_seconds),
     )
     # 상태 디렉터리는 **대화 단위**로 잡는다 — 요청마다가 아니다.
     #
