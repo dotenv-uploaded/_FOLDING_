@@ -115,9 +115,15 @@ async def run_open_agent_threaded(
                 event_queue.put(event)
 
         loop = asyncio.new_event_loop()
+        # 이 스레드의 기본 루프로 등록한다. 라이브러리가 get_event_loop 로 루프를 찾는
+        # 경우(SDK 내부 포함) 등록해 두지 않으면 엉뚱한 루프를 만들거나 실패한다.
+        asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(drive())
-        except Exception as error:  # noqa: BLE001 - 스레드 안에서 죽어도 스트림은 살아야 한다
+        except BaseException as error:  # noqa: BLE001
+            # Exception 만 잡으면 CancelledError 같은 BaseException 이 **흔적 없이** 사라진다.
+            # 그러면 스트림은 이벤트 하나 없이 조용히 끝나고, 사용자도 로그도 이유를 모른다.
+            # 실제로 그렇게 비어 있는 스트림을 만났다 — 무엇이 죽었는지는 반드시 남긴다.
             logging.getLogger(__name__).exception("open_agent thread failed: %s", error)
             event_queue.put(
                 {"type": "error", "code": "AGENT_FAILED", "message": f"{type(error).__name__}: {error}"}

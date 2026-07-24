@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.datastructures import MutableHeaders
 
 from codegate_api.api import (
     agent_stream,
@@ -82,14 +84,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
     )
 
-    @application.middleware("http")
-    async def request_guards(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        request_id = request.headers.get("X-Request-ID")
-        if not request_id or len(request_id) > 128:
-            request_id = str(uuid4())
+    async def rejection_for(request: Request, request_id: str) -> Response | None:
+        """요청을 막아야 하면 그 응답을, 통과시켜도 되면 None 을 돌려준다.
+
+        **순수 ASGI 미들웨어에서 쓴다.** 예전에는 `@app.middleware("http")` 로 붙였는데,
+        그것이 만드는 `BaseHTTPMiddleware` 는 **스트리밍 응답의 본문을 취소한다.**
+        SSE(`agent/stream`)가 헤더만 200 으로 나가고 이벤트 하나 없이 끊기던 원인이
+        이것이었다 — CancelledError 가 본문 제너레이터에 꽂혔다. 검사 내용은 그대로 두고
+        감싸는 방식만 바꾼다.
+        """
         authorization = request.headers.get("Authorization")
         client_host = request.client.host if request.client else "unknown"
         if application_settings.environment == "local" and not _is_loopback_client(client_host):
@@ -148,9 +151,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "Retry-After": str(chat_rate_limiter.retry_after_seconds),
                     },
                 )
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
+        return None
+
+    class RequestGuardMiddleware:
+        """검사 통과 후에는 **손대지 않고** 그대로 흘려보내는 순수 ASGI 미들웨어.
+
+        응답을 감싸거나 별도 태스크로 옮기지 않으므로 스트리밍(SSE)이 그대로 산다.
+        하는 일은 요청 id 를 정하고, 막을 요청을 막고, 나가는 헤더에 그 id 를 얹는 것뿐이다.
+        """
+
+        def __init__(self, app: Any) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            request = Request(scope, receive=receive)
+            request_id = request.headers.get("X-Request-ID")
+            if not request_id or len(request_id) > 128:
+                request_id = str(uuid4())
+
+            rejection = await rejection_for(request, request_id)
+            if rejection is not None:
+                await rejection(scope, receive, send)
+                return
+
+            async def send_with_request_id(message: Any) -> None:
+                if message["type"] == "http.response.start":
+                    headers = MutableHeaders(scope=message)
+                    headers["X-Request-ID"] = request_id
+                await send(message)
+
+            await self.app(scope, receive, send_with_request_id)
+
+    application.add_middleware(RequestGuardMiddleware)
 
     application.add_middleware(
         RequestBodyLimitMiddleware,

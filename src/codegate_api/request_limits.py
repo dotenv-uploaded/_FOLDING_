@@ -48,11 +48,17 @@ class RequestBodyLimitMiddleware:
 
         async def replay() -> Message:
             nonlocal index
-            if index >= len(messages):
-                return {"type": "http.disconnect"}
-            message = messages[index]
-            index += 1
-            return message
+            if index < len(messages):
+                message = messages[index]
+                index += 1
+                return message
+            # 버퍼를 다 돌려준 뒤에는 **원래 receive 로 넘긴다.**
+            #
+            # 여기서 http.disconnect 를 지어내면 안 된다. 스트리밍 응답(SSE)은 연결이
+            # 끊겼는지 보려고 receive() 를 계속 지켜보는데, 그 가짜 끊김을 받으면
+            # "클라이언트가 갔다"고 판단해 본문 생성을 취소한다. 실제로 agent/stream 이
+            # 헤더만 200 으로 나가고 이벤트 하나 없이 끊기던 원인이었다.
+            return await receive()
 
         await self._app(scope, replay, send)
 
