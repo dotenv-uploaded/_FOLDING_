@@ -165,7 +165,10 @@ describe.skipIf(!enabled)('form fill end-to-end', () => {
     //    아니라 **자리 표시가 사라지고 내용이 들어찼는지**로 본다.
     const targetPath = path.join(root, created[0]!);
     expect(await readPlaceholders(targetPath), '남은 자리 표시가 없어야 한다').toEqual([]);
-    const filled = countFilled(approvals[0]!.diff);
+    // 양식 채우기는 언제나 diff 를 만든다(임의 도구 승인과 달리). 그 불변을 먼저 못 박는다.
+    const approvalDiff = approvals[0]!.diff;
+    expect(approvalDiff, '양식 채우기 승인에는 diff 가 있어야 한다').toBeDefined();
+    const filled = countFilled(approvalDiff!);
     expect(filled, `${names.length}칸 중 하나도 못 채웠다`).toBeGreaterThan(0);
     const text = await documentText(targetPath);
     expect(text.length, '본문이 비어 있으면 안 된다').toBeGreaterThan(0);

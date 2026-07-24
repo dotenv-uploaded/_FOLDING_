@@ -1,5 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { httpJson, joinUrl } from '@main/net/http';
+import type { ToolRisk } from '@contracts';
+import { httpJson, httpRequest, joinUrl } from '@main/net/http';
+
+/** 열린 에이전트 스트림이 흘려보내는 이벤트 (사이드카 `agent/stream` 의 SSE 페이로드). */
+export type SidecarAgentEvent =
+  | { type: 'text'; text: string }
+  | { type: 'tool'; tool: string; summary: string }
+  | {
+      type: 'approval';
+      approval_id: string;
+      tool: string;
+      risk: ToolRisk;
+      reason: string | null;
+      summary: string;
+      /** 사용자가 원래 시킨 일 — 도구와 어긋나는지 사람이 판단할 재료 */
+      user_request?: string;
+    }
+  | { type: 'done'; cost_usd: number | null }
+  | { type: 'error'; code: string; message: string };
 
 export interface EvidenceResponse {
   chunk_id: string;
@@ -98,6 +116,49 @@ export class SidecarClient {
     });
   }
 
+  /**
+   * 열린 에이전트를 **스트리밍**으로 돌린다 (SSE).
+   *
+   * 단발 `chat` 과 달리 도구를 여러 번 쓰고 그때마다 승인을 받으므로, 실행 중간에
+   * 이벤트가 흘러나와야 한다. 승인 요청도 이 스트림으로 나오고, 사용자의 답은
+   * `resolveApproval` 로 **따로** 돌아간다 — 한 요청으로 왕복할 수 없다.
+   */
+  async *streamAgent(
+    conversationId: string,
+    message: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<SidecarAgentEvent> {
+    const response = await httpRequest(joinUrl(this.baseUrl, 'agent/stream'), {
+      method: 'POST',
+      headers: { 'idempotency-key': randomUUID() },
+      json: { conversation_id: conversationId, message },
+      signal,
+      failureMessage: '에이전트를 실행하지 못했습니다.',
+    });
+    if (!response.body) {
+      throw new Error('에이전트 스트림이 비어 있습니다.');
+    }
+    yield* parseSseEvents(response.body, signal);
+  }
+
+  /** 사용자의 승인/거부를 사이드카의 대기소로 전달한다. */
+  async resolveApproval(
+    approvalId: string,
+    approved: boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const result = await httpJson<{ delivered: boolean }>(
+      joinUrl(this.baseUrl, `agent/approvals/${approvalId}`),
+      {
+        method: 'POST',
+        json: { approved },
+        signal,
+        failureMessage: '승인 결과를 전달하지 못했습니다.',
+      },
+    );
+    return result.delivered;
+  }
+
   approve(plan: ChangePlanResponse, signal?: AbortSignal): Promise<ExecutionResponse> {
     return httpJson(joinUrl(this.baseUrl, `change-plans/${plan.change_plan_id}/approve`), {
       method: 'POST',
@@ -163,6 +224,61 @@ export class SidecarClient {
       current = await this.execution(current.execution_id, signal);
     }
     return current;
+  }
+}
+
+/**
+ * SSE 바이트 스트림을 이벤트로 푼다.
+ *
+ * 한 이벤트는 `data: {json}` 다음 **빈 줄**로 끝난다. 청크는 이벤트 경계와 무관하게
+ * 잘려 오므로(한 이벤트가 두 청크에 걸치거나, 한 청크에 여러 이벤트가 들어온다) 버퍼에
+ * 모아 두고 빈 줄이 나올 때마다 하나씩 꺼낸다. 경계를 무시하고 청크마다 파싱하면
+ * 긴 이벤트에서 JSON 이 깨진다.
+ */
+export async function* parseSseEvents(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<SidecarAgentEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      if (signal?.aborted) return;
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const event = parseSseBlock(block);
+        if (event) yield event;
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    // 스트림이 끝날 때 마지막 이벤트가 빈 줄 없이 남아 있을 수 있다.
+    const tail = parseSseBlock(buffer);
+    if (tail) yield tail;
+  } finally {
+    // 소비 측이 중간에 멈춰도(승인 거부 후 이탈 등) 소켓을 놓아 준다.
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+function parseSseBlock(block: string): SidecarAgentEvent | null {
+  const line = block
+    .split('\n')
+    .find((candidate) => candidate.startsWith('data:'));
+  if (!line) return null;
+  const payload = line.slice('data:'.length).trim();
+  if (!payload) return null;
+  try {
+    return JSON.parse(payload) as SidecarAgentEvent;
+  } catch {
+    // 깨진 한 줄 때문에 대화 전체를 죽이지 않는다. 다음 이벤트로 넘어간다.
+    return null;
   }
 }
 

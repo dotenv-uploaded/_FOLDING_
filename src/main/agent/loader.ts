@@ -6,6 +6,7 @@
 import type { CreateAgent } from '@contracts';
 import { createMockAgent } from './mock-agent';
 import { createSidecarAgent } from './sidecar-agent';
+import { createOpenAgent } from './open-agent';
 import { createFormFillAgent } from './form-fill';
 
 export type AgentSource = 'real' | 'mock';
@@ -23,6 +24,20 @@ export async function loadCreateAgent(
     console.info('[codegate:agent] CODEGATE_MOCK=1 — 내장 목 에이전트를 사용합니다.');
     return { createAgent: createMockAgent, source: 'mock' };
   }
+  /*
+   * 열린 에이전트 — 도구를 가리지 않고 매번 승인을 받는다.
+   *
+   * 아직 기본값이 아니다. 전면 개방은 승인 게이트가 유일한 방어선이므로, 실제 문서로
+   * 위험 케이스를 확인한 뒤에 기본으로 올린다. 그전까지는 이 플래그로만 켠다.
+   *
+   * `CODEGATE_AGENT_MODE` 와는 다른 축이다 — 그쪽은 사이드카의 동작(claude·deterministic)을
+   * 정하고, 이쪽은 앱이 어느 에이전트를 태울지를 정한다.
+   */
+  if (process.env.CODEGATE_OPEN_AGENT === '1') {
+    console.info('[codegate:agent] CODEGATE_OPEN_AGENT=1 — 열린 에이전트(전면 승인 게이트)를 사용합니다.');
+    return { createAgent: (deps) => createOpenAgent(deps, onUsage), source: 'real' };
+  }
+
   console.info('[codegate:agent] Python sidecar API를 사용합니다.');
   /*
    * 양식 채우기만 앱이 직접 처리하고 나머지는 sidecar 가 답한다.

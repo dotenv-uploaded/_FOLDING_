@@ -65,19 +65,47 @@ export interface KordocApi {
   render(path: string, pages?: number[]): Promise<Buffer[]>;
 }
 
-/** 쓰기 도구가 승인을 요청할 때 전달되는 페이로드. */
+/**
+ * 도구 실행 위험도.
+ *
+ * 열린 에이전트는 도구를 가리지 않으므로, 무엇을 승인하는지 한눈에 구분돼야 한다.
+ * 애매하면 더 위험한 쪽으로 분류한다 — 사이드카의 `tool_risk` 와 같은 값이다.
+ */
+export type ToolRisk = 'safe' | 'caution' | 'danger';
+
+/**
+ * 도구가 승인을 요청할 때 전달되는 페이로드.
+ *
+ * 두 갈래가 이 한 타입을 함께 쓴다:
+ *   - 문서 편집 흐름 — `diff`·`target` 으로 무엇이 바뀌는지 보여준다
+ *   - 열린 에이전트 — 임의 도구(Bash·Write·WebFetch…)라 diff 가 없다. 대신 `risk`·
+ *     `summary` 로 무엇을 하려는지 보여준다.
+ */
 export interface ApprovalRequest {
-  /** 요청한 도구 이름 (`patch_document` · `create_document` · `create_from_template`) */
+  /** 요청한 도구 이름 (`patch_document` · `Bash` · `Write` …) */
   tool: string;
-  /** 대상 파일 절대경로 */
+  /** 대상 — 문서 편집이면 파일 절대경로, 열린 에이전트면 도구 입력 요약 */
   target: string;
-  /** 통합 diff 문자열 — 승인 모달에 그대로 렌더된다 */
-  diff: string;
+  /** 통합 diff 문자열 — 있으면 승인 모달에 그대로 렌더된다. 임의 도구에는 없다. */
+  diff?: string;
   /** 에이전트가 밝힌 근거 (모달의 "근거" 영역) */
   rationale?: string;
   /** Backend approval integrity fields. */
   changePlanId?: string;
   planHash?: string;
+
+  /* --- 열린 에이전트 전용 --------------------------------------------- */
+  /** 위험도. 모달이 색과 경고 문구를 이걸로 정한다. */
+  risk?: ToolRisk;
+  /** 도구 입력 요약(실행할 명령, 파일 경로, URL 등) */
+  summary?: string;
+  /**
+   * 사용자가 **원래 시킨 일**.
+   *
+   * 프롬프트 인젝션은 자동으로 가려낼 수 없다. 대신 판단 재료를 준다 — 요청과 도구가
+   * 어긋나면(요약을 시켰는데 `rm` 이 뜨면) 사람이 알아본다.
+   */
+  userRequest?: string;
 }
 
 /** local이 agent에 주입하는 의존성 묶음. */
