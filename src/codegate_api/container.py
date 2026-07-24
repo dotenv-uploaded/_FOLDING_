@@ -22,6 +22,7 @@ from codegate_api.knowledge.llmwiki import (
 from codegate_api.knowledge.pipeline import LocalKnowledgePipeline
 from codegate_api.knowledge.worker import KnowledgeSyncWorker
 from codegate_api.runtime_workspace import RuntimeWorkspace
+from codegate_api.agent.approval_hub import ApprovalHub
 from codegate_api.state.store import StateStore
 
 
@@ -42,6 +43,7 @@ class AppContainer:
     authenticator: TokenAuthenticator
     doc2md: Doc2MdClient | None
     reset_lock: asyncio.Lock
+    approval_hub: ApprovalHub
 
     async def startup(self) -> None:
         if (
@@ -205,4 +207,5 @@ def build_container(settings: Settings) -> AppContainer:
         authenticator=build_authenticator(settings),
         doc2md=doc2md,
         reset_lock=asyncio.Lock(),
+        approval_hub=ApprovalHub(),
     )

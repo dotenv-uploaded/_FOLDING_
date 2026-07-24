@@ -17,11 +17,26 @@
 
 대기소는 **밖에서 주입**받는다(세션 소유). 그래야 앱의 resolve 요청이 같은 대기소에 닿는다
 — 대기소가 이 제너레이터 안에 갇히면 resolve 가 도달할 곳이 없다.
+
+알려진 이슈 — uvicorn ASGI 컨텍스트에서 connect 가 멈춘다
+------------------------------------------------------
+`run_open_agent` 자체는 `asyncio.run` 에서 실제 SDK·실제 파일로 검증됐다(승인 게이트 양방향
+동작 확인). 그러나 이 스트림을 uvicorn 요청 핸들러(StreamingResponse) 안에서 돌리면
+`ClaudeSDKClient.__aenter__()`(connect) 가 멈춘다. `can_use_tool` 을 주면 SDK 가 스트리밍
+모드로 전환하는데(client.py: "canUseTool callback requires streaming mode"), 그 모드의 제어
+프로토콜 백그라운드 태스크가 이미 돌고 있는 ASGI 이벤트 루프 안에서 제대로 스케줄되지
+않는 것으로 보인다. 정상 채팅(decide, 구조화 출력 모드)은 같은 SDK·같은 CLI 로 uvicorn
+안에서 잘 돈다 — 차이는 스트리밍 모드다.
+
+유력한 해법: SDK 클라이언트를 **전용 스레드의 독립 이벤트 루프**에서 돌리고, 이벤트를
+thread-safe 큐로 ASGI 응답에 넘긴다. SDK 의 async 기계를 uvicorn 루프에서 떼어낸다.
+아직 적용하지 않았다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -66,19 +81,21 @@ async def run_open_agent(
 
     can_use_tool = build_can_use_tool(registry, emit_approval)
     stderr_tail = SubprocessStderrTail()
-    options = build_open_agent_options(
-        repository,
-        working_directory=working_directory,
-        state_directory=state_directory,
-        access_context=access_context,
-        can_use_tool=can_use_tool,
-        model=model,
-        resume=resume_session_id,
-        stderr=stderr_tail,
-    )
 
     total_cost: float | None = None
     try:
+        # 옵션 조립도 try 안에 둔다 — 여기서 나는 오류(도구 서버·경로 등)도 error 이벤트로
+        # 전해야 한다. 밖에 두면 스트림이 헤더만 보내고 조용히 닫혀 원인이 사라진다.
+        options = build_open_agent_options(
+            repository,
+            working_directory=working_directory,
+            state_directory=state_directory,
+            access_context=access_context,
+            can_use_tool=can_use_tool,
+            model=model,
+            resume=resume_session_id,
+            stderr=stderr_tail,
+        )
         async with asyncio.timeout(timeout_seconds):
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt)
@@ -117,6 +134,7 @@ async def run_open_agent(
             "message": "Claude 응답 시간이 초과되었습니다.",
         }
     except Exception as error:  # noqa: BLE001 - 스트림은 오류도 이벤트로 전한다
+        logging.getLogger(__name__).exception('open_agent 실패: %s', error)
         tail = stderr_tail.text()
         yield {
             "type": "error",
