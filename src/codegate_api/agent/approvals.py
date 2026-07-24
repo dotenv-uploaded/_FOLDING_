@@ -51,6 +51,10 @@ class ApprovalRegistry:
 
     _waiters: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
     _requests: dict[str, PendingApproval] = field(default_factory=dict)
+    #: Future 들이 사는 이벤트 루프. 승인 대기(create/wait)는 SDK 전용 스레드의 루프에서
+    #: 돌고, resolve 는 ASGI 스레드에서 불린다. 다른 스레드에서 Future 를 건드리면 안 되므로
+    #: 그 루프를 기억해 두고 resolve 를 그 루프에 넘긴다(call_soon_threadsafe).
+    _loop: asyncio.AbstractEventLoop | None = None
 
     def create(
         self,
@@ -69,8 +73,10 @@ class ApprovalRegistry:
             reason=reason,
             summary=summary,
         )
+        loop = asyncio.get_event_loop()
+        self._loop = loop  # resolve 가 이 루프로 결과를 넘긴다
         self._requests[approval_id] = pending
-        self._waiters[approval_id] = asyncio.get_event_loop().create_future()
+        self._waiters[approval_id] = loop.create_future()
         return pending
 
     async def wait(self, approval_id: str) -> bool:
@@ -93,20 +99,41 @@ class ApprovalRegistry:
         """앱이 사용자의 결정을 전달한다. 그런 요청이 없으면 False.
 
         같은 요청을 두 번 결정해도(사용자가 두 번 눌러도) 조용히 무시한다.
+
+        **다른 스레드에서 불릴 수 있다.** Future 는 SDK 전용 스레드 루프에 사는데 이 함수는
+        ASGI 스레드에서 불린다. 그래서 Future 를 직접 건드리지 않고 그 루프에 결과 설정을
+        넘긴다(call_soon_threadsafe) — 아니면 "다른 루프의 Future" 오류가 나거나 조용히
+        무시된다.
         """
         future = self._waiters.get(approval_id)
         if future is None or future.done():
             return False
-        future.set_result(approved)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._set_if_pending, future, approved)
+        else:
+            self._set_if_pending(future, approved)
         return True
+
+    @staticmethod
+    def _set_if_pending(future: asyncio.Future[bool], approved: bool) -> None:
+        # 넘기는 사이에 타임아웃 등으로 이미 끝났을 수 있다 — 그때는 조용히 넘어간다.
+        if not future.done():
+            future.set_result(approved)
 
     def cancel_all(self) -> None:
         """실행이 끝나거나 끊기면 남은 대기를 전부 거부로 풀어 준다.
 
-        풀어 주지 않으면 대기 중인 콜백이 타임아웃까지 멈춰 있게 된다.
+        풀어 주지 않으면 대기 중인 콜백이 타임아웃까지 멈춰 있게 된다. resolve 와 마찬가지로
+        다른 스레드(허브의 close)에서 불릴 수 있어 루프에 넘긴다.
         """
-        for future in self._waiters.values():
-            if not future.done():
-                future.set_result(False)
+        loop = self._loop
+        for future in list(self._waiters.values()):
+            if future.done():
+                continue
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(self._set_if_pending, future, False)
+            else:
+                self._set_if_pending(future, False)
         self._waiters.clear()
         self._requests.clear()

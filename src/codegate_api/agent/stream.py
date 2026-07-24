@@ -18,19 +18,18 @@
 대기소는 **밖에서 주입**받는다(세션 소유). 그래야 앱의 resolve 요청이 같은 대기소에 닿는다
 — 대기소가 이 제너레이터 안에 갇히면 resolve 가 도달할 곳이 없다.
 
-알려진 이슈 — uvicorn ASGI 컨텍스트에서 connect 가 멈춘다
-------------------------------------------------------
-`run_open_agent` 자체는 `asyncio.run` 에서 실제 SDK·실제 파일로 검증됐다(승인 게이트 양방향
-동작 확인). 그러나 이 스트림을 uvicorn 요청 핸들러(StreamingResponse) 안에서 돌리면
-`ClaudeSDKClient.__aenter__()`(connect) 가 멈춘다. `can_use_tool` 을 주면 SDK 가 스트리밍
-모드로 전환하는데(client.py: "canUseTool callback requires streaming mode"), 그 모드의 제어
-프로토콜 백그라운드 태스크가 이미 돌고 있는 ASGI 이벤트 루프 안에서 제대로 스케줄되지
-않는 것으로 보인다. 정상 채팅(decide, 구조화 출력 모드)은 같은 SDK·같은 CLI 로 uvicorn
-안에서 잘 돈다 — 차이는 스트리밍 모드다.
+uvicorn ASGI 컨텍스트에서 connect 가 멈추던 문제 — 해결됨
+-------------------------------------------------------
+`can_use_tool` 을 주면 SDK 가 스트리밍 모드로 전환하는데(client.py: "canUseTool callback
+requires streaming mode"), 그 모드의 제어 프로토콜 백그라운드 태스크가 이미 돌고 있는
+ASGI 이벤트 루프 안에서는 제대로 스케줄되지 않아 `ClaudeSDKClient.__aenter__()`(connect)
+가 멈췄다. 정상 채팅(decide, 구조화 출력 모드)은 같은 SDK·같은 CLI 로 uvicorn 안에서 잘
+돈다 — 차이는 스트리밍 모드다.
 
-유력한 해법: SDK 클라이언트를 **전용 스레드의 독립 이벤트 루프**에서 돌리고, 이벤트를
-thread-safe 큐로 ASGI 응답에 넘긴다. SDK 의 async 기계를 uvicorn 루프에서 떼어낸다.
-아직 적용하지 않았다.
+해법은 `run_open_agent_threaded`: SDK 클라이언트를 **전용 스레드의 독립 이벤트 루프**에서
+돌리고 이벤트를 thread-safe 큐로 ASGI 응답에 넘긴다. SDK 의 async 기계를 uvicorn 루프에서
+떼어낸다. 엔드포인트는 그 래퍼를 쓴다. `run_open_agent` 자체(아래)는 순수 async 제너레이터로
+남겨 `asyncio.run` 단위 테스트에서 그대로 검증한다.
 """
 
 from __future__ import annotations
@@ -49,11 +48,84 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+import queue
+import threading
+
 from codegate_api.agent.approvals import ApprovalRegistry, PendingApproval
 from codegate_api.agent.permission import build_can_use_tool, summarize_tool_input
 from codegate_api.agent.runtime import SubprocessStderrTail, build_open_agent_options
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
+
+# 스트림 끝을 알리는 표식 — 큐로는 None 을 못 쓴다(정상 이벤트와 구분해야 하므로).
+_STREAM_END = object()
+
+
+async def run_open_agent_threaded(
+    *,
+    prompt: str,
+    registry: ApprovalRegistry,
+    repository: KnowledgeRepository,
+    access_context: AccessContext,
+    working_directory: "Path",
+    state_directory: "Path",
+    model: str | None,
+    resume_session_id: str | None,
+    timeout_seconds: float,
+) -> AsyncIterator[dict[str, Any]]:
+    """`run_open_agent` 을 **전용 스레드의 독립 이벤트 루프**에서 돌린다.
+
+    왜 스레드인가
+    ------------
+    `can_use_tool` 을 주면 SDK 가 스트리밍 모드로 바뀌는데, 그 모드의 제어 프로토콜
+    백그라운드 태스크가 uvicorn 의 이미 도는 ASGI 루프 안에서는 제대로 스케줄되지 않아
+    `connect()` 가 멈춘다(정상 채팅은 스트리밍 모드가 아니라 문제없다). SDK 를 별도
+    스레드의 새 루프에서 돌리면 그 충돌이 사라진다 — 격리 재현으로 확인했다.
+
+    스레드가 만든 이벤트는 thread-safe 큐로 넘어오고, 여기서 그것을 ASGI 응답으로 흘린다.
+    승인 대기소의 Future 는 스레드 루프에 사므로, resolve(ASGI 스레드)는 대기소가 그 루프로
+    넘긴다(approvals.resolve 참고).
+    """
+    event_queue: queue.Queue[object] = queue.Queue()
+
+    def worker() -> None:
+        async def drive() -> None:
+            async for event in run_open_agent(
+                prompt=prompt,
+                registry=registry,
+                repository=repository,
+                access_context=access_context,
+                working_directory=working_directory,
+                state_directory=state_directory,
+                model=model,
+                resume_session_id=resume_session_id,
+                timeout_seconds=timeout_seconds,
+            ):
+                event_queue.put(event)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(drive())
+        except Exception as error:  # noqa: BLE001 - 스레드 안에서 죽어도 스트림은 살아야 한다
+            logging.getLogger(__name__).exception("open_agent thread failed: %s", error)
+            event_queue.put(
+                {"type": "error", "code": "AGENT_FAILED", "message": f"{type(error).__name__}: {error}"}
+            )
+        finally:
+            loop.close()
+            event_queue.put(_STREAM_END)
+
+    thread = threading.Thread(target=worker, name="open-agent", daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = await asyncio.to_thread(event_queue.get)
+            if item is _STREAM_END:
+                return
+            yield item  # type: ignore[misc]
+    finally:
+        # ASGI 쪽이 끊겨도 스레드가 남지 않게 대기소를 풀어 준다.
+        registry.cancel_all()
 
 
 async def run_open_agent(

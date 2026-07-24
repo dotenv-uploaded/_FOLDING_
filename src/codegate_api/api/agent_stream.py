@@ -19,7 +19,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from codegate_api.agent.stream import run_open_agent
+from codegate_api.agent.stream import run_open_agent_threaded
 from codegate_api.container import AppContainer
 from codegate_api.dependencies import (
     get_access_context,
@@ -57,7 +57,7 @@ async def stream_agent(
 
     async def body() -> AsyncIterator[str]:
         try:
-            async for event in run_open_agent(
+            async for event in run_open_agent_threaded(
                 prompt=request.message,
                 registry=registry,
                 repository=repository,
