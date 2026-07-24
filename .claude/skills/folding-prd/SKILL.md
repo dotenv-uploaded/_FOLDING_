@@ -19,10 +19,11 @@ description: Folding(구 CODEGATE) 제품의 PRD·아키텍처·기술스택·�
    지어내지 않고 "확인되지 않음"이라고 답한다.
 2. **문서를 고칠 때는 반드시 승인을 받는다.** 무엇이 어떻게 바뀌는지 보여준 뒤에만 쓴다.
    원본은 `.bak` 으로 백업된다.
-3. **한글(HWP/HWPX)을 원본 형식 그대로 고친다.** LibreOffice 경로를 쓰지 않는 이유는
-   측정으로 확인했다 — **HWP 로 되돌려 쓸 수 없고**(`no export filter for .hwp`),
-   병합 구간을 접어 **채울 빈 칸을 잃는다**(kordoc 154칸 vs LibreOffice 51칸).
-   `kordoc` 은 `patchHwp` 로 원본 형식·서식을 보존한 채 되돌려 쓴다.
+3. **한글(HWP/HWPX)을 원본 형식 그대로 고친다.** LibreOffice 는 HWP 로 되돌려 쓰지 못한다
+   (`no export filter for .hwp`) — 세 라이브러리를 실측해 확인했다. 양식 채우기는 **rhwp**
+   로 표의 빈 셀을 인덱스로 직접 채우고(`src/main/rhwp/fill.ts`), 읽기·변경적용은 아직
+   kordoc 이 남아 있다. 자세한 비교표는 `folding-prd` 스킬의 backend.md 에 있다.
+
 
 에이전트 자체는 **범용**이다(Claude Code·Codex 처럼 컴퓨터 작업 전반). 문서 작업에만
 한정된 도구가 아니라, 문서 작업을 **우리가 지정한 고품질 경로로 유도**하는 구조다.

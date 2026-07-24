@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@codegate/contracts": "workspace:*",
+    "@rhwp/core": "0.7.19",
     "@supabase/supabase-js": "^2.110.7",
     "better-sqlite3": "^11.5.0",
     "chokidar": "^4.0.1",

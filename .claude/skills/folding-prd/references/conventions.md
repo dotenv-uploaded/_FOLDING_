@@ -112,3 +112,4 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 | 우측 패널이 밀림 | 가운데 grid 트랙에 `min-w-0` 이 없다 |
 | 요약이 0개 | enrichment 를 부르는 곳이 없거나, 가상 코퍼스 플래그가 꺼져 가드에 막힘 |
 | 한글 표 내용이 사라짐 | kordoc 대신 pyhwp2md 로 읽혔다 (`CODEGATE_KORDOC_DIR` 확인) |
+| rhwp 로드 실패 | `@rhwp/core` 미설치 또는 `rhwp_bg.wasm` 을 못 찾음. WASM 은 패키지 옆이라 `require.resolve` 로 찾는다 |
