@@ -106,6 +106,13 @@ export interface ApprovalRequest {
    * 어긋나면(요약을 시켰는데 `rm` 이 뜨면) 사람이 알아본다.
    */
   userRequest?: string;
+  /**
+   * 답이 없으면 이만큼 뒤에 **거부로** 처리된다(초).
+   *
+   * 모달이 남은 시간을 보여주고, 0 이 되면 스스로 거부한다 — 사용자가 언제까지 결정해야
+   * 하는지 알 수 있고, 화면과 서버의 판정이 어긋나지 않는다.
+   */
+  timeoutSeconds?: number;
 }
 
 /** local이 agent에 주입하는 의존성 묶음. */

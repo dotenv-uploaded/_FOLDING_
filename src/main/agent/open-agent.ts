@@ -103,6 +103,7 @@ async function handle(
         risk: event.risk,
         summary: event.summary,
         userRequest: event.user_request,
+        timeoutSeconds: event.timeout_seconds,
       });
       const failure = await sendDecision(event.approval_id, approved);
       return failure ? [{ type: 'text_delta', text: failure }] : [];

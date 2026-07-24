@@ -15,6 +15,8 @@ export type SidecarAgentEvent =
       summary: string;
       /** 사용자가 원래 시킨 일 — 도구와 어긋나는지 사람이 판단할 재료 */
       user_request?: string;
+      /** 답이 없으면 이만큼 뒤에 거부로 처리된다(초) */
+      timeout_seconds?: number;
     }
   | { type: 'done'; cost_usd: number | null }
   | { type: 'error'; code: string; message: string };

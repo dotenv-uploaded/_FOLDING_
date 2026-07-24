@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { FileWarning } from 'lucide-react';
 import type { ApprovalEnvelope, ToolRisk } from '@contracts';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/ui/Dialog';
@@ -41,6 +42,55 @@ const RISK_STYLE: Record<ToolRisk, { label: string; note: string; className: str
 };
 
 /**
+ * 남은 승인 시간(초). 답이 없으면 **거부**가 기본값이므로, 0 이 되면 스스로 거부한다.
+ *
+ * 서버도 같은 시간에 거부로 처리한다. 화면이 아무 말 없이 열려 있으면 사용자는 이미
+ * 거부된 요청을 계속 승인하려 들게 되므로, 남은 시간을 보여주고 판정을 맞춘다.
+ *
+ * `timeoutSeconds` 가 없는 요청(기존 문서 편집 흐름)은 카운트다운하지 않는다 — null 반환.
+ */
+function useApprovalCountdown(
+  pending: ApprovalEnvelope | null,
+  onReject: () => void,
+): number | null {
+  const timeoutSeconds = pending?.request.timeoutSeconds;
+  const [remaining, setRemaining] = useState<number | null>(null);
+  // onReject 가 매 렌더 새 함수여도 타이머가 다시 시작되지 않게 최신 값만 붙잡아 둔다.
+  const rejectRef = useRef(onReject);
+  rejectRef.current = onReject;
+
+  useEffect(() => {
+    if (pending === null || timeoutSeconds === undefined) {
+      setRemaining(null);
+      return;
+    }
+    const deadline = Date.now() + timeoutSeconds * 1000;
+    setRemaining(Math.ceil(timeoutSeconds));
+
+    const timer = setInterval(() => {
+      const left = Math.ceil((deadline - Date.now()) / 1000);
+      setRemaining(left > 0 ? left : 0);
+      if (left <= 0) {
+        clearInterval(timer);
+        rejectRef.current();
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+    // 승인 건이 바뀌면(id) 타이머를 새로 시작한다.
+  }, [pending?.id, timeoutSeconds, pending]);
+
+  return remaining;
+}
+
+/** 남은 시간을 사람이 읽는 형태로. 1분이 넘으면 분 단위가 읽기 쉽다. */
+function formatRemaining(seconds: number): string {
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest === 0 ? `${minutes}분` : `${minutes}분 ${rest}초`;
+}
+
+/**
  * A3 승인 게이트 (스펙 v1.3 §3 승인 모달).
  *
  * 메인 프로세스는 응답이 올 때까지 도구 실행을 멈추고 기다린다.
@@ -56,6 +106,8 @@ export function ApprovalModal({
   onApprove: () => void;
   onReject: () => void;
 }) {
+  const remaining = useApprovalCountdown(pending, onReject);
+
   if (!pending) return null;
   const { request } = pending;
   const risk = request.risk;
@@ -91,14 +143,28 @@ export function ApprovalModal({
         />
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-7 py-5">
-          {riskStyle && (
+          {(riskStyle || remaining !== null) && (
             <div className="flex items-center gap-2">
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-2xs font-semibold ${riskStyle.className}`}
-              >
-                {riskStyle.label}
-              </span>
+              {riskStyle && (
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-2xs font-semibold ${riskStyle.className}`}
+                >
+                  {riskStyle.label}
+                </span>
+              )}
               <span className="font-mono text-2xs text-ink-500">{request.tool}</span>
+              {remaining !== null && (
+                <span
+                  className={`ml-auto text-2xs tabular-nums ${
+                    remaining <= 10 ? 'font-semibold text-red-600' : 'text-ink-500'
+                  }`}
+                >
+                  {/* 답이 없으면 거부가 기본값이다. 무엇이 기본인지 분명히 적는다. */}
+                  {remaining > 0
+                    ? `${formatRemaining(remaining)} 후 자동 거부`
+                    : '시간이 지나 거부되었습니다'}
+                </span>
+              )}
             </div>
           )}
 
