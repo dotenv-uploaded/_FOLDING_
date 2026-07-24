@@ -60,6 +60,17 @@ from codegate_api.knowledge.repository import KnowledgeRepository
 # 스트림 끝을 알리는 표식 — 큐로는 None 을 못 쓴다(정상 이벤트와 구분해야 하므로).
 _STREAM_END = object()
 
+#: 승인 창에 실어 보낼 사용자 요청의 최대 길이. 긴 요청을 통째로 보내면 승인 창이
+#: 스크롤 덩어리가 되어 정작 봐야 할 도구 요약을 가린다.
+_REQUEST_PREVIEW_CHARS = 200
+
+
+def _truncate(text: str, limit: int = _REQUEST_PREVIEW_CHARS) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit] + "…"
+
 
 async def run_open_agent_threaded(
     *,
@@ -182,6 +193,10 @@ async def run_open_agent(
                             "risk": pending.risk.value,
                             "reason": pending.reason,
                             "summary": pending.summary,
+                            # 사용자가 **무엇을 시켰는지**를 승인 창에 함께 싣는다. 인젝션은
+                            # 자동으로 가려낼 수 없지만, 요청과 도구가 어긋나면(요약을 시켰는데
+                            # rm 이 뜨면) 사람은 알아본다. 판단 재료를 주는 것이 요점이다.
+                            "user_request": _truncate(prompt),
                         }
                         continue
 
