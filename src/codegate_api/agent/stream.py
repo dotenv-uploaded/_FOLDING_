@@ -172,6 +172,7 @@ async def run_open_agent(
     stderr_tail = SubprocessStderrTail()
 
     total_cost: float | None = None
+    session_id: str | None = None
     try:
         # 옵션 조립도 try 안에 둔다 — 여기서 나는 오류(도구 서버·경로 등)도 error 이벤트로
         # 전해야 한다. 밖에 두면 스트림이 헤더만 보내고 조용히 닫혀 원인이 사라진다.
@@ -219,7 +220,11 @@ async def run_open_agent(
                                 }
                     elif isinstance(response, ResultMessage):
                         total_cost = response.total_cost_usd
-        yield {"type": "done", "cost_usd": total_cost}
+                        # 다음 턴이 이 대화를 이어받으려면 SDK 가 준 세션 id 가 필요하다.
+                        # 이걸 흘려보내지 않으면 매 요청이 새 대화가 되어, 방금 자기가 만든
+                        # 파일도 기억하지 못한다.
+                        session_id = response.session_id
+        yield {"type": "done", "cost_usd": total_cost, "session_id": session_id}
     except (TimeoutError, asyncio.TimeoutError):
         yield {
             "type": "error",

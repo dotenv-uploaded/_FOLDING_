@@ -23,6 +23,7 @@ from codegate_api.knowledge.pipeline import LocalKnowledgePipeline
 from codegate_api.knowledge.worker import KnowledgeSyncWorker
 from codegate_api.runtime_workspace import RuntimeWorkspace
 from codegate_api.agent.approval_hub import ApprovalHub
+from codegate_api.agent.session_memory import SessionMemory
 from codegate_api.state.store import StateStore
 
 
@@ -44,6 +45,8 @@ class AppContainer:
     doc2md: Doc2MdClient | None
     reset_lock: asyncio.Lock
     approval_hub: ApprovalHub
+    #: 열린 에이전트의 대화별 세션 — 다음 턴이 앞 턴을 이어받게 한다.
+    agent_sessions: SessionMemory
 
     async def startup(self) -> None:
         if (
@@ -208,4 +211,5 @@ def build_container(settings: Settings) -> AppContainer:
         doc2md=doc2md,
         reset_lock=asyncio.Lock(),
         approval_hub=ApprovalHub(),
+        agent_sessions=SessionMemory(),
     )

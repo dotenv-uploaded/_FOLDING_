@@ -81,6 +81,10 @@ async def stream_agent(
             detail={"code": "AGENT_SESSION_INVALID", "message": "대화 경로가 유효하지 않습니다."},
         )
 
+    # 앞 턴의 세션을 이어받는다. 이걸 넘기지 않으면 매 요청이 새 대화가 되어, 방금
+    # 자기가 만든 파일조차 기억하지 못한다.
+    resume_session_id = container.agent_sessions.get(request.conversation_id)
+
     async def body() -> AsyncIterator[str]:
         try:
             async for event in run_open_agent_threaded(
@@ -91,9 +95,18 @@ async def stream_agent(
                 working_directory=container.settings.resolved_source_root(),
                 state_directory=state_directory,
                 model=container.settings.claude_model,
-                resume_session_id=None,
+                resume_session_id=resume_session_id,
                 timeout_seconds=container.settings.claude_timeout_seconds,
             ):
+                if event.get("type") == "done":
+                    container.agent_sessions.remember(
+                        request.conversation_id, event.get("session_id")
+                    )
+                elif event.get("type") == "error" and resume_session_id is not None:
+                    # 이어 붙이기가 실패했을 수 있다(세션이 만료·삭제됨). 기억을 지워
+                    # 다음 턴은 새 대화로 깨끗하게 시작하게 한다 — 안 지우면 같은 실패를
+                    # 영원히 반복한다.
+                    container.agent_sessions.forget(request.conversation_id)
                 yield _sse(event)
         finally:
             # 스트림이 끝나거나 끊기면 대기소를 뗀다 — 남은 승인 대기를 거부로 풀어 준다.
