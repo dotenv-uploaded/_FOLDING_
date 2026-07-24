@@ -11,7 +11,10 @@ from claude_agent_sdk import (
     HookMatcher,
 )
 
-from codegate_api.agent.instructions import build_system_prompt
+from codegate_api.agent.instructions import (
+    build_open_agent_system_prompt,
+    build_system_prompt,
+)
 from codegate_api.agent.tools import create_codegate_tool_server
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
@@ -162,4 +165,61 @@ def create_claude_agent_client(
             resume=resume,
             stderr=stderr,
         )
+    )
+
+
+def build_open_agent_options(
+    repository: KnowledgeRepository,
+    *,
+    working_directory: Path,
+    state_directory: Path,
+    access_context: AccessContext,
+    can_use_tool: object,
+    model: str | None = None,
+    session_id: str | None = None,
+    resume: str | None = None,
+    stderr: SubprocessStderrTail | None = None,
+) -> ClaudeAgentOptions:
+    """**열린** 에이전트 — 모든 도구를 쓰되 하나하나 승인을 받는다.
+
+    `build_claude_agent_options`(문서 결정 전용, 도구 4개·구조화 출력)와 다르다:
+
+    - `disallowed_tools` 를 걷어낸다. Bash·Edit·Write 를 포함해 전부 열린다.
+    - `output_format` 을 걸지 않는다. 자유형 대화·작업이라 단일 결정이 아니다.
+    - **차단 훅 대신 `can_use_tool` 콜백을 쓴다.** 도구 실행 직전에 이 콜백이 위험을
+      분류하고 사용자 승인을 받는다. 차단 훅(deny)과 달리 사용자가 결정한다.
+
+    `permission_mode` 를 기본값으로 둔다 — `acceptEdits`/`bypassPermissions` 로 두거나
+    `allowed_tools` 로 자동 허용하면 `can_use_tool` 이 무시되어(shadowed) 게이트가 사라진다.
+    자동 허용은 콜백 안에서 SAFE 도구에만 준다.
+
+    작업 디렉터리는 여전히 **등록 폴더**다. 자동 메모리도 계속 꺼 둔다 — 신뢰할 수 없는
+    문서가 지시를 주입하는 통로가 되기 때문이다.
+    """
+    tool_server = create_codegate_tool_server(repository, access_context)
+    return ClaudeAgentOptions(
+        system_prompt=build_open_agent_system_prompt(),
+        # `tools=[]` 를 주면 안 된다 — 그건 "커스텀 도구 없음"이 아니라 **내장 도구 전부
+        # 끄기**로 해석되어 Bash·Write·Read 가 사라진다(실측: tools=[] 일 때만 Write 소멸).
+        # 열린 에이전트는 내장 도구가 살아 있어야 하므로 이 인자를 생략한다.
+        mcp_servers={"codegate": tool_server},
+        strict_mcp_config=True,
+        # allowed_tools 를 비운다 — 자동 허용이 있으면 can_use_tool 이 무시된다.
+        # 무엇을 허용할지는 콜백이 위험 등급으로 정한다.
+        can_use_tool=can_use_tool,
+        cwd=working_directory.resolve(),
+        env={
+            "CLAUDE_CONFIG_DIR": str(state_directory.resolve()),
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        },
+        setting_sources=[],
+        skills=[],
+        plugins=[],
+        model=model,
+        session_id=session_id,
+        resume=resume,
+        stderr=stderr,
+        max_turns=24,
+        max_budget_usd=2.00,
+        enable_file_checkpointing=False,
     )
