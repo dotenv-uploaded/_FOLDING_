@@ -423,8 +423,22 @@ function tick(
     body.x += body.vx;
     body.y += body.vy;
     // 화면 밖으로 나가지 않게 여백을 두고 가둔다.
-    body.x = Math.min(Math.max(body.x, 40), Math.max(size.w - 40, 60));
-    body.y = Math.min(Math.max(body.y, 30), Math.max(size.h - 40, 60));
+    const minX = 40;
+    const maxX = Math.max(size.w - 40, 60);
+    const minY = 30;
+    const maxY = Math.max(size.h - 40, 60);
+    const clampedX = Math.min(Math.max(body.x, minX), maxX);
+    const clampedY = Math.min(Math.max(body.y, minY), maxY);
+    // 벽에 닿으면 그 방향 속도를 죽인다.
+    //
+    // 위치만 가두고 속도를 그대로 두면, 벽에 몰린 노드가 매 프레임 벽을 다시 밀어 에너지가
+    // 사라지지 않는다. 간선(스프링)이 없는 그래프에서는 반발력만 남아 거의 모든 노드가
+    // 벽으로 몰리므로, 시뮬레이션이 SLEEP_ENERGY 아래로 내려가지 못하고 영원히 떤다.
+    // 벽을 충돌로 보고 그 성분 속도를 0 으로 만들면 감쇠가 에너지를 마저 없애 잠든다.
+    if (clampedX !== body.x) body.vx = 0;
+    if (clampedY !== body.y) body.vy = 0;
+    body.x = clampedX;
+    body.y = clampedY;
     energy += body.vx * body.vx + body.vy * body.vy;
   }
   return energy / Math.max(bodies.length, 1);
