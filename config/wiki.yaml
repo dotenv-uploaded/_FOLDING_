@@ -72,6 +72,17 @@ security:
     - internal
   block_restricted: true
 
+# 공유 엔티티로 그래프 간선을 유도한다.
+#
+# 파일에서는 꺼 둔다 — 이 파일은 wiki-builder 테스트도 함께 읽어서, 켜면 명시적 링크만
+# 세는 고정 기대값 테스트가 깨진다. 앱(codegate)이 로드 후 프로그램적으로 켠다. 임계값은
+# 여기서 조정할 수 있다.
+entity_links:
+  enabled: false
+  max_entity_docs: 12   # 이보다 많은 문서에 나오는 엔티티는 흔해서 제외(전부-전부 연결 방지)
+  max_per_doc: 6        # 문서당 유도 간선 상한
+  min_shared: 1         # 이만큼 엔티티가 겹쳐야 잇는다
+
 enrichment:
   max_attempts: 3
   summary_min_sentences: 2

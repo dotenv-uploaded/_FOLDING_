@@ -206,6 +206,107 @@ def build_links(
     )
 
 
+def infer_entity_links(
+    config: WikiConfig,
+    approved: dict[str, dict[str, Any]],
+    existing: Iterable[Link],
+) -> list[Link]:
+    """공유 엔티티로 문서 사이의 간선을 **유도**한다.
+
+    왜 필요한가
+    ----------
+    `extract_links` 는 문서 본문에 **명시적으로 적힌** 마크다운 링크만 간선으로 뽑는다.
+    변환된 실제 문서(hwp·docx·pdf)는 서로를 그렇게 링크하지 않으므로 그래프가 점만 남는다.
+    enrichment 가 이미 문서마다 엔티티를 뽑아 뒀으니, **같은 엔티티를 공유하는 문서끼리**
+    이어 주면 관계가 드러난다.
+
+    N² 폭발을 막는 두 가지
+    ---------------------
+    1. **흔한 엔티티 제외** — 폴더 이름처럼 거의 모든 문서에 나오는 엔티티는 판별력이 없다.
+       `max_entity_docs` 개보다 많은 문서에 나오면 잇지 않는다(전부를 전부에 잇게 된다).
+    2. **문서당 상한** — 각 문서는 가장 강하게 겹치는 `max_per_doc` 개까지만 잇는다.
+
+    기본은 꺼져 있다(`entity_links.enabled`). 켜는 것은 앱의 wiki.yaml 이고, 그래서 기존
+    합성 코퍼스 테스트(명시적 링크만 세는)는 그대로 통과한다.
+    """
+    settings = dict(config.raw.get("entity_links", {}))
+    if not settings.get("enabled", False):
+        return []
+    max_entity_docs = int(settings.get("max_entity_docs", 12))
+    max_per_doc = int(settings.get("max_per_doc", 6))
+    min_shared = int(settings.get("min_shared", 1))
+
+    # 엔티티(이름+종류) → {문서: (근거 섹션, 인용)}. 첫 근거만 대표로 쓴다.
+    postings: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
+    for doc_id, record in approved.items():
+        for entity in record.get("entities", []):
+            name = normalize_alias(str(entity.get("name", "")))
+            if not name:
+                continue
+            evidence = (entity.get("evidence") or [{}])[0]
+            section_id = evidence.get("section_id")
+            if not section_id:
+                continue  # 근거 섹션이 없으면 유효한 링크를 못 만든다
+            quote = str(evidence.get("quote") or name)
+            key = (name.casefold(), str(entity.get("type", "")))
+            postings[key].setdefault(doc_id, (str(section_id), quote))
+
+    # 이미 있는 간선(명시적)은 양방향으로 기억해 중복 생성하지 않는다.
+    seen_pairs: set[tuple[str, str]] = set()
+    for link in existing:
+        seen_pairs.add((link.from_doc_id, link.to_doc_id))
+        seen_pairs.add((link.to_doc_id, link.from_doc_id))
+
+    # 문서 쌍별로 "겹치는 판별 엔티티 수"를 세고, 대표 근거를 기억한다.
+    pair_weight: dict[frozenset[str], int] = defaultdict(int)
+    pair_evidence: dict[frozenset[str], tuple[str, str, str]] = {}
+    for docs in postings.values():
+        if not (2 <= len(docs) <= max_entity_docs):
+            continue  # 후보 없음(1개) 또는 너무 흔함
+        doc_ids = sorted(docs)
+        for i in range(len(doc_ids)):
+            for j in range(i + 1, len(doc_ids)):
+                a, b = doc_ids[i], doc_ids[j]
+                pair = frozenset((a, b))
+                pair_weight[pair] += 1
+                if pair not in pair_evidence:
+                    section_id, quote = docs[a]
+                    pair_evidence[pair] = (a, section_id, quote)
+
+    # 문서당 상한: 각 문서에서 가장 강한 것부터 max_per_doc 개만 남긴다.
+    candidates_by_doc: dict[str, list[tuple[int, frozenset[str]]]] = defaultdict(list)
+    for pair, weight in pair_weight.items():
+        if weight < min_shared:
+            continue
+        for doc_id in pair:
+            candidates_by_doc[doc_id].append((weight, pair))
+
+    kept: set[frozenset[str]] = set()
+    for candidates in candidates_by_doc.values():
+        # 강한 순, 동점은 문서 id 순으로 — 무작위 없이 결정적으로.
+        candidates.sort(key=lambda item: (-item[0], sorted(item[1])))
+        for _weight, pair in candidates[:max_per_doc]:
+            kept.add(pair)
+
+    links: list[Link] = []
+    for pair in sorted(kept, key=sorted):
+        from_doc, section_id, quote = pair_evidence[pair]
+        to_doc = next(doc_id for doc_id in pair if doc_id != from_doc)
+        if (from_doc, to_doc) in seen_pairs:
+            continue
+        links.append(
+            Link(
+                from_doc_id=from_doc,
+                from_section_id=section_id,
+                to_doc_id=to_doc,
+                evidence_quote=quote,
+                relation_type="references",
+                origin="entity-overlap",
+            )
+        )
+    return links
+
+
 def current_enrichments(
     config: WikiConfig, documents: Iterable[Document]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
@@ -320,9 +421,11 @@ def build_manifest(
 def assemble_build_data(config: WikiConfig, documents: list[Document]) -> BuildData:
     approved, statuses = current_enrichments(config, documents)
     explicit_links = extract_links(documents)
+    # 공유 엔티티로 유도한 간선을 명시적 링크에 더한다(설정으로 켤 때만).
+    inferred_links = infer_entity_links(config, approved, explicit_links)
     chunks = build_chunks(config, documents)
     aliases = build_aliases(config, documents)
-    links = build_links(config, explicit_links, approved)
+    links = build_links(config, [*explicit_links, *inferred_links], approved)
     manifest = build_manifest(config, documents, chunks, links, approved, statuses)
     return BuildData(
         documents=documents,
