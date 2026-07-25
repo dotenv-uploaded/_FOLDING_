@@ -153,6 +153,26 @@ class InProcessLLMWikiBuildRunner:
         self._actor_id = actor_id
         self._lock = threading.Lock()
 
+    def _load_wiki_config(self, config_module: ModuleType) -> Any:
+        """wiki.yaml 을 읽고, **엔티티 기반 간선 유도를 켠다.**
+
+        실제 문서(hwp·docx·pdf)는 서로를 마크다운으로 링크하지 않아, 명시적 링크만으로는
+        그래프가 점만 남는다(간선 0). enrichment 가 뽑아 둔 공유 엔티티로 간선을 유도해
+        그래프를 잇는다.
+
+        이 스위치는 wiki.yaml 파일에서 켜지 않는다 — 그 파일은 wiki-builder 테스트도 함께
+        읽어서, 켜면 명시적 링크만 세는 고정 기대값 테스트가 깨진다. 그래서 여기서만
+        프로그램적으로 켠다. 임계값(흔한 엔티티 제외·문서당 상한)은 파일 값을 존중한다.
+        """
+        config = config_module.load_config(self._builder_root / "config/wiki.yaml")
+        settings = dict(config.raw.get("entity_links") or {})
+        settings.setdefault("max_entity_docs", 12)
+        settings.setdefault("max_per_doc", 6)
+        settings.setdefault("min_shared", 1)
+        settings["enabled"] = True
+        config.raw["entity_links"] = settings
+        return config
+
     def enrich(self) -> None:
         """문서 요약·키워드·관계를 만들어 둔다. **빌드 전에** 불러야 한다.
 
@@ -170,7 +190,7 @@ class InProcessLLMWikiBuildRunner:
         with self._lock:
             config_module, service_module = self._load_modules()
             del service_module  # 여기서는 enrichment 모듈만 필요하다
-            config = config_module.load_config(self._builder_root / "config/wiki.yaml")
+            config = self._load_wiki_config(config_module)
             request = self._request(
                 importlib.import_module("wiki_builder.service"),
                 expected_current_build_id=None,
@@ -188,7 +208,7 @@ class InProcessLLMWikiBuildRunner:
     def stage(self) -> str:
         with self._lock:
             config_module, service_module = self._load_modules()
-            config = config_module.load_config(self._builder_root / "config/wiki.yaml")
+            config = self._load_wiki_config(config_module)
             request = self._request(service_module, expected_current_build_id=None)
             service = service_module.WikiBuildService(config)
             try:
@@ -204,7 +224,7 @@ class InProcessLLMWikiBuildRunner:
     def activate(self, *, build_id: str, expected_current_build_id: str | None) -> None:
         with self._lock:
             config_module, service_module = self._load_modules()
-            config = config_module.load_config(self._builder_root / "config/wiki.yaml")
+            config = self._load_wiki_config(config_module)
             request = self._request(
                 service_module,
                 expected_current_build_id=expected_current_build_id,
