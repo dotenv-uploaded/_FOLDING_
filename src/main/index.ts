@@ -26,6 +26,13 @@ console.info(
     : '[codegate:env] .env 없음 — 셸 환경변수만 사용합니다.',
 );
 
+// 열린 에이전트의 한글 양식 편집 도구(edit_hwp_form)가 쓰는 rhwp(@rhwp/core)는 이 앱의
+// node_modules 에 있다. sidecar 에 그 위치를 알려 주지 않으면 HWP 편집 도구가 빠진다. .env 로
+// 덮어쓸 수 있게 두되, 없으면 앱 루트(설치본은 리소스 경로)로 자동 설정한다.
+if (!process.env.CODEGATE_RHWP_ROOT) {
+  process.env.CODEGATE_RHWP_ROOT = app.isPackaged ? process.resourcesPath : process.cwd();
+}
+
 let mainWindow: BrowserWindow | null = null;
 let services: AppServices | null = null;
 let allowQuit = false;

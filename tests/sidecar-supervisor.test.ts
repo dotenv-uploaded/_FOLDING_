@@ -94,6 +94,31 @@ describe('SidecarSupervisor contract', () => {
     expect(environment.CODEGATE_SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
   });
 
+  it('rhwp(HWP 편집) 위치를 sidecar 로 전달한다 — 설정됐을 때만', () => {
+    const withRhwp = buildSidecarEnvironment(
+      { PATH: '/usr/bin', CODEGATE_RHWP_ROOT: '/app', CODEGATE_NODE_BIN: '/usr/bin/node' },
+      'app://codegate',
+      runtime,
+      'k',
+      'g',
+    );
+    expect(withRhwp).toMatchObject({
+      CODEGATE_RHWP_ROOT: '/app',
+      CODEGATE_NODE_BIN: '/usr/bin/node',
+    });
+
+    // 설정이 없으면 키 자체가 빠진다 — HWP 편집 도구만 조용히 빠지고 나머지는 그대로.
+    const withoutRhwp = buildSidecarEnvironment(
+      { PATH: '/usr/bin' },
+      'app://codegate',
+      runtime,
+      'k',
+      'g',
+    );
+    expect(withoutRhwp.CODEGATE_RHWP_ROOT).toBeUndefined();
+    expect(withoutRhwp.CODEGATE_NODE_BIN).toBeUndefined();
+  });
+
   it('외부 API base를 origin으로 정규화하고 health URL을 한 번만 붙인다', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'ok', agent_available: true }), { status: 200 }),

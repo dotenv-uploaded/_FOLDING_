@@ -273,6 +273,49 @@ export interface UsageStatus {
   calls: number;
 }
 
+/** 사용량 한 칸(기본 또는 추가 크레딧). */
+export interface UsageBucket {
+  /** 이 칸에 배정된 금액 */
+  limitKrw: number;
+  /** 이 칸에서 쓴 금액 */
+  usedKrw: number;
+  /** 이 칸에 남은 금액 */
+  remainingKrw: number;
+}
+
+export interface UsageBreakdown {
+  /** 구독에 포함된 기본 사용량 — **먼저** 소진된다 */
+  base: UsageBucket;
+  /** 추가로 구매한 크레딧 — 기본이 다 떨어진 **뒤에** 소진된다 */
+  credit: UsageBucket;
+}
+
+/**
+ * 총 사용액을 기본 → 추가 크레딧 순으로 나눠 담는다.
+ *
+ * 저장은 "총 얼마 썼는가" 하나뿐이다. 어느 칸에서 나갔는지는 따로 기록하지 않고 여기서
+ * 나눈다 — 소진 순서가 정해져 있으므로(기본 먼저) 총액만 있으면 복원할 수 있다. 기록을
+ * 둘로 늘리면 두 값이 어긋날 수 있는데, 나누는 규칙 하나만 두면 그럴 일이 없다.
+ */
+export function usageBreakdown(usage: UsageStatus): UsageBreakdown {
+  const baseUsed = Math.min(usage.usedKrw, usage.limitKrw);
+  const spilledOver = Math.max(usage.usedKrw - usage.limitKrw, 0);
+  // 한도를 넘겨 쓴 경우 크레딧보다 더 썼을 수 있다 — 칸 밖으로 삐져나오지 않게 자른다.
+  const creditUsed = Math.min(spilledOver, usage.extraKrw);
+  return {
+    base: {
+      limitKrw: usage.limitKrw,
+      usedKrw: baseUsed,
+      remainingKrw: Math.max(usage.limitKrw - baseUsed, 0),
+    },
+    credit: {
+      limitKrw: usage.extraKrw,
+      usedKrw: creditUsed,
+      remainingKrw: Math.max(usage.extraKrw - creditUsed, 0),
+    },
+  };
+}
+
 /** 구독에 포함된 1인 한도. 이걸 넘기면 추가 크레딧을 사야 한다. */
 export const USAGE_LIMIT_KRW = 20_000;
 

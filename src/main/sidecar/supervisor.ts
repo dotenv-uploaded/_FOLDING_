@@ -155,6 +155,12 @@ export function buildSidecarEnvironment(
     // 한글(HWP/HWPX) 원본 수정에 쓰는 kordoc(Node 라이브러리)이 설치된 디렉터리.
     // 없으면 sidecar 가 cwd 에서 찾다 실패하고 "kordoc 을 찾지 못했습니다" 로 멈춘다.
     ...(baseEnv.CODEGATE_KORDOC_DIR ? { CODEGATE_KORDOC_DIR: baseEnv.CODEGATE_KORDOC_DIR } : {}),
+    // 열린 에이전트의 한글 양식 편집 도구(edit_hwp_form)가 쓰는 rhwp(@rhwp/core, Node WASM)가
+    // 설치된 디렉터리(node_modules/@rhwp/core 를 가진 앱 루트). sidecar 는 여기서 rhwp 를
+    // 로드해 워커를 돌린다. 없으면 HWP 편집 도구만 조용히 빠지고 나머지는 그대로 동작한다.
+    ...(baseEnv.CODEGATE_RHWP_ROOT ? { CODEGATE_RHWP_ROOT: baseEnv.CODEGATE_RHWP_ROOT } : {}),
+    // rhwp 워커를 돌릴 Node 실행 파일. 없으면 sidecar 가 PATH 에서 `node` 를 찾는다.
+    ...(baseEnv.CODEGATE_NODE_BIN ? { CODEGATE_NODE_BIN: baseEnv.CODEGATE_NODE_BIN } : {}),
     // 이 코퍼스가 시연·개발용 가상 문서인가.
     //
     // 위키 빌더는 **비공개 문서를 무료(학습 가능) 등급 LLM 으로 보내는 것을 거부한다.**
