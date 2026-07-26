@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 from collections import deque
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from codegate_api.agent.instructions import (
     build_open_agent_system_prompt,
     build_system_prompt,
 )
-from codegate_api.agent.tools import create_codegate_tool_server
+from codegate_api.agent.tools import RhwpToolConfig, create_codegate_tool_server
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
 
@@ -168,6 +170,32 @@ def create_claude_agent_client(
     )
 
 
+def _rhwp_tool_config(working_directory: Path) -> RhwpToolConfig | None:
+    """env 로 한글(HWP) 편집 도구를 켠다. 준비가 안 됐으면 None — HWP 도구만 빠진다.
+
+    앱(supervisor)이 사이드카를 띄울 때 `CODEGATE_RHWP_ROOT`(node_modules/@rhwp/core 가 있는
+    디렉터리)와, 필요하면 `CODEGATE_NODE_BIN`·`CODEGATE_RHWP_WORKER` 를 env 로 넘긴다.
+    `CLAUDE_CONFIG_DIR`·kordoc 디렉터리를 넘기는 것과 같은 방식이다.
+    """
+    rhwp_root = os.environ.get("CODEGATE_RHWP_ROOT")
+    if not rhwp_root:
+        return None
+    node_bin = os.environ.get("CODEGATE_NODE_BIN") or shutil.which("node")
+    if not node_bin:
+        return None
+    worker = os.environ.get("CODEGATE_RHWP_WORKER") or str(
+        Path(__file__).resolve().parents[3] / "native" / "rhwp" / "rhwp_worker.mjs"
+    )
+    if not Path(worker).is_file() or not Path(rhwp_root).is_dir():
+        return None
+    return RhwpToolConfig(
+        node_bin=Path(node_bin),
+        worker_script=Path(worker),
+        rhwp_root=Path(rhwp_root),
+        workspace_root=working_directory.resolve(),
+    )
+
+
 def build_open_agent_options(
     repository: KnowledgeRepository,
     *,
@@ -196,7 +224,9 @@ def build_open_agent_options(
     작업 디렉터리는 여전히 **등록 폴더**다. 자동 메모리도 계속 꺼 둔다 — 신뢰할 수 없는
     문서가 지시를 주입하는 통로가 되기 때문이다.
     """
-    tool_server = create_codegate_tool_server(repository, access_context)
+    tool_server = create_codegate_tool_server(
+        repository, access_context, rhwp=_rhwp_tool_config(working_directory)
+    )
     return ClaudeAgentOptions(
         system_prompt=build_open_agent_system_prompt(),
         # `tools=[]` 를 주면 안 된다 — 그건 "커스텀 도구 없음"이 아니라 **내장 도구 전부

@@ -83,6 +83,11 @@ def summarize_tool_input(tool_name: str, tool_input: dict[str, Any]) -> str:
         return str(path)
     if tool_name in {"WebFetch", "WebSearch"}:
         return str(tool_input.get("url") or tool_input.get("query") or "")
+    if tool_name.endswith("edit_hwp_form"):
+        cells = tool_input.get("cells") or []
+        src = tool_input.get("input", "")
+        out = tool_input.get("output", "")
+        return f"{src} → {out} ({len(cells)}칸 채움)"
     # 모르는 도구는 입력을 가리지 않고 보여준다.
     try:
         return json.dumps(tool_input, ensure_ascii=False)[:2000]

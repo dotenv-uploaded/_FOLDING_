@@ -42,8 +42,13 @@ _SAFE_TOOLS = frozenset(
         "mcp__codegate__document_get",
         "mcp__codegate__knowledge_document_read",
         "mcp__codegate__source_file_read",
+        "mcp__codegate__read_hwp_structure",
     }
 )
+
+#: 이 백엔드가 제공하는 문서 쓰기 도구 — 파일을 바꾸지만 새 파일로 내고 스스로 검증한다.
+#: 되돌릴 수 있으므로 CAUTION(승인은 받되 DANGER 는 아니다).
+_CAUTION_MCP_TOOLS = frozenset({"mcp__codegate__edit_hwp_form"})
 
 #: Claude Code 기본 도구 중 되돌릴 수 있는 파일 조작.
 _CAUTION_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
@@ -92,6 +97,9 @@ def classify_tool(tool_name: str, tool_input: dict[str, object]) -> tuple[ToolRi
     """
     if tool_name in _SAFE_TOOLS or tool_name in _READ_TOOLS:
         return ToolRisk.SAFE, None
+
+    if tool_name in _CAUTION_MCP_TOOLS:
+        return ToolRisk.CAUTION, None
 
     if tool_name in _CAUTION_TOOLS:
         # 바이너리 문서를 raw 로 직접 쓰는 건 검증 우회 — DANGER 로 올린다.
