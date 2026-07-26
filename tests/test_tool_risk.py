@@ -56,3 +56,16 @@ def test_우회_흔한_형태도_잡는다():
 def test_모르는_도구는_보수적으로_위험():
     assert risk("SomeUnknownTool") is ToolRisk.DANGER
     assert "알 수 없는" in reason("SomeUnknownTool")
+
+
+def test_바이너리_문서를_raw로_직접_편집하면_위험():
+    # 형식 전용 도구는 후보를 만들어 재검증하지만, Write/Edit 로 직접 만지면 그 검증을
+    # 건너뛰고 원본을 깬다. 그래서 CAUTION 이 아니라 DANGER 로 올린다.
+    for path in ("/w/일일업무.hwp", "/w/a.hwpx", "/w/보고서.docx", "/w/표.xlsx", "/w/장표.pptx", "/w/문서.pdf"):
+        assert risk("Write", file_path=path) is ToolRisk.DANGER, path
+        assert risk("Edit", file_path=path) is ToolRisk.DANGER, path
+    assert "형식 전용" in reason("Write", file_path="/w/x.hwp")
+    # 평문 텍스트는 그대로 CAUTION — 일반 편집 도구를 써도 된다.
+    assert risk("Write", file_path="/w/note.md") is ToolRisk.CAUTION
+    assert risk("Write", file_path="/w/memo.txt") is ToolRisk.CAUTION
+    assert risk("Write", file_path="/w/script.py") is ToolRisk.CAUTION

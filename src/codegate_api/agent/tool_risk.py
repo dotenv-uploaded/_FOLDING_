@@ -48,6 +48,13 @@ _SAFE_TOOLS = frozenset(
 #: Claude Code 기본 도구 중 되돌릴 수 있는 파일 조작.
 _CAUTION_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 
+#: 검증 없이 raw 로 건드리면 원본이 깨지는 바이너리 문서 형식.
+#:
+#: 이런 파일은 형식 전용 편집 도구(rhwp·python-docx…)가 후보를 만들어 재검증한 뒤 바꿔야
+#: 한다. 에이전트가 `Write`·`Edit` 로 직접 만지면 그 검증을 건너뛰고 원본을 훼손할 수 있어,
+#: CAUTION 이 아니라 DANGER 로 올려 눈에 띄게 승인을 받게 한다(막지는 않는다 — 무게만 올린다).
+_BINARY_DOC_SUFFIXES = (".hwp", ".hwpx", ".docx", ".xlsx", ".pptx", ".pdf")
+
 #: 밖으로 나가거나 임의 실행이 되는 도구 — 기본 DANGER.
 _DANGER_TOOLS = frozenset({"Bash", "WebFetch", "WebSearch"})
 
@@ -87,6 +94,12 @@ def classify_tool(tool_name: str, tool_input: dict[str, object]) -> tuple[ToolRi
         return ToolRisk.SAFE, None
 
     if tool_name in _CAUTION_TOOLS:
+        # 바이너리 문서를 raw 로 직접 쓰는 건 검증 우회 — DANGER 로 올린다.
+        # (형식 전용 편집 도구를 쓰면 그쪽은 CAUTION 으로 정상 승인된다.)
+        path = str(tool_input.get("file_path", "")).lower()
+        if path.endswith(_BINARY_DOC_SUFFIXES):
+            suffix = path.rsplit(".", 1)[-1]
+            return ToolRisk.DANGER, f"바이너리 문서를 검증 없이 직접 편집(.{suffix}) — 형식 전용 도구 권장"
         return ToolRisk.CAUTION, None
 
     if tool_name == "Bash":
