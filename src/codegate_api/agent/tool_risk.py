@@ -48,7 +48,13 @@ _SAFE_TOOLS = frozenset(
 
 #: 이 백엔드가 제공하는 문서 쓰기 도구 — 파일을 바꾸지만 새 파일로 내고 스스로 검증한다.
 #: 되돌릴 수 있으므로 CAUTION(승인은 받되 DANGER 는 아니다).
-_CAUTION_MCP_TOOLS = frozenset({"mcp__codegate__edit_hwp_form"})
+_CAUTION_MCP_TOOLS = frozenset(
+    {
+        "mcp__codegate__edit_hwp_form",
+        "mcp__codegate__edit_document_text",
+        "mcp__codegate__annotate_pdf",
+    }
+)
 
 #: Claude Code 기본 도구 중 되돌릴 수 있는 파일 조작.
 _CAUTION_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})

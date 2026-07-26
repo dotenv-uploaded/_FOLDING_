@@ -88,6 +88,14 @@ def summarize_tool_input(tool_name: str, tool_input: dict[str, Any]) -> str:
         src = tool_input.get("input", "")
         out = tool_input.get("output", "")
         return f"{src} → {out} ({len(cells)}칸 채움)"
+    if tool_name.endswith("edit_document_text"):
+        src = tool_input.get("input", "")
+        out = tool_input.get("output", "")
+        return f"{src} → {out} ('{tool_input.get('find', '')}' → '{tool_input.get('replace', '')}')"
+    if tool_name.endswith("annotate_pdf"):
+        src = tool_input.get("input", "")
+        out = tool_input.get("output", "")
+        return f"{src} → {out} ('{tool_input.get('find', '')}' 에 주석)"
     # 모르는 도구는 입력을 가리지 않고 보여준다.
     try:
         return json.dumps(tool_input, ensure_ascii=False)[:2000]

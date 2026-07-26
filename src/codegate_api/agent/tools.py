@@ -10,6 +10,13 @@ from claude_agent_sdk import (
     tool,
 )
 
+from codegate_api.agent.doc_writers import (
+    DocWriterError,
+    annotate_pdf,
+    edit_docx_text,
+    edit_pptx_text,
+    edit_xlsx_text,
+)
 from codegate_api.agent.rhwp import RhwpError, RhwpWorkerClient
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
@@ -38,6 +45,17 @@ EDIT_HWP_FORM_DESCRIPTION = """한글(HWP) 양식의 표 셀을 채워 **새 파
 검증한다 — 한 칸이라도 어긋나면 결과를 지우고 실패한다. 원본은 건드리지 않는다. hwp 를 \
 `Write`·`Bash` 로 직접 만들지 말고 반드시 이 도구를 써라. `input`·`output` 은 등록 폴더 기준 \
 상대 경로이며 서로 달라야 한다."""
+
+EDIT_DOCUMENT_TEXT_DESCRIPTION = """DOCX·XLSX·PPTX 문서에서 문구를 바꿔 **새 파일**로 \
+저장한다(원본은 그대로 둔다). 문단·표 셀·시트 셀·도형 텍스트를 형식에 맞게 훑어 바꾸고, 저장 \
+뒤 다시 열어 실제로 반영됐는지 검증한다 — 안 바뀌었으면 결과를 지우고 실패한다. 이 형식들을 \
+`Write`·`Bash` 로 직접 만지지 말고 반드시 이 도구를 써라(원본이 깨진다). `input`·`output` 은 \
+등록 폴더 기준 상대 경로이며 서로 달라야 한다."""
+
+ANNOTATE_PDF_DESCRIPTION = """PDF 에서 문구를 찾아 그 자리에 **주석을 단 새 사본**을 만든다. \
+PDF 본문 글자는 안전하게 바꿔 넣을 수 없으므로(글꼴·자간·레이아웃이 깨진다) 이 도구는 본문을 \
+고치지 않고 표시만 남긴다 — PDF 내용을 실제로 고쳐야 한다면 사용자에게 그 한계를 알려라. \
+원본은 건드리지 않는다."""
 
 READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
@@ -79,6 +97,7 @@ def create_codegate_tool_server(
     repository: KnowledgeRepository,
     access_context: AccessContext,
     rhwp: RhwpToolConfig | None = None,
+    workspace_root: Path | None = None,
 ) -> McpSdkServerConfig:
     max_evidence_chunks = repository.agent_guide.max_evidence_chunks
 
@@ -374,7 +393,112 @@ def create_codegate_tool_server(
 
         tools.extend([read_hwp_structure, edit_hwp_form])
 
-    return create_sdk_mcp_server(name="codegate", version="0.4.0", tools=tools)
+    # DOCX·XLSX·PPTX·PDF 편집 — 사이드카에서 바로 돈다(별도 런타임 불필요).
+    if workspace_root is not None:
+
+        def _resolve(relative: str) -> Path:
+            """등록 폴더 안으로만 가둔다 — 밖을 가리키면 거부한다."""
+            root = workspace_root.resolve()
+            target = (root / relative).resolve()
+            if target != root and not str(target).startswith(str(root) + "/"):
+                raise DocWriterError("path_escape", "등록 폴더 밖은 다룰 수 없습니다.")
+            return target
+
+        def _writer_error(source_kind: str, error: DocWriterError) -> dict[str, Any]:
+            return _json_tool_result(
+                _result_envelope(
+                    source_kind=source_kind,
+                    graph_version=repository.version,
+                    payload={"error": {"code": error.code, "message": str(error)}},
+                ),
+                is_error=True,
+            )
+
+        @tool(
+            "edit_document_text",
+            EDIT_DOCUMENT_TEXT_DESCRIPTION,
+            {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "minLength": 1, "description": "원본 문서(상대 경로)."},
+                    "output": {"type": "string", "minLength": 1, "description": "결과를 저장할 새 파일(상대 경로)."},
+                    "find": {"type": "string", "minLength": 1, "description": "바꿀 기존 문구."},
+                    "replace": {"type": "string", "description": "새 문구."},
+                },
+                "required": ["input", "output", "find", "replace"],
+                "additionalProperties": False,
+            },
+        )
+        async def edit_document_text(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                source = _resolve(str(args["input"]))
+                target = _resolve(str(args["output"]))
+                suffix = source.suffix.lower()
+                editor = {
+                    ".docx": edit_docx_text,
+                    ".xlsx": edit_xlsx_text,
+                    ".pptx": edit_pptx_text,
+                }.get(suffix)
+                if editor is None:
+                    raise DocWriterError(
+                        "unsupported_format",
+                        f"이 도구는 docx·xlsx·pptx 만 다룹니다(받은 형식: {suffix or '없음'}).",
+                    )
+                result = editor(source, target, str(args["find"]), str(args["replace"]))
+            except DocWriterError as error:
+                return _writer_error("edit_document_text", error)
+            return _json_tool_result(
+                _result_envelope(
+                    source_kind="edit_document_text",
+                    graph_version=repository.version,
+                    payload={
+                        "output": str(args["output"]),
+                        "replaced": result.replaced,
+                        "verified": result.verified,
+                    },
+                )
+            )
+
+        @tool(
+            "annotate_pdf",
+            ANNOTATE_PDF_DESCRIPTION,
+            {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "minLength": 1, "description": "원본 PDF(상대 경로)."},
+                    "output": {"type": "string", "minLength": 1, "description": "주석을 단 새 PDF(상대 경로)."},
+                    "find": {"type": "string", "minLength": 1, "description": "표시할 문구."},
+                    "note": {"type": "string", "minLength": 1, "description": "남길 메모."},
+                },
+                "required": ["input", "output", "find", "note"],
+                "additionalProperties": False,
+            },
+        )
+        async def annotate_pdf_tool(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                result = annotate_pdf(
+                    _resolve(str(args["input"])),
+                    _resolve(str(args["output"])),
+                    str(args["find"]),
+                    str(args["note"]),
+                )
+            except DocWriterError as error:
+                return _writer_error("annotate_pdf", error)
+            return _json_tool_result(
+                _result_envelope(
+                    source_kind="annotate_pdf",
+                    graph_version=repository.version,
+                    payload={
+                        "output": str(args["output"]),
+                        "annotated": result.replaced,
+                        "verified": result.verified,
+                    },
+                )
+            )
+
+        tools.extend([edit_document_text, annotate_pdf_tool])
+
+    return create_sdk_mcp_server(name="codegate", version="0.5.0", tools=tools)
 
 
 def _result_envelope(

@@ -225,7 +225,10 @@ def build_open_agent_options(
     문서가 지시를 주입하는 통로가 되기 때문이다.
     """
     tool_server = create_codegate_tool_server(
-        repository, access_context, rhwp=_rhwp_tool_config(working_directory)
+        repository,
+        access_context,
+        rhwp=_rhwp_tool_config(working_directory),
+        workspace_root=working_directory,
     )
     return ClaudeAgentOptions(
         system_prompt=build_open_agent_system_prompt(),
