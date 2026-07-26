@@ -1,6 +1,56 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { UsageStatus } from '@contracts';
+import { usageBreakdown, type UsageBucket, type UsageStatus } from '@contracts';
 import { cn } from '@/lib/cn';
+
+/**
+ * 사용량 한 칸(기본 또는 추가 크레딧)을 막대와 숫자로 보여준다.
+ *
+ * 기본 사용량이 **먼저** 소진되고 그 뒤에 추가 크레딧이 준다. 그 순서를 화면에서도 그대로
+ * 보이게 해, "기본이 남았는데 왜 크레딧이 줄지?" 같은 혼란이 없게 한다.
+ */
+function TierBar({
+  label,
+  hint,
+  bucket,
+  blocked,
+}: {
+  label: string;
+  hint?: string;
+  bucket: UsageBucket;
+  blocked?: boolean;
+}) {
+  const ratio = bucket.limitKrw > 0 ? Math.min(bucket.usedKrw / bucket.limitKrw, 1) : 0;
+  const near = ratio >= 0.8;
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs font-semibold text-ink-700">
+          {label}
+          {hint && <span className="ml-1.5 font-normal text-ink-400">{hint}</span>}
+        </span>
+        <span className="font-mono text-2xs text-ink-400 tabular-nums">
+          {bucket.usedKrw.toLocaleString()} / {bucket.limitKrw.toLocaleString()}원
+        </span>
+      </div>
+      <div
+        className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-ink-100"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={bucket.limitKrw}
+        aria-valuenow={bucket.usedKrw}
+        aria-label={label}
+      >
+        <div
+          className={cn(
+            'h-full rounded-full transition-[width] duration-[--dur-base] ease-[--ease-standard]',
+            blocked ? 'bg-red-500' : near ? 'bg-amber-500' : 'bg-blue-500',
+          )}
+          style={{ width: `${ratio * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 /**
  * 구독 사용량.
@@ -43,10 +93,11 @@ export function UsagePanel() {
     return <p className="text-xs text-ink-400">사용량을 불러오는 중…</p>;
   }
 
-  const total = usage.limitKrw + usage.extraKrw;
-  // 한도를 넘겨도 막대가 100% 를 넘지 않게 자른다 — 넘친 사실은 숫자와 문구가 말한다.
-  const usedRatio = total > 0 ? Math.min(usage.usedKrw / total, 1) : 0;
-  const nearLimit = usedRatio >= 0.8;
+  const nearLimit = usage.limitKrw + usage.extraKrw > 0
+    ? usage.usedKrw / (usage.limitKrw + usage.extraKrw) >= 0.8
+    : false;
+  // 총액을 기본 → 추가 크레딧 순으로 나눈다(기본이 먼저 소진).
+  const { base, credit } = usageBreakdown(usage);
 
   return (
     <div className="flex flex-col gap-4">
@@ -68,26 +119,27 @@ export function UsagePanel() {
           <span className="text-sm text-ink-500">원 남음</span>
         </div>
         <p className="mt-1 font-mono text-2xs text-ink-400 tabular-nums">
-          {usage.usedKrw.toLocaleString()} / {total.toLocaleString()}원 사용
-          {usage.extraKrw > 0 && ` (구독 ${usage.limitKrw.toLocaleString()} + 추가 ${usage.extraKrw.toLocaleString()})`}
+          기본 {base.remainingKrw.toLocaleString()}
+          {credit.limitKrw > 0 && ` · 크레딧 ${credit.remainingKrw.toLocaleString()}`} 남음
         </p>
       </div>
 
-      <div
-        className="h-1.5 w-full overflow-hidden rounded-full bg-ink-100"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={total}
-        aria-valuenow={usage.usedKrw}
-        aria-label="사용량"
-      >
-        <div
-          className={cn(
-            'h-full rounded-full transition-[width] duration-[--dur-base] ease-[--ease-standard]',
-            usage.blocked ? 'bg-red-500' : nearLimit ? 'bg-amber-500' : 'bg-blue-500',
-          )}
-          style={{ width: `${usedRatio * 100}%` }}
+      {/* 기본 사용량과 추가 크레딧을 나눠서 — 기본이 먼저 소진되는 구조를 그대로 보여준다. */}
+      <div className="flex flex-col gap-3">
+        <TierBar
+          label="기본 사용량"
+          hint="구독 포함"
+          bucket={base}
+          blocked={usage.blocked && credit.limitKrw === 0}
         />
+        {credit.limitKrw > 0 && (
+          <TierBar
+            label="추가 크레딧"
+            hint="기본 소진 후 사용"
+            bucket={credit}
+            blocked={usage.blocked}
+          />
+        )}
       </div>
 
       {usage.blocked && (
