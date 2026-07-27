@@ -1,49 +1,79 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WikiGraph, WikiGraphEdge, WikiGraphNode } from '@contracts';
+import type { WikiGraph, WikiGraphNode } from '@contracts';
 import { cn } from '@/lib/cn';
+import {
+  DEFAULT_FORCES,
+  SLEEP_ENERGY,
+  buildLinks,
+  clampScale,
+  degreeMap,
+  fitTransform,
+  graphBounds,
+  hitTest,
+  nodeRadius,
+  seedBodies,
+  stepGraph,
+  toWorld,
+  type GraphBody,
+  type SimForces,
+  type ViewTransform,
+} from '@/lib/graph-sim';
 
 /**
  * 지식 그래프 — 활성 위키 빌드의 문서(노드)와 링크(엣지)를 그린다.
  *
- * **외부 그래프 라이브러리를 쓰지 않는다.** 문서 수십~수백 개 규모에서는 자체 힘-기반
- * 시뮬레이션으로 충분하고, 의존성 하나가 늘면 Electron 번들과 보안 검토가 함께 늘어난다.
+ * 옵시디언 그래프 뷰의 감각을 그대로 따랐다: 어두운 무한 평면, 링크 수에 비례하는 점,
+ * 가리키면 그 문서와 이웃만 남고 나머지는 흐려지는 강조, 그리고 힘을 직접 조절하는 설정.
  *
- * 시뮬레이션은 **계속 돌지 않는다** — 에너지가 충분히 낮아지면 멈추고, 드래그 같은
- * 입력이 있을 때만 다시 깨어난다. 가만히 있는 화면이 CPU 를 먹으면 노트북 배터리가 준다.
+ * **외부 그래프 라이브러리를 쓰지 않는다.** 문서 수백 개 규모에서는 자체 시뮬레이션으로
+ * 충분하고, 의존성 하나가 늘면 Electron 번들과 보안 검토가 함께 늘어난다.
+ *
+ * SVG 가 아니라 **캔버스**로 그린다. 노드마다 DOM 을 만들면 프레임마다 수백 개를 다시
+ * 그려야 해서, 흐림·강조 같은 효과를 넣는 순간 화면이 끊긴다.
+ *
+ * 시뮬레이션은 **계속 돌지 않는다** — 조용해지면 멈추고, 드래그 같은 입력에만 깨어난다.
+ * 가만히 있는 화면이 CPU 를 먹으면 노트북 배터리가 준다.
  */
 
-/** 문서 종류별 색. */
+/* ---- 색 (어두운 배경 기준) ---- */
+const BACKGROUND = '#1a1a1c';
+const LINK_DIM = '#33363d';
+const LINK_LIT = '#4ec3e0';
+const LABEL = '#c3c8d1';
+const LABEL_DIM = '#5d626b';
+
+/** 문서 종류별 색 — 옵시디언의 색 그룹에 해당한다. */
 const TYPE_COLOR: Record<string, string> = {
-  regulation: '#2E74B5',
-  policy: '#2E74B5',
-  contract: '#C00000',
-  procedure: '#548235',
-  manual: '#548235',
-  guide: '#548235',
-  specification: '#7030A0',
-  report: '#BF8F00',
-  meeting_note: '#BF8F00',
-  general: '#7F7F7F',
+  regulation: '#6aa9ff',
+  policy: '#6aa9ff',
+  contract: '#ff6b6b',
+  procedure: '#7ad17a',
+  manual: '#7ad17a',
+  guide: '#7ad17a',
+  specification: '#c08cff',
+  report: '#ffc861',
+  meeting_note: '#ffc861',
+  general: '#98a0ad',
 };
+const SELECTED_COLOR = '#ffffff';
 
-const SELECTED_COLOR = '#FF6B00';
-
-/* ---- 시뮬레이션 상수 ---- */
-const REPULSION = 9000; // 노드끼리 밀어내는 세기
-const SPRING_LENGTH = 120; // 링크의 자연 길이
-const SPRING_K = 0.02; // 스프링 강성 — 클수록 빨리 딸려온다
-const CENTER_PULL = 0.006; // 그래프를 화면 중앙으로 모으는 힘
-const DAMPING = 0.86; // 속도 감쇠 — 없으면 영원히 진동한다
-const MAX_SPEED = 18; // 한 프레임 최대 이동 (드래그 시 폭주 방지)
-const SLEEP_ENERGY = 0.02; // 이보다 조용해지면 시뮬레이션을 멈춘다
-
-interface Body {
-  node: WikiGraphNode;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
+interface DisplayOptions {
+  /** 점 크기 배율. */
+  nodeScale: number;
+  /** 링크 굵기(px). */
+  linkThickness: number;
+  /** 이 배율보다 작아지면 이름표가 사라진다. */
+  textFade: number;
+  /** 링크 방향 화살표. 옵시디언과 같이 기본은 꺼 둔다 — 대개 그림만 복잡해진다. */
+  arrows: boolean;
 }
+
+const DEFAULT_DISPLAY: DisplayOptions = {
+  nodeScale: 1,
+  linkThickness: 1,
+  textFade: 0.4,
+  arrows: false,
+};
 
 export function GraphPane({
   focusPath,
@@ -88,413 +118,655 @@ export function GraphPane({
 
 function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string | null }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [size, setSize] = useState({ w: 900, h: 600 });
-  const [picked, setPicked] = useState<string | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sizeRef = useRef({ w: 0, h: 0 });
 
-  /** 그리는 좌표는 ref 에 둔다 — 프레임마다 setState 하면 리렌더가 시뮬레이션을 못 따라온다. */
-  const bodies = useRef<Body[]>([]);
-  const [, forceRender] = useState(0);
-  const running = useRef(false);
-  const dragRef = useRef<{ docId: string; x: number; y: number } | null>(null);
+  const [display, setDisplay] = useState<DisplayOptions>(DEFAULT_DISPLAY);
+  const [forces, setForces] = useState<SimForces>(DEFAULT_FORCES);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [selected, setSelected] = useState<WikiGraphNode | null>(null);
+  const [zoomPercent, setZoomPercent] = useState(100);
 
-  /** 화면 변환 — 휠 확대/축소. 시뮬레이션 좌표는 건드리지 않고 보는 방식만 바꾼다. */
-  const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
-  const viewRef = useRef(view);
-  viewRef.current = view;
+  // 프레임마다 바뀌는 값은 ref 에 둔다 — setState 로 돌리면 리렌더가 시뮬레이션을 못 따라온다.
+  const bodiesRef = useRef<GraphBody[]>([]);
+  const viewRef = useRef<ViewTransform>({ scale: 1, tx: 0, ty: 0 });
+  const hoverRef = useRef(-1);
+  const selectedRef = useRef(-1);
+  const dragRef = useRef<{ index: number; x: number; y: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  /** 사용자가 화면을 만지기 전까지는 자동으로 전체가 보이게 맞춘다. */
+  const autoFitRef = useRef(true);
+  const runningRef = useRef(false);
+  const displayRef = useRef(display);
+  const forcesRef = useRef(forces);
+  displayRef.current = display;
+  forcesRef.current = forces;
 
-  // 보이는 영역을 시뮬레이션 상자로 쓴다 — 중앙 인력이 이 상자의 중심을 향한다.
+  const nodes = graph.nodes;
+  const edges = graph.edges;
+
+  const indexOf = useMemo(() => {
+    const map = new Map<string, number>();
+    nodes.forEach((node, i) => map.set(node.docId, i));
+    return map;
+  }, [nodes]);
+
+  const links = useMemo(() => buildLinks(edges, indexOf), [edges, indexOf]);
+
+  /** 강조할 때 쓰는 이웃 표. 매 프레임 링크를 훑지 않으려고 미리 만들어 둔다. */
+  const neighbors = useMemo(() => {
+    const map = new Map<number, Set<number>>();
+    for (const link of links) {
+      if (!map.has(link.a)) map.set(link.a, new Set());
+      if (!map.has(link.b)) map.set(link.b, new Set());
+      map.get(link.a)!.add(link.b);
+      map.get(link.b)!.add(link.a);
+    }
+    return map;
+  }, [links]);
+
+  useEffect(() => {
+    bodiesRef.current = seedBodies(nodes, degreeMap(edges));
+    autoFitRef.current = true;
+  }, [nodes, edges]);
+
+  /* ---- 그리기 ---- */
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+    const { w, h } = sizeRef.current;
+    if (w === 0 || h === 0) return;
+
+    const bodies = bodiesRef.current;
+    const view = viewRef.current;
+    const opts = displayRef.current;
+    const dpr = window.devicePixelRatio || 1;
+
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.fillStyle = BACKGROUND;
+    context.fillRect(0, 0, w, h);
+    context.translate(view.tx, view.ty);
+    context.scale(view.scale, view.scale);
+
+    // 강조 대상 — 가리킨 점이 우선이고, 없으면 고른 점.
+    const focus = hoverRef.current >= 0 ? hoverRef.current : selectedRef.current;
+    const lit = focus >= 0 ? (neighbors.get(focus) ?? new Set<number>()) : null;
+    const isLit = (i: number) => !lit || i === focus || lit.has(i);
+
+    /* 링크 — 흐린 것과 강조된 것을 나눠 그린다(색을 바꿀 때마다 획을 끊으면 느려진다). */
+    for (const pass of [false, true]) {
+      context.beginPath();
+      let drew = false;
+      for (const link of links) {
+        const a = bodies[link.a];
+        const b = bodies[link.b];
+        if (!a || !b) continue;
+        const active = focus >= 0 && (link.a === focus || link.b === focus);
+        if (active !== pass) continue;
+        context.moveTo(a.x, a.y);
+        context.lineTo(b.x, b.y);
+        drew = true;
+      }
+      if (!drew) continue;
+      context.strokeStyle = pass ? LINK_LIT : LINK_DIM;
+      context.globalAlpha = pass ? 0.85 : focus >= 0 ? 0.18 : 0.55;
+      // 굵기는 그래프와 함께 확대된다(옵시디언과 같다). 다만 아주 축소해도 선이 아주
+      // 사라지지는 않게 화면 기준 최소 굵기를 둔다 — 관계가 없어 보이면 그래프가 아니다.
+      const width = pass ? opts.linkThickness * 1.5 : opts.linkThickness;
+      context.lineWidth = Math.max(width, 0.6 / view.scale);
+      context.stroke();
+    }
+    context.globalAlpha = 1;
+
+    if (opts.arrows) drawArrows(context, bodies, links, opts, focus);
+
+    /* 점 */
+    for (let i = 0; i < bodies.length; i += 1) {
+      const body = bodies[i]!;
+      const node = nodes[i]!;
+      const radius = nodeRadius(body.degree, opts.nodeScale);
+      const active = isLit(i);
+      context.globalAlpha = active ? (node.status === 'active' ? 1 : 0.55) : 0.15;
+
+      if (i === focus) {
+        // 가리킨 점 둘레의 옅은 후광 — 어디를 보고 있는지 한눈에 들어온다.
+        context.beginPath();
+        context.arc(body.x, body.y, radius * 1.9 + 2, 0, Math.PI * 2);
+        context.fillStyle = LINK_LIT;
+        context.globalAlpha = 0.2;
+        context.fill();
+        context.globalAlpha = 1;
+      }
+
+      context.beginPath();
+      context.arc(body.x, body.y, radius, 0, Math.PI * 2);
+      context.fillStyle =
+        i === selectedRef.current ? SELECTED_COLOR : (TYPE_COLOR[node.docType] ?? TYPE_COLOR.general);
+      context.fill();
+    }
+    context.globalAlpha = 1;
+
+    /*
+     * 이름표 — 그래프와 함께 확대되고, 너무 축소하면 서서히 사라진다.
+     *
+     * 읽을 수 없는 크기의 글자를 남겨 두면 점보다 글자가 많아져 그림이 뭉개진다. 옵시디언이
+     * 텍스트 페이드를 둔 이유도 같다. 사라지는 배율은 설정에서 사람이 정한다.
+     */
+    const labelAlpha = Math.max(0, Math.min(1, (view.scale - opts.textFade) / 0.3));
+    if (labelAlpha > 0.01) {
+      context.textAlign = 'center';
+      context.textBaseline = 'top';
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif';
+      for (let i = 0; i < bodies.length; i += 1) {
+        const body = bodies[i]!;
+        const active = isLit(i);
+        context.globalAlpha = labelAlpha * (active ? 1 : 0.12);
+        context.fillStyle = active ? LABEL : LABEL_DIM;
+        context.fillText(
+          truncate(nodes[i]!.title),
+          body.x,
+          body.y + nodeRadius(body.degree, opts.nodeScale) + 3,
+        );
+      }
+      context.globalAlpha = 1;
+    }
+
+    const percent = Math.round(view.scale * 100);
+    setZoomPercent((current) => (current === percent ? current : percent));
+  }, [links, neighbors, nodes]);
+
+  /* ---- 시뮬레이션 ---- */
+
+  const wake = useCallback(() => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    const loop = () => {
+      if (!runningRef.current) return;
+      const energy = stepGraph(bodiesRef.current, links, forcesRef.current, dragRef.current);
+      if (autoFitRef.current) {
+        viewRef.current = fitTransform(
+          graphBounds(bodiesRef.current, displayRef.current.nodeScale),
+          sizeRef.current,
+        );
+      }
+      draw();
+      if (energy < SLEEP_ENERGY && !dragRef.current) {
+        runningRef.current = false; // 잠재운다 — 만지면 다시 깨어난다
+        return;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }, [draw, links]);
+
+  // 힘을 바꾸면 배치가 달라져야 한다.
+  useEffect(() => {
+    wake();
+  }, [forces, wake]);
+
+  useEffect(() => () => void (runningRef.current = false), []);
+
+  /* ---- 화면 크기 ---- */
+
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
+    const canvas = canvasRef.current;
+    if (!host || !canvas) return;
     const observer = new ResizeObserver(([entry]) => {
       const box = entry?.contentRect;
-      if (box && box.width > 0 && box.height > 0) setSize({ w: box.width, h: box.height });
+      if (!box || box.width === 0 || box.height === 0) return;
+      sizeRef.current = { w: box.width, h: box.height };
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(box.width * dpr);
+      canvas.height = Math.round(box.height * dpr);
+      canvas.style.width = `${box.width}px`;
+      canvas.style.height = `${box.height}px`;
+      if (autoFitRef.current) {
+        viewRef.current = fitTransform(
+          graphBounds(bodiesRef.current, displayRef.current.nodeScale),
+          sizeRef.current,
+        );
+      }
+      draw();
     });
     observer.observe(host);
     return () => observer.disconnect();
-  }, []);
+  }, [draw]);
 
-  const edges = graph.edges;
-  const index = useMemo(() => {
-    const map = new Map<string, number>();
-    graph.nodes.forEach((n, i) => map.set(n.docId, i));
-    return map;
-  }, [graph]);
-
-  /** 시뮬레이션을 깨운다. 이미 돌고 있으면 아무 일도 하지 않는다. */
-  const wake = useCallback(() => {
-    if (running.current) return;
-    running.current = true;
-
-    const step = () => {
-      if (!running.current) return;
-      const energy = tick(bodies.current, edges, index, size, dragRef.current);
-      forceRender((v) => v + 1);
-      if (energy < SLEEP_ENERGY && !dragRef.current) {
-        running.current = false; // 잠재운다 — 드래그하면 다시 깨어난다
-        return;
-      }
-      requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }, [edges, index, size]);
-
-  // 그래프나 화면 크기가 바뀌면 배치를 다시 잡고 깨운다.
   useEffect(() => {
-    bodies.current = seed(graph.nodes, size);
-    wake();
-    return () => {
-      running.current = false;
-    };
-  }, [graph, size, wake]);
+    draw();
+  }, [display, draw]);
 
-  /* ---- 드래그 ---- */
+  /* ---- 입력 ---- */
 
-  /**
-   * 화면 좌표 → 시뮬레이션 좌표.
-   * 확대/이동을 적용한 뒤이므로 **역변환을 해야** 끌 때 커서와 점이 어긋나지 않는다.
-   */
-  const toLocal = (e: { clientX: number; clientY: number }) => {
-    const box = svgRef.current?.getBoundingClientRect();
-    const { scale, tx, ty } = viewRef.current;
-    return {
-      x: (e.clientX - (box?.left ?? 0) - tx) / scale,
-      y: (e.clientY - (box?.top ?? 0) - ty) / scale,
-    };
+  const pointerAt = (e: { clientX: number; clientY: number }) => {
+    const box = canvasRef.current?.getBoundingClientRect();
+    return { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) };
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const screen = pointerAt(e);
+    const world = toWorld(screen, viewRef.current);
+    const index = hitTest(bodiesRef.current, world, display.nodeScale);
+    autoFitRef.current = false; // 손을 댄 순간부터는 사용자의 화면이다
+    if (index >= 0) {
+      dragRef.current = { index, x: world.x, y: world.y };
+      selectedRef.current = index;
+      setSelected(nodes[index] ?? null);
+      wake();
+      return;
+    }
+    // 빈 곳을 누르면 화면을 끈다. 선택은 손을 뗄 때 푼다(끌기와 구분하기 위해).
+    panRef.current = { x: screen.x, y: screen.y, tx: viewRef.current.tx, ty: viewRef.current.ty };
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const screen = pointerAt(e);
+    const world = toWorld(screen, viewRef.current);
+
+    if (dragRef.current) {
+      dragRef.current = { ...dragRef.current, x: world.x, y: world.y };
+      wake();
+      return;
+    }
+    if (panRef.current) {
+      const pan = panRef.current;
+      viewRef.current = {
+        ...viewRef.current,
+        tx: pan.tx + (screen.x - pan.x),
+        ty: pan.ty + (screen.y - pan.y),
+      };
+      draw();
+      return;
+    }
+
+    const index = hitTest(bodiesRef.current, world, display.nodeScale);
+    if (index === hoverRef.current) return;
+    hoverRef.current = index;
+    e.currentTarget.style.cursor = index >= 0 ? 'pointer' : 'grab';
+    draw();
+  };
+
+  const endPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const wasPanning = panRef.current;
+    const screen = pointerAt(e);
+    if (wasPanning) {
+      const moved = Math.hypot(screen.x - wasPanning.x, screen.y - wasPanning.y);
+      // 끌지 않고 그냥 눌렀다 뗀 것이면 선택 해제.
+      if (moved < 3) {
+        selectedRef.current = -1;
+        setSelected(null);
+      }
+    }
+    panRef.current = null;
+    if (dragRef.current) {
+      dragRef.current = null;
+      wake(); // 놓은 뒤 스스로 자리를 잡도록 한 번 더 돌린다
+    }
+    draw();
   };
 
   /** 휠 확대/축소 — **커서 아래 지점을 고정**한다. 중심 기준으로 키우면 보던 곳을 놓친다. */
-  const onWheel = (e: React.WheelEvent) => {
-    const box = svgRef.current?.getBoundingClientRect();
-    const px = e.clientX - (box?.left ?? 0);
-    const py = e.clientY - (box?.top ?? 0);
-    setView((v) => {
-      const next = clampScale(v.scale * Math.exp(-e.deltaY * 0.0015));
-      const k = next / v.scale;
-      return { scale: next, tx: px - (px - v.tx) * k, ty: py - (py - v.ty) * k };
-    });
+  const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    const screen = pointerAt(e);
+    const view = viewRef.current;
+    const next = clampScale(view.scale * Math.exp(-e.deltaY * 0.0015));
+    const k = next / view.scale;
+    autoFitRef.current = false;
+    viewRef.current = {
+      scale: next,
+      tx: screen.x - (screen.x - view.tx) * k,
+      ty: screen.y - (screen.y - view.ty) * k,
+    };
+    draw();
   };
 
-  const onPointerDown = (docId: string) => (e: React.PointerEvent) => {
-    e.preventDefault();
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    const p = toLocal(e);
-    dragRef.current = { docId, x: p.x, y: p.y };
-    setDragging(docId);
-    setPicked(docId);
-    wake();
+  const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const world = toWorld(pointerAt(e), viewRef.current);
+    const index = hitTest(bodiesRef.current, world, display.nodeScale);
+    const uri = index >= 0 ? nodes[index]?.sourceUri : undefined;
+    if (uri) void window.codegate.shell.openOriginal(uri);
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    const p = toLocal(e);
-    dragRef.current = { ...dragRef.current, x: p.x, y: p.y };
-    wake();
-  };
-
-  const endDrag = () => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    setDragging(null);
-    wake(); // 놓은 뒤 스스로 자리를 잡도록 한 번 더 돌린다
-  };
+  const fit = useCallback(() => {
+    autoFitRef.current = true;
+    viewRef.current = fitTransform(
+      graphBounds(bodiesRef.current, displayRef.current.nodeScale),
+      sizeRef.current,
+    );
+    draw();
+  }, [draw]);
 
   /* ---- 트리에서 들어온 파일 ---- */
 
-  const fromTree = useMemo(() => matchNode(graph.nodes, focusPath), [graph.nodes, focusPath]);
+  const fromTree = useMemo(() => matchNode(nodes, focusPath), [nodes, focusPath]);
   useEffect(() => {
-    if (fromTree.node) setPicked(fromTree.node.docId);
-  }, [fromTree]);
-
-  const selectedDocId = picked;
-  const list = bodies.current;
-  const byId = new Map(list.map((b) => [b.node.docId, b]));
-  const selected = selectedDocId ? byId.get(selectedDocId) : undefined;
-  const touches = (from: string, to: string) =>
-    !selectedDocId || from === selectedDocId || to === selectedDocId;
+    const node = fromTree.node;
+    if (!node) return;
+    const index = indexOf.get(node.docId);
+    if (index === undefined) return;
+    selectedRef.current = index;
+    setSelected(node);
+    // 고른 문서를 화면 한가운데로 데려온다 — 어디 있는지 찾게 두지 않는다.
+    const body = bodiesRef.current[index];
+    if (body) {
+      autoFitRef.current = false;
+      const { scale } = viewRef.current;
+      viewRef.current = {
+        scale,
+        tx: sizeRef.current.w / 2 - body.x * scale,
+        ty: sizeRef.current.h / 2 - body.y * scale,
+      };
+    }
+    draw();
+  }, [draw, fromTree, indexOf]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white">
-      <header className="flex items-center gap-3 border-b border-ink-100 px-5 py-3">
-        <span className="text-xs font-semibold text-ink-700">지식 그래프</span>
-        <span className="text-2xs text-ink-400">
-          문서 {graph.nodes.length} · 관계 {graph.edges.length}
+    <div className="flex h-full min-h-0 flex-col bg-[#1a1a1c]">
+      <header className="flex items-center gap-3 border-b border-[#2a2b30] px-5 py-3">
+        <span className="text-xs font-semibold text-[#d5d9e0]">지식 그래프</span>
+        <span className="text-2xs text-[#71767f]">
+          문서 {nodes.length} · 관계 {edges.length}
         </span>
         {focusPath && fromTree.reason && (
           /*
            * 조용히 넘어가면 "왜 안 켜지지" 가 된다. 그리고 **못 찾은 것과 여럿인 것은 다르다** —
            * 전자는 빌드를 돌리면 되고, 후자는 어느 문서인지 사람이 정해야 한다.
            */
-          <span className="truncate text-2xs text-amber-600">
+          <span className="truncate text-2xs text-amber-400">
             {fromTree.reason === 'missing'
               ? `«${basename(focusPath)}» 는 아직 이 빌드에 없습니다`
               : `«${basename(focusPath)}» 에 연결된 문서가 여럿이라 하나를 고르지 못했습니다`}
           </span>
         )}
         <span className="flex-1" />
-        <span className="shrink-0 text-2xs text-ink-300">점을 끌어 옮기고, 휠로 확대·축소</span>
-        <span className="shrink-0 font-mono text-2xs text-ink-400">
-          {Math.round(view.scale * 100)}%
+        <span className="shrink-0 text-2xs text-[#5d626b]">
+          점을 끌어 옮기고, 빈 곳을 끌어 화면 이동 · 휠로 확대·축소 · 두 번 눌러 원본 열기
         </span>
+        <span className="shrink-0 font-mono text-2xs text-[#71767f]">{zoomPercent}%</span>
         <button
-          onClick={() => setView({ scale: 1, tx: 0, ty: 0 })}
-          className="shrink-0 text-2xs font-semibold text-ink-500 hover:text-ink-700"
+          onClick={fit}
+          className="shrink-0 text-2xs font-semibold text-[#9aa0aa] hover:text-[#e6e9ee]"
         >
           맞춤
         </button>
-        {selectedDocId && (
-          <button
-            onClick={() => setPicked(null)}
-            className="shrink-0 text-2xs font-semibold text-ink-500 hover:text-ink-700"
-          >
-            선택 해제
-          </button>
-        )}
       </header>
 
-      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden">
-        <svg
-          ref={svgRef}
-          width={size.w}
-          height={size.h}
-          className="touch-none select-none"
+      <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden">
+        <canvas
+          ref={canvasRef}
+          className="block touch-none select-none"
+          style={{ cursor: 'grab' }}
+          onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
-          onPointerUp={endDrag}
-          onPointerLeave={endDrag}
+          onPointerUp={endPointer}
+          onPointerCancel={endPointer}
           onWheel={onWheel}
-          onClick={(e) => e.target === svgRef.current && setPicked(null)}
+          onDoubleClick={onDoubleClick}
+        />
+
+        <button
+          onClick={() => setPanelOpen((open) => !open)}
+          aria-label="그래프 설정"
+          className={cn(
+            'absolute left-3 top-3 grid h-8 w-8 place-items-center rounded-md border border-[#2f3037] bg-[#232428] text-[#9aa0aa]',
+            'hover:text-[#e6e9ee]',
+            panelOpen && 'text-[#e6e9ee]',
+          )}
         >
-          <defs>
-            <marker
-              id="graph-arrow"
-              viewBox="0 0 10 10"
-              refX="16"
-              refY="5"
-              markerWidth="5"
-              markerHeight="5"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#C9CDD4" />
-            </marker>
-          </defs>
-
-          <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
-          {edges.map((edge, i) => {
-            const a = byId.get(edge.from);
-            const b = byId.get(edge.to);
-            if (!a || !b) return null;
-            const lit = touches(edge.from, edge.to);
-            return (
-              <line
-                key={`${edge.from}-${edge.to}-${edge.relationType}-${i}`}
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
-                stroke={lit ? '#9AA1AC' : '#E7E9EE'}
-                strokeWidth={lit ? 1.4 : 1}
-                markerEnd="url(#graph-arrow)"
-              >
-                <title>{`${a.node.title} → ${b.node.title} (${edge.relationType})`}</title>
-              </line>
-            );
-          })}
-
-          {list.map((body) => {
-            const isSelected = body.node.docId === selectedDocId;
-            const isDragging = body.node.docId === dragging;
-            const color = isSelected
-              ? SELECTED_COLOR
-              : (TYPE_COLOR[body.node.docType] ?? TYPE_COLOR.general);
-            return (
-              <g
-                key={body.node.docId}
-                transform={`translate(${body.x} ${body.y})`}
-                onPointerDown={onPointerDown(body.node.docId)}
-                className={isDragging ? 'cursor-grabbing' : 'cursor-grab'}
-              >
-                {isSelected && <circle r={16} fill={SELECTED_COLOR} opacity={0.18} />}
-                <circle
-                  r={isSelected || isDragging ? 9 : 6}
-                  fill={color}
-                  stroke="#fff"
-                  strokeWidth={2}
-                  opacity={body.node.status === 'active' ? 1 : 0.45}
-                />
-                <text
-                  y={isSelected || isDragging ? 26 : 20}
-                  textAnchor="middle"
-                  className={cn('pointer-events-none text-[10px]', isSelected && 'font-semibold')}
-                  fill={isSelected ? SELECTED_COLOR : '#5B616E'}
-                >
-                  {truncate(body.node.title)}
-                </text>
-                <title>{`${body.node.title}\n${body.node.docId} · ${body.node.docType}`}</title>
-              </g>
-            );
-          })}
-          </g>
-        </svg>
+          <GearIcon />
+        </button>
+        {panelOpen && (
+          <SettingsPanel
+            display={display}
+            forces={forces}
+            onDisplay={setDisplay}
+            onForces={setForces}
+          />
+        )}
       </div>
 
-      {selected && <NodeDetail node={selected.node} />}
+      {selected && <NodeDetail node={selected} />}
     </div>
   );
 }
 
-/**
- * 한 프레임. 되돌려주는 값은 전체 운동에너지 — 호출자가 이걸 보고 잠재울지 정한다.
- *
- * 드래그 중인 노드는 **힘을 받지 않고 커서에 붙는다.** 그래야 손이 이끄는 대로 움직이고,
- * 이웃들은 스프링을 통해 뒤따라온다.
- */
-function tick(
-  bodies: Body[],
-  edges: WikiGraphEdge[],
-  index: Map<string, number>,
-  size: { w: number; h: number },
-  drag: { docId: string; x: number; y: number } | null,
-): number {
-  const cx = size.w / 2;
-  const cy = size.h / 2;
+/* ---- 설정 ---- */
 
-  // 반발
-  for (let i = 0; i < bodies.length; i += 1) {
-    for (let j = i + 1; j < bodies.length; j += 1) {
-      const a = bodies[i]!;
-      const b = bodies[j]!;
-      let dx = a.x - b.x;
-      let dy = a.y - b.y;
-      let d2 = dx * dx + dy * dy;
-      if (d2 < 1) {
-        // 완전히 겹치면 밀어낼 방향이 없다 — 인덱스로 정해진 방향을 준다(무작위 금지).
-        dx = ((i % 7) - 3) || 1;
-        dy = ((j % 5) - 2) || 1;
-        d2 = dx * dx + dy * dy;
-      }
-      const d = Math.sqrt(d2);
-      const f = REPULSION / d2;
-      a.vx += (dx / d) * f;
-      a.vy += (dy / d) * f;
-      b.vx -= (dx / d) * f;
-      b.vy -= (dy / d) * f;
-    }
-  }
+function SettingsPanel({
+  display,
+  forces,
+  onDisplay,
+  onForces,
+}: {
+  display: DisplayOptions;
+  forces: SimForces;
+  onDisplay: (next: DisplayOptions) => void;
+  onForces: (next: SimForces) => void;
+}) {
+  return (
+    <div className="absolute left-3 top-[52px] w-60 rounded-lg border border-[#2f3037] bg-[#232428] p-3 shadow-xl">
+      <Section title="표시">
+        <Slider
+          label="점 크기"
+          min={0.4}
+          max={3}
+          step={0.1}
+          value={display.nodeScale}
+          onChange={(nodeScale) => onDisplay({ ...display, nodeScale })}
+        />
+        <Slider
+          label="링크 굵기"
+          min={0.3}
+          max={4}
+          step={0.1}
+          value={display.linkThickness}
+          onChange={(linkThickness) => onDisplay({ ...display, linkThickness })}
+        />
+        <Slider
+          label="이름표 표시 배율"
+          min={0}
+          max={2}
+          step={0.05}
+          value={display.textFade}
+          onChange={(textFade) => onDisplay({ ...display, textFade })}
+        />
+        <Toggle
+          label="화살표"
+          checked={display.arrows}
+          onChange={(arrows) => onDisplay({ ...display, arrows })}
+        />
+      </Section>
+      <Section title="힘">
+        <Slider
+          label="중심으로 모으기"
+          min={0}
+          max={1}
+          step={0.05}
+          value={forces.center}
+          onChange={(center) => onForces({ ...forces, center })}
+        />
+        <Slider
+          label="서로 밀어내기"
+          min={0}
+          max={1}
+          step={0.05}
+          value={forces.repel}
+          onChange={(repel) => onForces({ ...forces, repel })}
+        />
+        <Slider
+          label="링크 당기기"
+          min={0}
+          max={1}
+          step={0.05}
+          value={forces.linkForce}
+          onChange={(linkForce) => onForces({ ...forces, linkForce })}
+        />
+        <Slider
+          label="링크 길이"
+          min={30}
+          max={320}
+          step={5}
+          value={forces.linkDistance}
+          onChange={(linkDistance) => onForces({ ...forces, linkDistance })}
+        />
+      </Section>
+      <button
+        onClick={() => {
+          onDisplay(DEFAULT_DISPLAY);
+          onForces(DEFAULT_FORCES);
+        }}
+        className="mt-1 w-full rounded-md border border-[#33343b] py-1 text-2xs text-[#9aa0aa] hover:text-[#e6e9ee]"
+      >
+        기본값으로
+      </button>
+    </div>
+  );
+}
 
-  // 스프링 — 링크로 이어진 쌍
-  for (const edge of edges) {
-    const i = index.get(edge.from);
-    const j = index.get(edge.to);
-    if (i === undefined || j === undefined) continue;
-    const a = bodies[i]!;
-    const b = bodies[j]!;
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-3 last:mb-0">
+      <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-[#71767f]">{title}</p>
+      <div className="flex flex-col gap-2">{children}</div>
+    </div>
+  );
+}
+
+function Slider({
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+}: {
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-0.5 flex justify-between text-2xs text-[#9aa0aa]">
+        {label}
+        <span className="font-mono text-[#5d626b]">{value}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-1 w-full cursor-pointer appearance-none rounded bg-[#3a3b42] accent-[#4ec3e0]"
+      />
+    </label>
+  );
+}
+
+function Toggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between text-2xs text-[#9aa0aa]">
+      {label}
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="accent-[#4ec3e0]"
+      />
+    </label>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+/** 화살표는 링크 위에 따로 그린다 — 켰을 때만 도는 비용이라 기본값(꺼짐)에는 부담이 없다. */
+function drawArrows(
+  context: CanvasRenderingContext2D,
+  bodies: GraphBody[],
+  links: { a: number; b: number }[],
+  opts: DisplayOptions,
+  focus: number,
+) {
+  const size = 4;
+  for (const link of links) {
+    const a = bodies[link.a];
+    const b = bodies[link.b];
+    if (!a || !b) continue;
+    const active = focus >= 0 && (link.a === focus || link.b === focus);
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
-    const f = (d - SPRING_LENGTH) * SPRING_K;
-    a.vx += (dx / d) * f;
-    a.vy += (dy / d) * f;
-    b.vx -= (dx / d) * f;
-    b.vy -= (dy / d) * f;
+    const back = nodeRadius(b.degree, opts.nodeScale) + size;
+    const tipX = b.x - (dx / d) * back;
+    const tipY = b.y - (dy / d) * back;
+    const angle = Math.atan2(dy, dx);
+    context.globalAlpha = active ? 0.85 : focus >= 0 ? 0.15 : 0.45;
+    context.fillStyle = active ? LINK_LIT : LINK_DIM;
+    context.beginPath();
+    context.moveTo(tipX, tipY);
+    context.lineTo(
+      tipX - Math.cos(angle - 0.4) * size * 2,
+      tipY - Math.sin(angle - 0.4) * size * 2,
+    );
+    context.lineTo(
+      tipX - Math.cos(angle + 0.4) * size * 2,
+      tipY - Math.sin(angle + 0.4) * size * 2,
+    );
+    context.closePath();
+    context.fill();
   }
-
-  // 중앙 인력 — 그래프가 화면 밖으로 흘러가지 않게
-  for (const body of bodies) {
-    body.vx += (cx - body.x) * CENTER_PULL;
-    body.vy += (cy - body.y) * CENTER_PULL;
-  }
-
-  let energy = 0;
-  for (const body of bodies) {
-    if (drag && body.node.docId === drag.docId) {
-      // 끌리는 노드는 커서가 위치를 정한다. 속도를 0 으로 둬야 놓았을 때 튀지 않는다.
-      body.x = drag.x;
-      body.y = drag.y;
-      body.vx = 0;
-      body.vy = 0;
-      continue;
-    }
-    body.vx *= DAMPING;
-    body.vy *= DAMPING;
-    body.vx = clamp(body.vx, MAX_SPEED);
-    body.vy = clamp(body.vy, MAX_SPEED);
-    body.x += body.vx;
-    body.y += body.vy;
-    // 화면 밖으로 나가지 않게 여백을 두고 가둔다.
-    const minX = 40;
-    const maxX = Math.max(size.w - 40, 60);
-    const minY = 30;
-    const maxY = Math.max(size.h - 40, 60);
-    const clampedX = Math.min(Math.max(body.x, minX), maxX);
-    const clampedY = Math.min(Math.max(body.y, minY), maxY);
-    // 벽에 닿으면 그 방향 속도를 죽인다.
-    //
-    // 위치만 가두고 속도를 그대로 두면, 벽에 몰린 노드가 매 프레임 벽을 다시 밀어 에너지가
-    // 사라지지 않는다. 간선(스프링)이 없는 그래프에서는 반발력만 남아 거의 모든 노드가
-    // 벽으로 몰리므로, 시뮬레이션이 SLEEP_ENERGY 아래로 내려가지 못하고 영원히 떤다.
-    // 벽을 충돌로 보고 그 성분 속도를 0 으로 만들면 감쇠가 에너지를 마저 없애 잠든다.
-    if (clampedX !== body.x) body.vx = 0;
-    if (clampedY !== body.y) body.vy = 0;
-    body.x = clampedX;
-    body.y = clampedY;
-    energy += body.vx * body.vx + body.vy * body.vy;
-  }
-  return energy / Math.max(bodies.length, 1);
-}
-
-function clamp(v: number, max: number): number {
-  return Math.max(-max, Math.min(max, v));
-}
-
-/** 확대 배율 한계 — 너무 줄이면 점이 사라지고, 너무 키우면 길을 잃는다. */
-function clampScale(v: number): number {
-  return Math.max(0.3, Math.min(4, v));
-}
-
-/**
- * 초기 배치 — 화면 중앙을 둘러싼 원 위에 **결정적으로** 흩뿌린다.
- * `Math.random()` 을 쓰면 열 때마다 다른 그림이 나와 "아까 그 문서"를 못 찾는다.
- */
-function seed(nodes: WikiGraphNode[], size: { w: number; h: number }): Body[] {
-  const cx = size.w / 2;
-  const cy = size.h / 2;
-  const radius = Math.min(size.w, size.h) * 0.3 || 160;
-  return nodes.map((node, i) => {
-    const angle = (i / nodes.length) * Math.PI * 2 + ((hash(node.docId) % 100) / 100) * 0.5;
-    const r = radius * (0.6 + ((hash(node.docId + '#r') % 100) / 100) * 0.4);
-    return { node, x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r, vx: 0, vy: 0 };
-  });
+  context.globalAlpha = 1;
 }
 
 function NodeDetail({ node }: { node: WikiGraphNode }) {
   return (
-    <footer className="border-t border-ink-100 bg-ink-50 px-5 py-3">
+    <footer className="border-t border-[#2a2b30] bg-[#202124] px-5 py-3">
       <div className="flex items-center gap-2">
-        <span className="truncate text-xs font-semibold text-ink-800">{node.title}</span>
-        <span className="shrink-0 font-mono text-2xs text-ink-400">
+        <span className="truncate text-xs font-semibold text-[#e6e9ee]">{node.title}</span>
+        <span className="shrink-0 font-mono text-2xs text-[#71767f]">
           {node.docId} · {node.docType} · {node.status}
         </span>
         <span className="flex-1" />
         {node.sourceUri && (
           <button
             onClick={() => void window.codegate.shell.openOriginal(node.sourceUri!)}
-            className="shrink-0 text-2xs font-semibold text-blue-600 hover:text-blue-700"
+            className="shrink-0 text-2xs font-semibold text-[#4ec3e0] hover:text-[#7ad6ec]"
           >
             원본 열기
           </button>
         )}
       </div>
-      {node.summary && <p className="mt-1.5 line-clamp-2 text-2xs text-ink-500">{node.summary}</p>}
+      {node.summary && <p className="mt-1.5 line-clamp-2 text-2xs text-[#8b919b]">{node.summary}</p>}
     </footer>
   );
 }
 
 function Centered({ children, tone }: { children: React.ReactNode; tone?: 'error' }) {
   return (
-    <div className="flex h-full items-center justify-center bg-white px-8 text-center">
-      <p className={cn('text-sm leading-relaxed', tone === 'error' ? 'text-red-600' : 'text-ink-400')}>
+    <div className="flex h-full items-center justify-center bg-[#1a1a1c] px-8 text-center">
+      <p className={cn('text-sm leading-relaxed', tone === 'error' ? 'text-red-400' : 'text-[#71767f]')}>
         {children}
       </p>
     </div>
@@ -534,15 +806,6 @@ function basename(path: string): string {
   return path.split('/').pop() || path;
 }
 
-function hash(text: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return Math.abs(h);
-}
-
-function truncate(text: string, max = 14): string {
+function truncate(text: string, max = 18): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
