@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import type { Session } from '@contracts';
 import type { useWorkspace } from '@/state/useWorkspace';
 import { useChat } from '@/state/useChat';
+import { useWikiGraph } from '@/state/useWikiGraph';
 import { ChatList } from '@/components/ChatList';
 import { ChatPane } from '@/components/ChatPane';
 import { GraphPane } from '@/components/GraphPane';
@@ -34,6 +35,13 @@ export function MainScreen({
   onOpenSettings: () => void;
 }) {
   const chat = useChat();
+  /*
+   * 그래프는 여기서 한 번만 읽는다.
+   *
+   * 그래프 탭과 문서 트리가 **같은 네트워크 색**을 써야 하기 때문이다. 각자 읽으면 계산이
+   * 갈라져 같은 문서가 두 화면에서 다른 색이 될 수 있고, 그러면 색이 아무 뜻도 없어진다.
+   */
+  const wiki = useWikiGraph(workspace.build?.buildId);
   const [tab, setTab] = useState<Tab>('chat');
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const webDemo = document.documentElement.dataset.runtime === 'web-demo';
@@ -86,7 +94,13 @@ export function MainScreen({
           </div>
           {tab === 'graph' && (
             <div className="col-start-1 row-start-1 min-h-0 min-w-0">
-              <GraphPane focusPath={focusedPath} />
+              <GraphPane
+                focusPath={focusedPath}
+                graph={wiki.graph}
+                error={wiki.error}
+                networks={wiki.networks}
+                docIndex={wiki.docIndex}
+              />
             </div>
           )}
         </div>
@@ -96,6 +110,8 @@ export function MainScreen({
           build={workspace.build}
           roots={workspace.roots}
           onOpenInGraph={openInGraph}
+          networks={wiki.networks}
+          docIndex={wiki.docIndex}
         />
       </div>
     </div>

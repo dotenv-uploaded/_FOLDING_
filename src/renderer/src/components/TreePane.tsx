@@ -11,7 +11,12 @@ import {
 import type { BuildPhase, BuildState, FileNode, FileStatus, Root } from '@contracts';
 import { BUILD_PHASE_LABEL } from '@contracts';
 import { cn } from '@/lib/cn';
+import type { DocIndex } from '@/lib/doc-index';
+import type { DocNetwork, NetworkIndex } from '@/lib/graph-networks';
 import { ProgressBar } from '@/ui/ProgressBar';
+
+/** 한 줄에 나란히 찍을 수 있는 점의 최대 개수. 넘치면 하나로 접는다. */
+const MAX_DOTS = 4;
 
 /** 우측 패널 — 디렉터리 트리(파일별 상태) + 전체 진행률 (스펙 v1.3 §1 L1). */
 export function TreePane({
@@ -19,15 +24,24 @@ export function TreePane({
   build,
   roots,
   onOpenInGraph,
+  networks,
+  docIndex,
 }: {
   tree: FileNode[];
   build: BuildState | null;
   roots: Root[];
   /** 파일 더블클릭 → 그래프 탭에서 그 문서를 짚어 준다 (경로로 넘긴다 — 트리는 doc_id 를 모른다) */
   onOpenInGraph?: (path: string) => void;
+  /** 그래프와 **같은** 네트워크. 같은 뭉치는 두 화면에서 같은 색이어야 한다. */
+  networks: NetworkIndex;
+  docIndex: DocIndex;
 }) {
   const counts = useMemo(() => countByStatus(tree), [tree]);
   const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const networksByPath = useMemo(
+    () => collectNetworks(tree, docIndex, networks),
+    [tree, docIndex, networks],
+  );
 
   return (
     <aside className="flex min-h-0 flex-col border-l border-ink-100 bg-white">
@@ -54,6 +68,7 @@ export function TreePane({
                 depth={0}
                 onOpenInGraph={onOpenInGraph}
                 onContextMenu={(path, x, y) => setMenu({ path, x, y })}
+                networksByPath={networksByPath}
               />
             ))}
           </ul>
@@ -142,13 +157,16 @@ function TreeNode({
   depth,
   onOpenInGraph,
   onContextMenu,
+  networksByPath,
 }: {
   node: FileNode;
   depth: number;
   onOpenInGraph?: (path: string) => void;
   onContextMenu: (path: string, x: number, y: number) => void;
+  networksByPath: Map<string, DocNetwork[]>;
 }) {
   const [open, setOpen] = useState(depth < 1);
+  const rowNetworks = networksByPath.get(node.path) ?? [];
 
   if (node.isDir) {
     return (
@@ -170,7 +188,8 @@ function TreeNode({
           ) : (
             <Folder size={14} className="shrink-0 text-ink-400" />
           )}
-          <span className="truncate text-xs font-medium text-ink-700">{node.name}</span>
+          <FadingName className="text-xs font-medium text-ink-700">{node.name}</FadingName>
+          <NetworkDots networks={rowNetworks} />
         </button>
         {open && node.children && node.children.length > 0 && (
           <ul className="flex flex-col">
@@ -181,6 +200,7 @@ function TreeNode({
                 depth={depth + 1}
                 onOpenInGraph={onOpenInGraph}
                 onContextMenu={onContextMenu}
+                networksByPath={networksByPath}
               />
             ))}
           </ul>
@@ -209,17 +229,126 @@ function TreeNode({
         style={{ paddingLeft: 8 + depth * 12 + 19 }}
       >
         <StatusIcon status={node.status} />
-        <span
-          className={cn(
-            'truncate text-xs',
-            node.status === 'done' ? 'text-ink-600' : 'text-ink-400',
-          )}
-        >
+        <FadingName className={cn('text-xs', node.status === 'done' ? 'text-ink-600' : 'text-ink-400')}>
           {node.name}
-        </span>
+        </FadingName>
+        <NetworkDots networks={rowNetworks} />
       </button>
     </li>
   );
+}
+
+/**
+ * 길면 오른쪽 끝이 **흐려지는** 이름.
+ *
+ * `…` 로 자르면 잘렸다는 사실은 알려 주지만 마지막 글자들을 통째로 버린다. 파일 이름은
+ * 끝에 날짜나 판번호가 붙는 일이 많아(`…보고서0415_0417`) 거기가 잘리면 정작 구분해야 할
+ * 부분이 사라진다. 흐림은 글자를 지우지 않고 "여기서 잘렸다"만 말한다.
+ *
+ * 이름이 짧으면 흐려질 자리에 글자가 없으므로 아무 일도 일어나지 않는다.
+ */
+function FadingName({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span
+      className={cn('min-w-0 flex-1 overflow-hidden whitespace-nowrap', className)}
+      style={{
+        maskImage: 'linear-gradient(to right, #000 calc(100% - 20px), transparent 100%)',
+        WebkitMaskImage: 'linear-gradient(to right, #000 calc(100% - 20px), transparent 100%)',
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * 줄 오른쪽 끝의 네트워크 점.
+ *
+ * 파일은 보통 한 개, 폴더는 그 안 문서들이 속한 네트워크 전부다. 폴더가 여러 뭉치에 걸치는
+ * 일은 흔해서 **개수를 막지 않으면 이름을 밀어내고 줄이 터진다.** 그래서 최대 개수를 정하고,
+ * 넘치는 것들은 **그 색들을 섞은 점 하나 + `+N`** 으로 접는다 — 넘쳤다는 사실과 대략 어떤
+ * 색들이었는지를 함께 남기기 위해서다.
+ */
+function NetworkDots({ networks }: { networks: DocNetwork[] }) {
+  if (networks.length === 0) return null;
+  if (networks.length <= MAX_DOTS) {
+    return (
+      <span className="flex shrink-0 items-center gap-1 pl-1">
+        {networks.map((network) => (
+          <Dot key={network.id} colors={[network.color]} title={network.label} />
+        ))}
+      </span>
+    );
+  }
+
+  const shown = networks.slice(0, MAX_DOTS - 1);
+  const folded = networks.slice(MAX_DOTS - 1);
+  return (
+    <span className="flex shrink-0 items-center gap-1 pl-1">
+      {shown.map((network) => (
+        <Dot key={network.id} colors={[network.color]} title={network.label} />
+      ))}
+      <Dot
+        colors={folded.map((network) => network.color)}
+        title={folded.map((network) => network.label).join('\n')}
+      />
+      <span className="font-mono text-[9px] leading-none text-ink-400">+{folded.length}</span>
+    </span>
+  );
+}
+
+/** 색이 하나면 단색, 여럿이면 그 색들을 원형으로 섞은 그라디언트. */
+function Dot({ colors, title }: { colors: string[]; title: string }) {
+  const background =
+    colors.length === 1
+      ? colors[0]
+      : // 처음 색을 끝에 한 번 더 놓아 이음매 없이 돌게 한다.
+        `conic-gradient(from 0deg, ${[...colors, colors[0]].join(', ')})`;
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      className="block h-2 w-2 shrink-0 rounded-full"
+      style={{ background }}
+    />
+  );
+}
+
+/**
+ * 트리의 각 줄이 어느 네트워크에 걸치는지 미리 계산한다.
+ *
+ * 줄마다 그때그때 찾으면 스크롤할 때마다 문서 목록을 다시 훑게 된다. 폴더는 **그 아래 모든
+ * 문서**의 네트워크를 모으고, 큰 네트워크가 앞에 오도록 정렬해 어느 폴더에서나 같은 순서로
+ * 보이게 한다.
+ */
+function collectNetworks(
+  tree: FileNode[],
+  docIndex: DocIndex,
+  networks: NetworkIndex,
+): Map<string, DocNetwork[]> {
+  const rank = new Map(networks.networks.map((network, i) => [network.id, i]));
+  const byPath = new Map<string, DocNetwork[]>();
+
+  const walk = (node: FileNode): Set<DocNetwork> => {
+    const found = new Set<DocNetwork>();
+    if (node.isDir) {
+      for (const child of node.children ?? []) {
+        for (const network of walk(child)) found.add(network);
+      }
+    } else {
+      const docId = docIndex(node.path).docId;
+      const network = docId ? networks.byDoc.get(docId) : undefined;
+      if (network) found.add(network);
+    }
+    byPath.set(
+      node.path,
+      [...found].sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0)),
+    );
+    return found;
+  };
+
+  for (const node of tree) walk(node);
+  return byPath;
 }
 
 const STATUS_LABEL: Record<FileStatus, string> = {

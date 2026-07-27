@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WikiGraph, WikiGraphNode } from '@contracts';
 import { cn } from '@/lib/cn';
+import type { DocIndex } from '@/lib/doc-index';
 import { documentLabel } from '@/lib/format';
+import { UNLINKED_COLOR, type NetworkIndex } from '@/lib/graph-networks';
 import {
   DEFAULT_FORCES,
   SLEEP_ENERGY,
@@ -51,15 +53,13 @@ const LABEL = '#5B6480'; // ink-500
 const LABEL_DIM = '#B4BACB'; // ink-300
 
 /**
- * 점은 한 가지 색이다.
+ * 점 색은 그 문서가 속한 **네트워크**(서로 링크로 이어진 덩어리)의 색이다.
  *
- * 문서 종류별로 색을 나눠 봤지만, 색이 여럿이면 눈이 먼저 **색을 구분하는 데** 쓰인다.
- * 정작 그래프에서 읽어야 할 것은 색이 아니라 **모양** — 어디가 뭉쳐 있고 무엇이 무엇과
- * 이어져 있는지다. 종류는 점을 고르면 아래 정보줄에 그대로 나온다.
+ * 문서 종류로 나눠 봤을 때는 색이 화면 곳곳에 흩어져 아무것도 말해 주지 않았다. 네트워크로
+ * 나누면 색이 곧 뭉치라서, 색이 모여 있는 것 자체가 정보가 된다. 어디에도 이어지지 않은
+ * 문서는 회색으로 남는다 — 그것도 봐야 할 사실이다(연결이 없다는 뜻).
  */
-const NODE_COLOR = '#2E3A5E'; // ink-700
-/** 고른 점만 색으로 빼놓는다 — 같은 색 점들 사이에서 하나를 잃어버리지 않게. */
-const SELECTED_COLOR = '#2B5DFD';
+const SELECTED_RING = '#0D1630'; // ink-950 — 색을 덮지 않고 테두리로만 고른 것을 표시한다
 
 interface DisplayOptions {
   /** 점 크기 배율. */
@@ -79,32 +79,20 @@ const DEFAULT_DISPLAY: DisplayOptions = {
   arrows: false,
 };
 
-export function GraphPane({
-  focusPath,
-}: {
+export interface GraphPaneProps {
   /**
    * 트리에서 더블클릭해 들어온 **파일 경로**. 트리는 doc_id 를 모르므로 경로로 받아
-   * 여기서 manifest 의 `sourceUri` 와 대조해 노드를 찾는다.
+   * `docIndex` 로 문서를 찾는다.
    */
   focusPath: string | null;
-}) {
-  const [graph, setGraph] = useState<WikiGraph | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  graph: WikiGraph | null;
+  error: string | null;
+  /** 문서 네트워크 — 트리와 **같은 것**을 쓴다. 같은 뭉치는 어디서나 같은 색이어야 한다. */
+  networks: NetworkIndex;
+  docIndex: DocIndex;
+}
 
-  useEffect(() => {
-    let alive = true;
-    window.codegate.wiki
-      .graph()
-      .then((g) => alive && setGraph(g))
-      .catch((err: unknown) => {
-        // 그래프를 못 읽었으면 빈 화면이 아니라 이유를 보여준다.
-        if (alive) setError(err instanceof Error ? err.message : '지식 그래프를 불러오지 못했습니다.');
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
+export function GraphPane({ focusPath, graph, error, networks, docIndex }: GraphPaneProps) {
   if (error) return <Centered tone="error">{error}</Centered>;
   if (!graph) return <Centered>지식 그래프를 불러오는 중…</Centered>;
   if (graph.nodes.length === 0) {
@@ -117,10 +105,22 @@ export function GraphPane({
     );
   }
 
-  return <GraphCanvas graph={graph} focusPath={focusPath} />;
+  return (
+    <GraphCanvas graph={graph} focusPath={focusPath} networks={networks} docIndex={docIndex} />
+  );
 }
 
-function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string | null }) {
+function GraphCanvas({
+  graph,
+  focusPath,
+  networks,
+  docIndex,
+}: {
+  graph: WikiGraph;
+  focusPath: string | null;
+  networks: NetworkIndex;
+  docIndex: DocIndex;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sizeRef = useRef({ w: 0, h: 0 });
@@ -157,8 +157,12 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
 
   const links = useMemo(() => buildLinks(edges, indexOf), [edges, indexOf]);
 
-  /** 점에 붙일 이름. 프레임마다 다시 만들지 않도록 한 번만 계산해 둔다. */
+  /** 점에 붙일 이름·색. 프레임마다 다시 만들지 않도록 한 번만 계산해 둔다. */
   const labels = useMemo(() => nodes.map((node) => truncate(documentLabel(node))), [nodes]);
+  const colors = useMemo(
+    () => nodes.map((node) => networks.byDoc.get(node.docId)?.color ?? UNLINKED_COLOR),
+    [networks, nodes],
+  );
 
   /** 강조할 때 쓰는 이웃 표. 매 프레임 링크를 훑지 않으려고 미리 만들어 둔다. */
   const neighbors = useMemo(() => {
@@ -237,20 +241,31 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
       const active = isLit(i);
       context.globalAlpha = active ? (node.status === 'active' ? 1 : 0.55) : 0.15;
 
+      const color = colors[i] ?? UNLINKED_COLOR;
+
       if (i === focus) {
         // 가리킨 점 둘레의 옅은 후광 — 어디를 보고 있는지 한눈에 들어온다.
         context.beginPath();
         context.arc(body.x, body.y, radius * 1.9 + 2, 0, Math.PI * 2);
-        context.fillStyle = LINK_LIT;
-        context.globalAlpha = 0.2;
+        context.fillStyle = color;
+        context.globalAlpha = 0.22;
         context.fill();
         context.globalAlpha = 1;
       }
 
       context.beginPath();
       context.arc(body.x, body.y, radius, 0, Math.PI * 2);
-      context.fillStyle = i === selectedRef.current ? SELECTED_COLOR : NODE_COLOR;
+      context.fillStyle = color;
       context.fill();
+
+      if (i === selectedRef.current) {
+        // 고른 점은 **색을 덮지 않고** 테두리로 표시한다 — 색은 이미 네트워크를 뜻한다.
+        context.beginPath();
+        context.arc(body.x, body.y, radius + 2.5, 0, Math.PI * 2);
+        context.strokeStyle = SELECTED_RING;
+        context.lineWidth = Math.max(1.5, 2 / view.scale);
+        context.stroke();
+      }
     }
     context.globalAlpha = 1;
 
@@ -282,9 +297,56 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
       context.globalAlpha = 1;
     }
 
+    /*
+     * 네트워크 이름 — **가리켰을 때만** 뜬다.
+     *
+     * 항상 띄워 두면 문서 이름표와 겹쳐서 둘 다 못 읽는다. 알고 싶은 순간은 어차피
+     * "지금 보고 있는 이 뭉치가 뭐지?" 하나뿐이라, 그 순간에만 덩어리 한가운데에 크게 띄운다.
+     */
+    const hoveredNetwork = hoverRef.current >= 0 ? networkAt(hoverRef.current) : null;
+    if (hoveredNetwork) {
+      const center = centerOf(hoveredNetwork.docIds);
+      if (center) {
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        // 이 이름은 그래프의 일부가 아니라 **화면에 얹은 안내**다. 그래서 확대·축소와
+        // 무관하게 늘 같은 크기로 읽히게 둔다 — 축소했을 때 못 읽으면 있으나 마나다.
+        context.font = `600 ${15 / view.scale}px -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif`;
+        // 흰 테두리를 먼저 그어 점·선 위에 겹쳐도 글자가 읽히게 한다.
+        context.lineWidth = 5 / view.scale;
+        context.strokeStyle = BACKGROUND;
+        context.globalAlpha = 0.9;
+        context.strokeText(hoveredNetwork.label, center.x, center.y);
+        context.globalAlpha = 1;
+        context.fillStyle = hoveredNetwork.color;
+        context.fillText(hoveredNetwork.label, center.x, center.y);
+      }
+    }
+
     const percent = Math.round(view.scale * 100);
     setZoomPercent((current) => (current === percent ? current : percent));
-  }, [labels, links, neighbors, nodes]);
+
+    function networkAt(index: number) {
+      const docId = nodes[index]?.docId;
+      return docId ? (networks.byDoc.get(docId) ?? null) : null;
+    }
+
+    /** 그 네트워크에 속한 점들의 한가운데. 이름을 여기에 놓으면 덩어리 위에 얹힌다. */
+    function centerOf(docIds: string[]) {
+      let x = 0;
+      let y = 0;
+      let count = 0;
+      for (const docId of docIds) {
+        const index = indexOf.get(docId);
+        const body = index === undefined ? undefined : bodies[index];
+        if (!body) continue;
+        x += body.x;
+        y += body.y;
+        count += 1;
+      }
+      return count === 0 ? null : { x: x / count, y: y / count };
+    }
+  }, [colors, indexOf, labels, links, neighbors, networks, nodes]);
 
   /* ---- 시뮬레이션 ---- */
 
@@ -451,12 +513,14 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
 
   /* ---- 트리에서 들어온 파일 ---- */
 
-  const fromTree = useMemo(() => matchNode(nodes, focusPath), [nodes, focusPath]);
+  const fromTree = useMemo(
+    () => (focusPath ? docIndex(focusPath) : {}),
+    [docIndex, focusPath],
+  );
   useEffect(() => {
-    const node = fromTree.node;
-    if (!node) return;
-    const index = indexOf.get(node.docId);
-    if (index === undefined) return;
+    const index = fromTree.docId === undefined ? undefined : indexOf.get(fromTree.docId);
+    const node = index === undefined ? undefined : nodes[index];
+    if (index === undefined || !node) return;
     selectedRef.current = index;
     setSelected(node);
     // 고른 문서를 화면 한가운데로 데려온다 — 어디 있는지 찾게 두지 않는다.
@@ -471,7 +535,7 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
       };
     }
     draw();
-  }, [draw, fromTree, indexOf]);
+  }, [draw, fromTree, indexOf, nodes]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
@@ -780,35 +844,6 @@ function Centered({ children, tone }: { children: React.ReactNode; tone?: 'error
       </p>
     </div>
   );
-}
-
-/**
- * 트리의 파일 경로로 그래프 노드를 찾는다.
- *
- * 두 값의 모양이 다르다 — 트리는 `<rootId>/<상대경로>`, manifest 는 `source://<...>` 이거나
- * 절대경로다. 그래서 **뒤에서부터 겹치는지**로 맞춘다. 그래도 못 찾으면 파일명으로 한 번 더
- * 본다. 어느 쪽이든 **후보가 여럿이면 찍지 않는다** — 엉뚱한 노드를 켜 놓고 맞다고 하는
- * 것보다, 못 찾았다고 말하는 편이 낫다.
- */
-function matchNode(
-  nodes: WikiGraphNode[],
-  path: string | null,
-): { node?: WikiGraphNode; reason?: 'missing' | 'ambiguous' } {
-  if (!path) return {};
-  const tail = path.replace(/^source:\/\//, '');
-
-  const exact = nodes.filter((n) => {
-    const uri = n.sourceUri?.replace(/^source:\/\//, '');
-    if (!uri) return false;
-    return uri === tail || uri.endsWith(`/${tail}`) || tail.endsWith(`/${uri}`);
-  });
-  if (exact.length === 1) return { node: exact[0] };
-  if (exact.length > 1) return { reason: 'ambiguous' };
-
-  const name = basename(tail);
-  const byName = nodes.filter((n) => (n.sourceFilename ?? basename(n.sourceUri ?? '')) === name);
-  if (byName.length === 1) return { node: byName[0] };
-  return { reason: byName.length > 1 ? 'ambiguous' : 'missing' };
 }
 
 function basename(path: string): string {
