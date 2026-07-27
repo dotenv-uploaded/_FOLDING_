@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { BuildPhase, BuildState, FileNode, FileStatus, Root } from '@contracts';
 import { BUILD_PHASE_LABEL } from '@contracts';
+import { buildHeadline } from '@/lib/build-voice';
 import { cn } from '@/lib/cn';
 import type { DocIndex } from '@/lib/doc-index';
 import type { DocNetwork, NetworkIndex } from '@/lib/graph-networks';
@@ -423,8 +424,12 @@ function BuildSummary({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-baseline justify-between gap-2">
+        {/*
+          진행 중에는 문장이 단계에 따라 바뀐다 — 진행률 막대가 말해 주지 못하는
+          "지금 무슨 일이 벌어지는가"를 얹는 자리다 (lib/build-voice.ts).
+        */}
         <span className="truncate text-xs font-semibold text-ink-700">
-          {failed ? '빌드 실패' : running ? '정리 중' : '최신 상태'}
+          {buildHeadline(build)}
         </span>
         {/*
           수동 빌드 — 실패했을 때 되돌릴 길이 있어야 한다. 예전에는 실패하면 화면에서
