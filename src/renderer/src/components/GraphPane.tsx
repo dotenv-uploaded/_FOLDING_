@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WikiGraph, WikiGraphNode } from '@contracts';
 import { cn } from '@/lib/cn';
+import { documentLabel } from '@/lib/format';
 import {
   DEFAULT_FORCES,
   SLEEP_ENERGY,
@@ -156,6 +157,9 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
 
   const links = useMemo(() => buildLinks(edges, indexOf), [edges, indexOf]);
 
+  /** 점에 붙일 이름. 프레임마다 다시 만들지 않도록 한 번만 계산해 둔다. */
+  const labels = useMemo(() => nodes.map((node) => truncate(documentLabel(node))), [nodes]);
+
   /** 강조할 때 쓰는 이웃 표. 매 프레임 링크를 훑지 않으려고 미리 만들어 둔다. */
   const neighbors = useMemo(() => {
     const map = new Map<number, Set<number>>();
@@ -260,14 +264,17 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
     if (labelAlpha > 0.01) {
       context.textAlign = 'center';
       context.textBaseline = 'top';
-      context.font = '11px -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif';
+      // 글자는 그래프와 함께 커지되 어느 선에서 멈춘다. 끝없이 커지면 크게 볼수록
+      // 이름표끼리 겹쳐서, 정작 가까이 보려던 것을 못 보게 된다.
+      const fontSize = Math.min(11, 17 / view.scale);
+      context.font = `${fontSize}px -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif`;
       for (let i = 0; i < bodies.length; i += 1) {
         const body = bodies[i]!;
         const active = isLit(i);
         context.globalAlpha = labelAlpha * (active ? 1 : 0.12);
         context.fillStyle = active ? LABEL : LABEL_DIM;
         context.fillText(
-          truncate(nodes[i]!.title),
+          labels[i] ?? '',
           body.x,
           body.y + nodeRadius(body.degree, opts.nodeScale) + 3,
         );
@@ -277,7 +284,7 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
 
     const percent = Math.round(view.scale * 100);
     setZoomPercent((current) => (current === percent ? current : percent));
-  }, [links, neighbors, nodes]);
+  }, [labels, links, neighbors, nodes]);
 
   /* ---- 시뮬레이션 ---- */
 
@@ -746,7 +753,7 @@ function NodeDetail({ node }: { node: WikiGraphNode }) {
   return (
     <footer className="border-t border-ink-100 bg-ink-50 px-5 py-3">
       <div className="flex items-center gap-2">
-        <span className="truncate text-xs font-semibold text-ink-800">{node.title}</span>
+        <span className="truncate text-xs font-semibold text-ink-800">{documentLabel(node)}</span>
         <span className="shrink-0 font-mono text-2xs text-ink-400">
           {node.docId} · {node.docType} · {node.status}
         </span>
@@ -808,6 +815,6 @@ function basename(path: string): string {
   return path.split('/').pop() || path;
 }
 
-function truncate(text: string, max = 18): string {
+function truncate(text: string, max = 22): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
