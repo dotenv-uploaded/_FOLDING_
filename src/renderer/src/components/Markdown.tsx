@@ -1,6 +1,7 @@
 import { Fragment } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { remarkNumericRanges } from '@/lib/markdown';
 import { splitPages } from '@/lib/pages';
 
 function PageDivider({ page }: { page: number }) {
@@ -25,6 +26,9 @@ function PageDivider({ page }: { page: number }) {
  *
  * `remark-gfm` 은 표·취소선·자동링크를 위해 넣었다. **HTML 은 렌더링하지 않는다** —
  * 문서에서 온 내용을 그대로 실행하지 않기 위해서다(react-markdown 기본값이 그렇다).
+ *
+ * 물결표는 취소선이 아니라 **범위 표시**로 본다 — "5~8주", "9~10주차". 자세한 이유는
+ * `lib/markdown.ts` 에 적어 뒀다.
  */
 export function Markdown({ children }: { children: string }) {
   const segments = splitPages(children);
@@ -43,7 +47,8 @@ export function Markdown({ children }: { children: string }) {
 function MarkdownBody({ children }: { children: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      // singleTilde: 물결표 하나(`5~8주`)를 취소선으로 보지 않는다 — 한국어에선 범위 표시다.
+      remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkNumericRanges]}
       components={{
         p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
         h1: ({ children }) => (
