@@ -16,6 +16,24 @@
     "to_doc_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$", "maxLength": 96},
     "relation_type": {"enum": ["references", "implements", "implemented_by", "based_on", "supersedes", "superseded_by"]},
     "origin": {"enum": ["explicit", "llm-classified", "entity-overlap"]},
-    "evidence_quote": {"type": "string", "minLength": 1}
+    "evidence_quote": {"type": "string", "minLength": 1},
+    "shared_entities": {
+      "description": "엔티티 겹침으로 유도된 간선의 근거 전부. 양쪽 문서가 각각 어느 문장에서 그 엔티티를 말했는지를 남긴다. 개수가 곧 연결의 강도다.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "from_section_id", "from_quote", "to_section_id", "to_quote"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "type": {"type": "string"},
+          "from_section_id": {"type": "string", "pattern": "^sec-[0-9a-f]{10}$"},
+          "from_quote": {"type": "string", "minLength": 1},
+          "to_section_id": {"type": "string", "pattern": "^sec-[0-9a-f]{10}$"},
+          "to_quote": {"type": "string", "minLength": 1}
+        }
+      }
+    }
   }
 }

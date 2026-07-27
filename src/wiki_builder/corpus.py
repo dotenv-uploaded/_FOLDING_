@@ -189,6 +189,10 @@ def build_links(
             "origin": origin,
             "evidence_quote": link.evidence_quote,
         }
+        if link.shared_entities:
+            # 명시적 링크에는 없는 값이라 있을 때만 적는다 — 빈 배열로 채우면 "근거를 못 찾았다"와
+            # "원래 이런 종류가 아니다"가 구분되지 않는다.
+            record["shared_entities"] = [dict(item) for item in link.shared_entities]
         validate_record(
             config,
             "link",
@@ -236,8 +240,10 @@ def infer_entity_links(
     max_per_doc = int(settings.get("max_per_doc", 6))
     min_shared = int(settings.get("min_shared", 1))
 
-    # 엔티티(이름+종류) → {문서: (근거 섹션, 인용)}. 첫 근거만 대표로 쓴다.
+    # 엔티티(이름+종류) → {문서: (근거 섹션, 인용)}. 문서마다 첫 근거를 대표로 쓴다.
     postings: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
+    # 표시용 이름은 따로 기억한다 — 비교는 casefold 로 하지만 화면에는 사람이 쓴 대로 보여야 한다.
+    display_names: dict[tuple[str, str], str] = {}
     for doc_id, record in approved.items():
         for entity in record.get("entities", []):
             name = normalize_alias(str(entity.get("name", "")))
@@ -250,6 +256,7 @@ def infer_entity_links(
             quote = str(evidence.get("quote") or name)
             key = (name.casefold(), str(entity.get("type", "")))
             postings[key].setdefault(doc_id, (str(section_id), quote))
+            display_names.setdefault(key, name)
 
     # 이미 있는 간선(명시적)은 양방향으로 기억해 중복 생성하지 않는다.
     seen_pairs: set[tuple[str, str]] = set()
@@ -257,10 +264,10 @@ def infer_entity_links(
         seen_pairs.add((link.from_doc_id, link.to_doc_id))
         seen_pairs.add((link.to_doc_id, link.from_doc_id))
 
-    # 문서 쌍별로 "겹치는 판별 엔티티 수"를 세고, 대표 근거를 기억한다.
-    pair_weight: dict[frozenset[str], int] = defaultdict(int)
+    # 문서 쌍별로 **겹친 엔티티를 전부** 모은다. 개수가 곧 연결의 강도이고, 목록이 곧 근거다.
+    pair_keys: dict[frozenset[str], list[tuple[str, str]]] = defaultdict(list)
     pair_evidence: dict[frozenset[str], tuple[str, str, str]] = {}
-    for docs in postings.values():
+    for key, docs in postings.items():
         if not (2 <= len(docs) <= max_entity_docs):
             continue  # 후보 없음(1개) 또는 너무 흔함
         doc_ids = sorted(docs)
@@ -268,10 +275,13 @@ def infer_entity_links(
             for j in range(i + 1, len(doc_ids)):
                 a, b = doc_ids[i], doc_ids[j]
                 pair = frozenset((a, b))
-                pair_weight[pair] += 1
+                pair_keys[pair].append(key)
                 if pair not in pair_evidence:
                     section_id, quote = docs[a]
                     pair_evidence[pair] = (a, section_id, quote)
+    pair_weight: dict[frozenset[str], int] = {
+        pair: len(keys) for pair, keys in pair_keys.items()
+    }
 
     # 문서당 상한: 각 문서에서 가장 강한 것부터 max_per_doc 개만 남긴다.
     candidates_by_doc: dict[str, list[tuple[int, frozenset[str]]]] = defaultdict(list)
@@ -302,9 +312,46 @@ def infer_entity_links(
                 evidence_quote=quote,
                 relation_type="references",
                 origin="entity-overlap",
+                shared_entities=_shared_entity_evidence(
+                    pair_keys[pair], postings, display_names, from_doc, to_doc
+                ),
             )
         )
     return links
+
+
+def _shared_entity_evidence(
+    keys: list[tuple[str, str]],
+    postings: dict[tuple[str, str], dict[str, tuple[str, str]]],
+    display_names: dict[tuple[str, str], str],
+    from_doc: str,
+    to_doc: str,
+) -> tuple[dict[str, str], ...]:
+    """겹친 엔티티마다 **양쪽 문서가 각각 어느 문장에서 말했는지**를 남긴다.
+
+    한쪽 인용만 남기면 "이 문서가 저 문서를 가리킨다"로 읽히는데, 엔티티 겹침은 방향이 없다.
+    두 문장을 나란히 보여줘야 사용자가 "아, 둘 다 이 사람을 적었구나"를 스스로 확인한다.
+
+    이름순으로 정렬한다 — 같은 빌드를 다시 돌려도 같은 순서로 나와야 화면이 흔들리지 않는다.
+    """
+    evidence: list[dict[str, str]] = []
+    for key in sorted(set(keys)):
+        docs = postings[key]
+        from_side = docs.get(from_doc)
+        to_side = docs.get(to_doc)
+        if not from_side or not to_side:
+            continue
+        evidence.append(
+            {
+                "name": display_names.get(key, key[0]),
+                "type": key[1],
+                "from_section_id": from_side[0],
+                "from_quote": from_side[1],
+                "to_section_id": to_side[0],
+                "to_quote": to_side[1],
+            }
+        )
+    return tuple(evidence)
 
 
 def current_enrichments(

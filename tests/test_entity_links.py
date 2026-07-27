@@ -102,3 +102,61 @@ def test_근거_섹션이_없는_엔티티는_건너뛴다() -> None:
         "DOC-B": _doc({"name": "근거없음", "type": "topic", "evidence": []}),
     }
     assert infer_entity_links(_config(), approved, []) == []
+
+
+def test_겹친_엔티티를_전부_근거로_남긴다() -> None:
+    """화면에서 "왜 이어졌나"를 보여주려면 대표 하나로는 절반만 답하게 된다.
+
+    겹친 엔티티가 무엇무엇인지, 그리고 **양쪽 문서가 각각 어느 문장에서 그것을 말했는지**가
+    있어야 사용자가 근거를 스스로 확인할 수 있다. 겹친 개수는 곧 연결의 강도이기도 하다.
+    """
+    approved = {
+        "DOC-A": _doc(
+            {
+                "name": "서광훈",
+                "type": "role",
+                "evidence": [{"section_id": "sec-0000000001", "quote": "보고서 작성자 | 서광훈"}],
+            },
+            {
+                "name": "최건호",
+                "type": "role",
+                "evidence": [{"section_id": "sec-0000000001", "quote": "참여자 | 최건호"}],
+            },
+        ),
+        "DOC-B": _doc(
+            {
+                "name": "서광훈",
+                "type": "role",
+                "evidence": [{"section_id": "sec-0000000002", "quote": "발표 | 서광훈"}],
+            },
+            {
+                "name": "최건호",
+                "type": "role",
+                "evidence": [{"section_id": "sec-0000000002", "quote": "리뷰 | 최건호"}],
+            },
+        ),
+    }
+    (link,) = infer_entity_links(_config(), approved, [])
+
+    assert [item["name"] for item in link.shared_entities] == ["서광훈", "최건호"]
+    first = link.shared_entities[0]
+    # 양쪽 문장이 모두 남아야 "둘 다 이 사람을 적었다"를 사용자가 직접 확인한다.
+    assert first["from_quote"] == "보고서 작성자 | 서광훈"
+    assert first["to_quote"] == "발표 | 서광훈"
+    assert first["from_section_id"] == "sec-0000000001"
+    assert first["to_section_id"] == "sec-0000000002"
+
+
+def test_근거_순서는_빌드를_다시_돌려도_같다() -> None:
+    # 순서가 흔들리면 같은 빌드인데 화면의 근거 목록이 매번 다르게 보인다.
+    def approved(order: list[str]) -> dict[str, Any]:
+        return {
+            "DOC-A": _doc(*[_entity(name, "sec-0000000001") for name in order]),
+            "DOC-B": _doc(*[_entity(name, "sec-0000000002") for name in reversed(order)]),
+        }
+
+    (first,) = infer_entity_links(_config(), approved(["가", "나", "다"]), [])
+    (second,) = infer_entity_links(_config(), approved(["다", "가", "나"]), [])
+    assert [item["name"] for item in first.shared_entities] == [
+        item["name"] for item in second.shared_entities
+    ]

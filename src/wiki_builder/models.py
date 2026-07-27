@@ -69,6 +69,12 @@ class Link:
     evidence_quote: str
     relation_type: str = "references"
     origin: str = "explicit"
+    #: 이 간선을 만든 **모든** 근거(엔티티 겹침으로 유도된 간선에만 채워진다).
+    #:
+    #: `evidence_quote` 는 대표 하나뿐이라 "왜 이어졌나"를 물으면 절반만 답하게 된다.
+    #: 화면에서 근거를 보여주려면 겹친 엔티티가 무엇무엇인지, 그리고 **양쪽 문서가 각각
+    #: 어느 문장에서 그것을 말했는지**가 있어야 한다. 겹친 개수는 곧 연결의 강도이기도 하다.
+    shared_entities: tuple[dict[str, str], ...] = ()
 
 
 @dataclass
