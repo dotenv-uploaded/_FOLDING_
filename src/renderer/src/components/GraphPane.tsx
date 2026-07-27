@@ -42,20 +42,16 @@ const LINK_LIT = '#4ec3e0';
 const LABEL = '#c3c8d1';
 const LABEL_DIM = '#5d626b';
 
-/** 문서 종류별 색 — 옵시디언의 색 그룹에 해당한다. */
-const TYPE_COLOR: Record<string, string> = {
-  regulation: '#6aa9ff',
-  policy: '#6aa9ff',
-  contract: '#ff6b6b',
-  procedure: '#7ad17a',
-  manual: '#7ad17a',
-  guide: '#7ad17a',
-  specification: '#c08cff',
-  report: '#ffc861',
-  meeting_note: '#ffc861',
-  general: '#98a0ad',
-};
-const SELECTED_COLOR = '#ffffff';
+/**
+ * 점은 한 가지 색 — 흰색이다.
+ *
+ * 문서 종류별로 색을 나눠 봤지만, 색이 여럿이면 눈이 먼저 **색을 구분하는 데** 쓰인다.
+ * 정작 그래프에서 읽어야 할 것은 색이 아니라 **모양** — 어디가 뭉쳐 있고 무엇이 무엇과
+ * 이어져 있는지다. 종류는 점을 고르면 아래 정보줄에 그대로 나온다.
+ */
+const NODE_COLOR = '#ffffff';
+/** 고른 점만 색으로 빼놓는다 — 흰 점들 사이에서 하나를 잃어버리지 않게. */
+const SELECTED_COLOR = '#4ec3e0';
 
 interface DisplayOptions {
   /** 점 크기 배율. */
@@ -242,8 +238,7 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
 
       context.beginPath();
       context.arc(body.x, body.y, radius, 0, Math.PI * 2);
-      context.fillStyle =
-        i === selectedRef.current ? SELECTED_COLOR : (TYPE_COLOR[node.docType] ?? TYPE_COLOR.general);
+      context.fillStyle = i === selectedRef.current ? SELECTED_COLOR : NODE_COLOR;
       context.fill();
     }
     context.globalAlpha = 1;
