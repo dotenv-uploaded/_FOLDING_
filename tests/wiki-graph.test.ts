@@ -77,6 +77,53 @@ describe('readWikiGraph', () => {
     ]);
   });
 
+  it('관계의 근거를 읽어 온다 — 왜 이어졌는지 화면이 댈 수 있어야 한다', async () => {
+    await seed(
+      'build-abc',
+      [doc('REG-000001'), doc('REG-000002')],
+      [
+        {
+          from_doc_id: 'REG-000001',
+          to_doc_id: 'REG-000002',
+          relation_type: 'references',
+          origin: 'entity-overlap',
+          evidence_quote: '서광훈',
+          shared_entities: [
+            {
+              name: '서광훈',
+              type: 'role',
+              from_quote: '보고서 작성자 | 서광훈',
+              to_quote: '발표 | 서광훈',
+            },
+            // 한쪽 문장만 있는 근거는 "둘 다 이것을 말했다"를 보일 수 없다 — 버린다.
+            { name: '반쪽', from_quote: '한쪽만 있음' },
+          ],
+        },
+      ],
+    );
+
+    const [edge] = (await readWikiGraph(location())).edges;
+
+    expect(edge?.origin).toBe('entity-overlap');
+    expect(edge?.sharedEntities).toEqual([
+      { name: '서광훈', type: 'role', fromQuote: '보고서 작성자 | 서광훈', toQuote: '발표 | 서광훈' },
+    ]);
+  });
+
+  it('근거가 없는 옛 빌드도 그대로 그린다 — 없는 근거를 지어내지 않는다', async () => {
+    // 빌드는 불변이라 우리가 고칠 수 없다. 근거가 없으면 없는 대로 두고 관계는 남긴다.
+    await seed(
+      'build-abc',
+      [doc('REG-000001'), doc('REG-000002')],
+      [{ from_doc_id: 'REG-000001', to_doc_id: 'REG-000002', relation_type: 'references' }],
+    );
+
+    const [edge] = (await readWikiGraph(location())).edges;
+
+    expect(edge?.from).toBe('REG-000001');
+    expect(edge?.sharedEntities).toBeUndefined();
+  });
+
   it('한쪽 끝이 없는 링크는 버린다 — 정체불명의 점을 만들지 않는다', async () => {
     await seed(
       'build-abc',

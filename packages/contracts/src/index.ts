@@ -377,6 +377,26 @@ export interface WikiGraphEdge {
   to: string;
   /** references · implements · implemented_by · based_on · supersedes · superseded_by */
   relationType: string;
+  /** explicit · llm-classified · entity-overlap — 이 관계가 어디서 왔는지 */
+  origin?: string;
+  /**
+   * **이 관계의 근거.** 두 문서가 함께 언급한 것들과, 각자 그것을 말한 문장.
+   *
+   * 관계를 그려 놓고 이유를 못 대면 사용자는 그것을 믿을 수도 고칠 수도 없다. 특히 지금
+   * 관계는 사람이 적은 링크가 아니라 **엔티티 겹침으로 유도한 것**이라 더욱 그렇다.
+   * 겹친 개수는 곧 연결의 강도다.
+   */
+  sharedEntities?: SharedEntity[];
+}
+
+export interface SharedEntity {
+  name: string;
+  /** role · organization · system · process · document … */
+  type?: string;
+  /** `from` 문서가 이것을 말한 문장 */
+  fromQuote: string;
+  /** `to` 문서가 이것을 말한 문장 */
+  toQuote: string;
 }
 
 export interface WikiGraph {

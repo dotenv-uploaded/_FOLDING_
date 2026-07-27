@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WikiGraph, WikiGraphNode } from '@contracts';
+import type { SharedEntity, WikiGraph, WikiGraphNode } from '@contracts';
 import { cn } from '@/lib/cn';
 import type { DocIndex } from '@/lib/doc-index';
 import { documentLabel } from '@/lib/format';
-import { UNLINKED_COLOR, type NetworkIndex } from '@/lib/graph-networks';
+import { UNLINKED_COLOR, type DocNetwork, type NetworkIndex } from '@/lib/graph-networks';
 import {
   DEFAULT_FORCES,
   SLEEP_ENERGY,
@@ -72,6 +72,12 @@ interface DisplayOptions {
   arrows: boolean;
 }
 
+/** 고른 문서에서 뻗어 나간 연결 하나와, 그것을 만든 근거. */
+interface Connection {
+  node: WikiGraphNode;
+  sharedEntities?: SharedEntity[];
+}
+
 const DEFAULT_DISPLAY: DisplayOptions = {
   nodeScale: 1,
   linkThickness: 1,
@@ -129,6 +135,8 @@ function GraphCanvas({
   const [forces, setForces] = useState<SimForces>(DEFAULT_FORCES);
   const [panelOpen, setPanelOpen] = useState(false);
   const [selected, setSelected] = useState<WikiGraphNode | null>(null);
+  /** 아래 정보줄을 문서 대신 **네트워크 요약**으로 바꿔 놓았는지. */
+  const [networkOpen, setNetworkOpen] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
 
   // 프레임마다 바뀌는 값은 ref 에 둔다 — setState 로 돌리면 리렌더가 시뮬레이션을 못 따라온다.
@@ -511,6 +519,66 @@ function GraphCanvas({
     draw();
   }, [draw]);
 
+  /* ---- 고른 문서의 연결과 그 근거 ---- */
+
+  /** 문서를 코드에서 고른다(연결 목록·네트워크 목록에서 눌렀을 때). */
+  const selectDoc = useCallback(
+    (docId: string) => {
+      const index = indexOf.get(docId);
+      if (index === undefined) return;
+      selectedRef.current = index;
+      setSelected(nodes[index] ?? null);
+      setNetworkOpen(false);
+      draw();
+    },
+    [draw, indexOf, nodes],
+  );
+
+  const connections = useMemo((): Connection[] => {
+    if (!selected) return [];
+    const byId = new Map(nodes.map((node) => [node.docId, node]));
+    const found: Connection[] = [];
+    for (const edge of edges) {
+      const otherId =
+        edge.from === selected.docId ? edge.to : edge.to === selected.docId ? edge.from : null;
+      if (!otherId) continue;
+      const other = byId.get(otherId);
+      if (!other) continue;
+      found.push({ node: other, sharedEntities: edge.sharedEntities });
+    }
+    // 근거가 많은 연결이 먼저 — 겹친 개수가 곧 연결의 강도다.
+    return found.sort(
+      (a, b) => (b.sharedEntities?.length ?? 0) - (a.sharedEntities?.length ?? 0),
+    );
+  }, [edges, nodes, selected]);
+
+  const selectedNetwork = selected ? (networks.byDoc.get(selected.docId) ?? null) : null;
+
+  /** 네트워크를 묶은 것 — 그 안의 관계들이 근거로 삼은 엔티티를 많이 나온 순으로. */
+  const networkReasons = useMemo(() => {
+    if (!selectedNetwork) return [];
+    const members = new Set(selectedNetwork.docIds);
+    const counts = new Map<string, number>();
+    for (const edge of edges) {
+      if (!members.has(edge.from) || !members.has(edge.to)) continue;
+      for (const entity of edge.sharedEntities ?? []) {
+        counts.set(entity.name, (counts.get(entity.name) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : 1))
+      .slice(0, 12);
+  }, [edges, selectedNetwork]);
+
+  const networkDocuments = useMemo(() => {
+    if (!selectedNetwork) return [];
+    const byId = new Map(nodes.map((node) => [node.docId, node]));
+    return selectedNetwork.docIds
+      .map((docId) => byId.get(docId))
+      .filter((node): node is WikiGraphNode => Boolean(node));
+  }, [nodes, selectedNetwork]);
+
   /* ---- 트리에서 들어온 파일 ---- */
 
   const fromTree = useMemo(
@@ -602,7 +670,24 @@ function GraphCanvas({
         )}
       </div>
 
-      {selected && <NodeDetail node={selected} />}
+      {selected &&
+        (networkOpen && selectedNetwork ? (
+          <NetworkDetail
+            network={selectedNetwork}
+            documents={networkDocuments}
+            reasons={networkReasons}
+            onClose={() => setNetworkOpen(false)}
+            onSelect={selectDoc}
+          />
+        ) : (
+          <NodeDetail
+            node={selected}
+            network={selectedNetwork}
+            connections={connections}
+            onSelect={selectDoc}
+            onShowNetwork={() => setNetworkOpen(true)}
+          />
+        ))}
     </div>
   );
 }
@@ -813,14 +898,42 @@ function drawArrows(
   context.globalAlpha = 1;
 }
 
-function NodeDetail({ node }: { node: WikiGraphNode }) {
+/**
+ * 고른 문서의 정보줄 — **왜 이어졌는지**까지 보여준다.
+ *
+ * 관계를 그려 놓고 이유를 못 대면 사용자는 그것을 믿을 수도 고칠 수도 없다. 특히 이 관계는
+ * 사람이 적은 링크가 아니라 **엔티티 겹침으로 유도한 것**이라 더욱 그렇다. 그래서 이웃마다
+ * 함께 언급한 것이 무엇인지, 그리고 **양쪽이 각각 어느 문장에서 말했는지**를 나란히 둔다.
+ * 한쪽만 보이면 "이 문서가 저 문서를 가리킨다"로 읽히는데, 엔티티 겹침에는 방향이 없다.
+ */
+function NodeDetail({
+  node,
+  network,
+  connections,
+  onSelect,
+  onShowNetwork,
+}: {
+  node: WikiGraphNode;
+  network: DocNetwork | null;
+  connections: Connection[];
+  onSelect: (docId: string) => void;
+  onShowNetwork: () => void;
+}) {
   return (
-    <footer className="border-t border-ink-100 bg-ink-50 px-5 py-3">
+    <footer className="max-h-64 shrink-0 overflow-y-auto border-t border-ink-100 bg-ink-50 px-5 py-3">
       <div className="flex items-center gap-2">
         <span className="truncate text-xs font-semibold text-ink-800">{documentLabel(node)}</span>
-        <span className="shrink-0 font-mono text-2xs text-ink-400">
-          {node.docId} · {node.docType} · {node.status}
-        </span>
+        {network && (
+          <button
+            onClick={onShowNetwork}
+            title="이 네트워크는 무엇으로 묶였는지 보기"
+            className="flex shrink-0 items-center gap-1 rounded-full border border-ink-150 bg-white px-2 py-0.5 text-2xs text-ink-600 hover:border-ink-300"
+          >
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: network.color }} />
+            {network.label}
+          </button>
+        )}
+        <span className="shrink-0 font-mono text-2xs text-ink-400">{node.docType}</span>
         <span className="flex-1" />
         {node.sourceUri && (
           <button
@@ -832,6 +945,181 @@ function NodeDetail({ node }: { node: WikiGraphNode }) {
         )}
       </div>
       {node.summary && <p className="mt-1.5 line-clamp-2 text-2xs text-ink-500">{node.summary}</p>}
+
+      <p className="mt-2.5 text-2xs font-semibold text-ink-500">
+        {connections.length === 0 ? '이어진 문서 없음' : `이어진 문서 ${connections.length}`}
+      </p>
+      {connections.length === 0 ? (
+        // 왜 혼자인지도 말해 준다 — 빈 목록만 두면 고장인지 사실인지 알 수 없다.
+        <p className="mt-1 text-2xs text-ink-400">
+          이 문서에는 다른 문서와 함께 언급한 것이 없어 아직 어디에도 이어지지 않았습니다.
+        </p>
+      ) : (
+        <ul className="mt-1 flex flex-col gap-1.5">
+          {connections.map((connection) => (
+            <ConnectionRow
+              key={connection.node.docId}
+              connection={connection}
+              onSelect={() => onSelect(connection.node.docId)}
+            />
+          ))}
+        </ul>
+      )}
+    </footer>
+  );
+}
+
+function ConnectionRow({
+  connection,
+  onSelect,
+}: {
+  connection: Connection;
+  onSelect: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const shared = connection.sharedEntities ?? [];
+  return (
+    <li className="rounded-md border border-ink-100 bg-white px-2.5 py-1.5">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onSelect}
+          className="min-w-0 flex-1 truncate text-left text-2xs font-medium text-ink-700 hover:text-blue-600"
+        >
+          {documentLabel(connection.node)}
+        </button>
+        {shared.length > 0 && (
+          <span className="flex shrink-0 items-center gap-1">
+            {shared.slice(0, 3).map((entity) => (
+              <span
+                key={entity.name}
+                className="rounded-sm bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-600"
+              >
+                {entity.name}
+              </span>
+            ))}
+            {shared.length > 3 && (
+              <span className="text-[10px] text-ink-400">+{shared.length - 3}</span>
+            )}
+          </span>
+        )}
+        {shared.length > 0 ? (
+          <button
+            onClick={() => setOpen((value) => !value)}
+            className="shrink-0 text-[10px] text-ink-400 hover:text-ink-700"
+          >
+            {open ? '근거 접기' : '근거 보기'}
+          </button>
+        ) : (
+          // 옛 빌드에는 근거가 저장돼 있지 않다. 없는 것을 있는 척하지 않는다.
+          <span className="shrink-0 text-[10px] text-ink-300">근거 없음</span>
+        )}
+      </div>
+      {open && (
+        <dl className="mt-1.5 flex flex-col gap-1.5 border-t border-ink-100 pt-1.5">
+          {shared.map((entity) => (
+            <div key={entity.name}>
+              <dt className="text-[10px] font-semibold text-ink-600">
+                {entity.name}
+                {entity.type && <span className="ml-1 font-normal text-ink-300">{entity.type}</span>}
+              </dt>
+              {/*
+               * 양쪽 문장을 나란히 — 사용자가 "둘 다 이것을 적었구나"를 직접 확인한다.
+               * 다만 문장이 엔티티 이름 그대로이거나 양쪽이 똑같으면 같은 줄을 두 번 보여주는
+               * 셈이라, 근거가 많아 보이게 만들 뿐 아무것도 더 알려주지 않는다.
+               */}
+              {quotesOf(entity).map((quote, index) => (
+                <dd
+                  key={index}
+                  className="mt-0.5 border-l-2 border-ink-150 pl-2 text-[10px] leading-relaxed text-ink-500"
+                >
+                  {quote}
+                </dd>
+              ))}
+            </div>
+          ))}
+        </dl>
+      )}
+    </li>
+  );
+}
+
+/**
+ * 보여줄 만한 근거 문장만 남긴다.
+ *
+ * 뽑힌 문장이 엔티티 이름과 똑같으면(짧은 발표자료에서 흔하다) 이름을 한 번 더 적는 것뿐이라
+ * 아무것도 더 알려주지 않는다. 양쪽 문장이 같을 때도 한 번만 보여준다.
+ */
+function quotesOf(entity: SharedEntity): string[] {
+  const meaningful = [entity.fromQuote, entity.toQuote].filter(
+    (quote) => quote.trim() !== entity.name.trim(),
+  );
+  return [...new Set(meaningful)];
+}
+
+/**
+ * 네트워크 요약 — "이 문서들이 왜 한 색인가".
+ *
+ * 개별 연결의 근거를 모아 **무엇이 이 뭉치를 묶었는지**를 많이 나온 순으로 보여준다.
+ * 사람 이름만 잔뜩 보인다면 그 자체가 알아야 할 사실이다 — 이 뭉치는 주제가 아니라
+ * 등장인물로 묶여 있다는 뜻이니까.
+ */
+function NetworkDetail({
+  network,
+  documents,
+  reasons,
+  onClose,
+  onSelect,
+}: {
+  network: DocNetwork;
+  documents: WikiGraphNode[];
+  reasons: { name: string; count: number }[];
+  onClose: () => void;
+  onSelect: (docId: string) => void;
+}) {
+  return (
+    <footer className="max-h-64 shrink-0 overflow-y-auto border-t border-ink-100 bg-ink-50 px-5 py-3">
+      <div className="flex items-center gap-2">
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: network.color }} />
+        <span className="truncate text-xs font-semibold text-ink-800">{network.label}</span>
+        <span className="shrink-0 text-2xs text-ink-400">문서 {network.docIds.length}</span>
+        <span className="flex-1" />
+        <button onClick={onClose} className="shrink-0 text-2xs font-semibold text-ink-500 hover:text-ink-800">
+          닫기
+        </button>
+      </div>
+
+      <p className="mt-2.5 text-2xs font-semibold text-ink-500">이 뭉치를 묶은 것</p>
+      {reasons.length === 0 ? (
+        <p className="mt-1 text-2xs text-ink-400">
+          이 빌드에는 관계의 근거가 저장돼 있지 않습니다. 다시 빌드하면 나타납니다.
+        </p>
+      ) : (
+        <ul className="mt-1 flex flex-wrap gap-1">
+          {reasons.map((reason) => (
+            <li
+              key={reason.name}
+              className="rounded-sm bg-white px-1.5 py-0.5 text-[10px] text-ink-600 ring-1 ring-ink-100"
+            >
+              {reason.name}
+              <span className="ml-1 font-mono text-ink-400">{reason.count}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="mt-2.5 text-2xs font-semibold text-ink-500">문서</p>
+      <ul className="mt-1 flex flex-col">
+        {documents.map((document) => (
+          <li key={document.docId}>
+            <button
+              onClick={() => onSelect(document.docId)}
+              className="w-full truncate rounded-sm px-1 py-0.5 text-left text-2xs text-ink-600 hover:bg-white hover:text-blue-600"
+            >
+              {documentLabel(document)}
+            </button>
+          </li>
+        ))}
+      </ul>
     </footer>
   );
 }
