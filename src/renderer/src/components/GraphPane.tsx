@@ -22,8 +22,10 @@ import {
 /**
  * 지식 그래프 — 활성 위키 빌드의 문서(노드)와 링크(엣지)를 그린다.
  *
- * 옵시디언 그래프 뷰의 감각을 그대로 따랐다: 어두운 무한 평면, 링크 수에 비례하는 점,
- * 가리키면 그 문서와 이웃만 남고 나머지는 흐려지는 강조, 그리고 힘을 직접 조절하는 설정.
+ * 옵시디언 그래프 뷰의 **동작**을 그대로 따랐다: 가둠 없는 무한 평면, 링크 수에 비례하는
+ * 점, 가리키면 그 문서와 이웃만 남고 나머지는 흐려지는 강조, 힘을 직접 조절하는 설정.
+ * 다만 **색은 이 앱의 것**이다 — 옵시디언은 어둡지만 이 앱은 흰 바탕이고, 그래프만
+ * 어두우면 탭을 옮길 때마다 눈이 다시 적응해야 한다.
  *
  * **외부 그래프 라이브러리를 쓰지 않는다.** 문서 수백 개 규모에서는 자체 시뮬레이션으로
  * 충분하고, 의존성 하나가 늘면 Electron 번들과 보안 검토가 함께 늘어난다.
@@ -35,23 +37,28 @@ import {
  * 가만히 있는 화면이 CPU 를 먹으면 노트북 배터리가 준다.
  */
 
-/* ---- 색 (어두운 배경 기준) ---- */
-const BACKGROUND = '#1a1a1c';
-const LINK_DIM = '#33363d';
-const LINK_LIT = '#4ec3e0';
-const LABEL = '#c3c8d1';
-const LABEL_DIM = '#5d626b';
+/* ---- 색 ----
+ *
+ * 앱의 나머지가 흰 바탕이다. 그래프만 어두우면 탭을 옮길 때마다 눈이 다시 적응해야 한다.
+ * 그래서 옵시디언의 **동작**은 그대로 가져오되 **색은 이 앱의 것**을 쓴다.
+ * 값은 styles/tokens/colors.css 의 ink·blue 스케일과 같은 것이다.
+ */
+const BACKGROUND = '#FFFFFF';
+const LINK_DIM = '#DDE1EA';
+const LINK_LIT = '#2B5DFD'; // blue-500
+const LABEL = '#5B6480'; // ink-500
+const LABEL_DIM = '#B4BACB'; // ink-300
 
 /**
- * 점은 한 가지 색 — 흰색이다.
+ * 점은 한 가지 색이다.
  *
  * 문서 종류별로 색을 나눠 봤지만, 색이 여럿이면 눈이 먼저 **색을 구분하는 데** 쓰인다.
  * 정작 그래프에서 읽어야 할 것은 색이 아니라 **모양** — 어디가 뭉쳐 있고 무엇이 무엇과
  * 이어져 있는지다. 종류는 점을 고르면 아래 정보줄에 그대로 나온다.
  */
-const NODE_COLOR = '#ffffff';
-/** 고른 점만 색으로 빼놓는다 — 흰 점들 사이에서 하나를 잃어버리지 않게. */
-const SELECTED_COLOR = '#4ec3e0';
+const NODE_COLOR = '#2E3A5E'; // ink-700
+/** 고른 점만 색으로 빼놓는다 — 같은 색 점들 사이에서 하나를 잃어버리지 않게. */
+const SELECTED_COLOR = '#2B5DFD';
 
 interface DisplayOptions {
   /** 점 크기 배율. */
@@ -460,10 +467,10 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
   }, [draw, fromTree, indexOf]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#1a1a1c]">
-      <header className="flex items-center gap-3 border-b border-[#2a2b30] px-5 py-3">
-        <span className="text-xs font-semibold text-[#d5d9e0]">지식 그래프</span>
-        <span className="text-2xs text-[#71767f]">
+    <div className="flex h-full min-h-0 flex-col bg-white">
+      <header className="flex items-center gap-3 border-b border-ink-100 px-5 py-3">
+        <span className="text-xs font-semibold text-ink-700">지식 그래프</span>
+        <span className="text-2xs text-ink-400">
           문서 {nodes.length} · 관계 {edges.length}
         </span>
         {focusPath && fromTree.reason && (
@@ -471,20 +478,20 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
            * 조용히 넘어가면 "왜 안 켜지지" 가 된다. 그리고 **못 찾은 것과 여럿인 것은 다르다** —
            * 전자는 빌드를 돌리면 되고, 후자는 어느 문서인지 사람이 정해야 한다.
            */
-          <span className="truncate text-2xs text-amber-400">
+          <span className="truncate text-2xs text-amber-600">
             {fromTree.reason === 'missing'
               ? `«${basename(focusPath)}» 는 아직 이 빌드에 없습니다`
               : `«${basename(focusPath)}» 에 연결된 문서가 여럿이라 하나를 고르지 못했습니다`}
           </span>
         )}
         <span className="flex-1" />
-        <span className="shrink-0 text-2xs text-[#5d626b]">
+        <span className="shrink-0 text-2xs text-ink-300">
           점을 끌어 옮기고, 빈 곳을 끌어 화면 이동 · 휠로 확대·축소 · 두 번 눌러 원본 열기
         </span>
-        <span className="shrink-0 font-mono text-2xs text-[#71767f]">{zoomPercent}%</span>
+        <span className="shrink-0 font-mono text-2xs text-ink-400">{zoomPercent}%</span>
         <button
           onClick={fit}
-          className="shrink-0 text-2xs font-semibold text-[#9aa0aa] hover:text-[#e6e9ee]"
+          className="shrink-0 text-2xs font-semibold text-ink-500 hover:text-ink-800"
         >
           맞춤
         </button>
@@ -507,9 +514,9 @@ function GraphCanvas({ graph, focusPath }: { graph: WikiGraph; focusPath: string
           onClick={() => setPanelOpen((open) => !open)}
           aria-label="그래프 설정"
           className={cn(
-            'absolute left-3 top-3 grid h-8 w-8 place-items-center rounded-md border border-[#2f3037] bg-[#232428] text-[#9aa0aa]',
-            'hover:text-[#e6e9ee]',
-            panelOpen && 'text-[#e6e9ee]',
+            'absolute left-3 top-3 grid h-8 w-8 place-items-center rounded-md border border-ink-150 bg-white text-ink-500',
+            'hover:text-ink-800',
+            panelOpen && 'text-ink-800',
           )}
         >
           <GearIcon />
@@ -543,7 +550,7 @@ function SettingsPanel({
   onForces: (next: SimForces) => void;
 }) {
   return (
-    <div className="absolute left-3 top-[52px] w-60 rounded-lg border border-[#2f3037] bg-[#232428] p-3 shadow-xl">
+    <div className="absolute left-3 top-[52px] w-60 rounded-lg border border-ink-150 bg-white p-3 shadow-xl">
       <Section title="표시">
         <Slider
           label="점 크기"
@@ -614,7 +621,7 @@ function SettingsPanel({
           onDisplay(DEFAULT_DISPLAY);
           onForces(DEFAULT_FORCES);
         }}
-        className="mt-1 w-full rounded-md border border-[#33343b] py-1 text-2xs text-[#9aa0aa] hover:text-[#e6e9ee]"
+        className="mt-1 w-full rounded-md border border-ink-150 py-1 text-2xs text-ink-500 hover:text-ink-800"
       >
         기본값으로
       </button>
@@ -625,7 +632,7 @@ function SettingsPanel({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mb-3 last:mb-0">
-      <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-[#71767f]">{title}</p>
+      <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-ink-400">{title}</p>
       <div className="flex flex-col gap-2">{children}</div>
     </div>
   );
@@ -648,9 +655,9 @@ function Slider({
 }) {
   return (
     <label className="block">
-      <span className="mb-0.5 flex justify-between text-2xs text-[#9aa0aa]">
+      <span className="mb-0.5 flex justify-between text-2xs text-ink-500">
         {label}
-        <span className="font-mono text-[#5d626b]">{value}</span>
+        <span className="font-mono text-ink-300">{value}</span>
       </span>
       <input
         type="range"
@@ -659,7 +666,7 @@ function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="h-1 w-full cursor-pointer appearance-none rounded bg-[#3a3b42] accent-[#4ec3e0]"
+        className="h-1 w-full cursor-pointer appearance-none rounded bg-ink-150 accent-blue-500"
       />
     </label>
   );
@@ -675,13 +682,13 @@ function Toggle({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between text-2xs text-[#9aa0aa]">
+    <label className="flex cursor-pointer items-center justify-between text-2xs text-ink-500">
       {label}
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="accent-[#4ec3e0]"
+        className="accent-blue-500"
       />
     </label>
   );
@@ -737,31 +744,31 @@ function drawArrows(
 
 function NodeDetail({ node }: { node: WikiGraphNode }) {
   return (
-    <footer className="border-t border-[#2a2b30] bg-[#202124] px-5 py-3">
+    <footer className="border-t border-ink-100 bg-ink-50 px-5 py-3">
       <div className="flex items-center gap-2">
-        <span className="truncate text-xs font-semibold text-[#e6e9ee]">{node.title}</span>
-        <span className="shrink-0 font-mono text-2xs text-[#71767f]">
+        <span className="truncate text-xs font-semibold text-ink-800">{node.title}</span>
+        <span className="shrink-0 font-mono text-2xs text-ink-400">
           {node.docId} · {node.docType} · {node.status}
         </span>
         <span className="flex-1" />
         {node.sourceUri && (
           <button
             onClick={() => void window.codegate.shell.openOriginal(node.sourceUri!)}
-            className="shrink-0 text-2xs font-semibold text-[#4ec3e0] hover:text-[#7ad6ec]"
+            className="shrink-0 text-2xs font-semibold text-blue-600 hover:text-blue-700"
           >
             원본 열기
           </button>
         )}
       </div>
-      {node.summary && <p className="mt-1.5 line-clamp-2 text-2xs text-[#8b919b]">{node.summary}</p>}
+      {node.summary && <p className="mt-1.5 line-clamp-2 text-2xs text-ink-500">{node.summary}</p>}
     </footer>
   );
 }
 
 function Centered({ children, tone }: { children: React.ReactNode; tone?: 'error' }) {
   return (
-    <div className="flex h-full items-center justify-center bg-[#1a1a1c] px-8 text-center">
-      <p className={cn('text-sm leading-relaxed', tone === 'error' ? 'text-red-400' : 'text-[#71767f]')}>
+    <div className="flex h-full items-center justify-center bg-white px-8 text-center">
+      <p className={cn('text-sm leading-relaxed', tone === 'error' ? 'text-red-600' : 'text-ink-400')}>
         {children}
       </p>
     </div>
