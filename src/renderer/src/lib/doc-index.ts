@@ -47,7 +47,15 @@ export function buildDocIndex(
   };
 }
 
-/** `source://` 를 떼고 퍼센트 인코딩을 풀어 비교 가능한 경로로 만든다. */
+/**
+ * `source://` 를 떼고 퍼센트 인코딩을 풀어 비교 가능한 경로로 만든다.
+ *
+ * **한글 자모 정규화를 반드시 맞춘다.** macOS 파일시스템은 파일 이름을 NFD(자모 분해)로
+ * 준다 — `목` 이 `ᄆ+ᅩ+ᆨ` 세 글자다. 반면 위키 manifest 는 NFC(완성형) 로 적혀 있다.
+ * 눈에는 똑같이 "목표 달성…" 으로 보이지만 문자열로는 한 글자도 같지 않아서, 비교하면
+ * **한글 이름을 가진 문서는 하나도 맞지 않는다**(실제 빌드에서 119개 중 0개가 맞았고,
+ * 이름이 영문·숫자뿐인 파일만 우연히 맞았다).
+ */
 export function normalize(pathLike: string): string {
   const withoutScheme = pathLike.replace(/^source:\/\//, '');
   let decoded = withoutScheme;
@@ -56,7 +64,11 @@ export function normalize(pathLike: string): string {
   } catch {
     // 못 풀면 원문 그대로 비교한다 — 그래도 맞는 경우가 있다.
   }
-  return decoded.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  return decoded
+    .normalize('NFC')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
 }
 
 export function basename(path: string): string {

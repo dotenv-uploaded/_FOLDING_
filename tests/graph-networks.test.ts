@@ -123,4 +123,21 @@ describe('buildDocIndex', () => {
   it('빌드에 없는 파일은 없다고 말한다', () => {
     expect(find('root-1/아직 안 넣은 문서.hwp')).toEqual({ reason: 'missing' });
   });
+
+  it('macOS 가 주는 자모 분해(NFD) 이름도 같은 문서로 본다', () => {
+    /*
+     * 실제로 이것 때문에 트리의 색 점이 거의 다 비어 있었다. macOS 파일시스템은 이름을
+     * NFD 로 준다(`목` = `ᄆ`+`ᅩ`+`ᆨ`) 지만 위키 manifest 는 NFC 다. 눈에는 똑같아 보여서
+     * 화면만 보고는 원인을 알 수 없고, 실제 빌드에서 119개 중 **0개**가 맞았다.
+     */
+    const nfc = '보관/계약서.hwp';
+    const nfd = nfc.normalize('NFD');
+    expect(nfd).not.toBe(nfc); // 같아 보이지만 다른 문자열이다
+
+    const byNfd = buildDocIndex([{ docId: 'c', sourceFilename: '보관/계약서.hwp' }]);
+    expect(byNfd(`root-1/${nfd}`).docId).toBe('c');
+    // 반대 방향(manifest 가 NFD, 트리가 NFC)도 같아야 한다.
+    const stored = buildDocIndex([{ docId: 'c', sourceFilename: nfd }]);
+    expect(stored(`root-1/${nfc}`).docId).toBe('c');
+  });
 });
