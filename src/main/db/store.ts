@@ -480,31 +480,55 @@ export class Store {
     costUsd: number | null;
     source: string;
     createdAt: string;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    model?: string | null;
+    /** 제품 단위 소모량 — 대화는 1, 문서 분석은 분석한 문서 수. */
+    units?: number;
   }): void {
-    if (event.costUsd === null || !Number.isFinite(event.costUsd) || event.costUsd <= 0) return;
+    const cost = event.costUsd;
+    const hasCost = cost !== null && Number.isFinite(cost) && cost > 0;
+    const hasTokens = Boolean(event.inputTokens || event.outputTokens);
+    // 금액도 토큰도 없으면 남길 것이 없다. 하나라도 있으면 남긴다 — **금액을 모른다고 호출
+    // 자체를 지우면 "안 썼다"와 "모른다"가 같아진다.**
+    if (!hasCost && !hasTokens) return;
     this.db
       .prepare(
-        `INSERT INTO usage_events (id, subject_id, cost_usd, source, created_at)
-         VALUES (@id, @subjectId, @costUsd, @source, @createdAt)`,
+        `INSERT INTO usage_events
+           (id, subject_id, cost_usd, source, created_at, input_tokens, output_tokens, model, units)
+         VALUES (@id, @subjectId, @costUsd, @source, @createdAt, @inputTokens, @outputTokens, @model, @units)`,
       )
       .run({
         id: event.id,
         subjectId: event.subjectId,
-        costUsd: event.costUsd,
+        costUsd: hasCost ? cost : 0,
         source: event.source,
         createdAt: event.createdAt,
+        inputTokens: event.inputTokens ?? null,
+        outputTokens: event.outputTokens ?? null,
+        model: event.model ?? null,
+        units: Math.max(event.units ?? 1, 0),
       });
   }
 
   /** 이 사람이 지금까지 쓴 총액(USD)과 호출 횟수. */
-  usageTotal(subjectId: string): { costUsd: number; calls: number } {
+  /** `source` 를 주면 그 갈래(대화·문서 분석)만, 없으면 전부. */
+  usageTotal(
+    subjectId: string,
+    source?: string,
+  ): { costUsd: number; calls: number; units: number } {
     const row = this.db
       .prepare(
-        `SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS calls
-         FROM usage_events WHERE subject_id = ?`,
+        `SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+                COUNT(*) AS calls,
+                COALESCE(SUM(units), 0) AS units
+         FROM usage_events WHERE subject_id = @subjectId
+           AND (@source IS NULL OR source = @source)`,
       )
-      .get(subjectId) as { cost: number; calls: number } | undefined;
-    return { costUsd: row?.cost ?? 0, calls: row?.calls ?? 0 };
+      .get({ subjectId, source: source ?? null }) as
+      | { cost: number; calls: number; units: number }
+      | undefined;
+    return { costUsd: row?.cost ?? 0, calls: row?.calls ?? 0, units: row?.units ?? 0 };
   }
 
   /** 추가로 구매한 크레딧 총액(원). 구매 UI 가 붙기 전까지는 0 이다. */

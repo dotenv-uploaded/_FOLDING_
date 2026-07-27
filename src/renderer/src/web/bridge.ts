@@ -13,7 +13,7 @@ import type {
   Session,
   UsageStatus,
 } from '@contracts';
-import { USAGE_LIMIT_KRW } from '@contracts';
+import { BASE_CREDITS, USAGE_LIMIT_KRW } from '@contracts';
 import type { CodegateApi } from '../../../preload/api';
 
 const SUPPORTED_EXTENSIONS = new Set(['hwp', 'hwpx', 'docx', 'pdf', 'md', 'txt']);
@@ -231,6 +231,11 @@ export function createWebBridge(): CodegateApi {
           remainingKrw: USAGE_LIMIT_KRW,
           blocked: false,
           calls: 0,
+          pools: {
+            chat: { kind: 'chat', usedCredits: 0, limitCredits: BASE_CREDITS.chat, remainingCredits: BASE_CREDITS.chat },
+            build: { kind: 'build', usedCredits: 0, limitCredits: BASE_CREDITS.build, remainingCredits: BASE_CREDITS.build },
+          },
+          extraCredits: 0,
         };
       },
       async purchase(): Promise<UsageStatus> {
@@ -316,6 +321,14 @@ export function createWebBridge(): CodegateApi {
     approval: {
       onRequest(_callback): () => void {
         return subscribe(approvalListeners, _callback);
+      },
+      async respond(): Promise<void> {},
+    },
+
+    // 웹 데모는 문서를 분석하지 않는다 — 물을 일도 없다.
+    buildEstimate: {
+      onRequest(): () => void {
+        return () => {};
       },
       async respond(): Promise<void> {},
     },

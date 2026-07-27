@@ -109,6 +109,13 @@ const SYSTEM_PROMPT = [
   '문서에 없는 내용을 지어내지 마십시오.',
 ].join('\n');
 
+/** 한 번의 분석 호출이 실제로 쓴 양. 제공자가 응답에 담아 준다. */
+export interface EnrichUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  model: string;
+}
+
 export interface LlmEnricherOptions {
   keys: LlmKeyResolver;
   /** provider 별 모델 override */
@@ -118,6 +125,13 @@ export interface LlmEnricherOptions {
   timeoutMs?: number;
   /** 테스트용 fetch 주입 */
   fetchImpl?: typeof fetch;
+  /**
+   * 호출 한 건이 끝날 때마다 쓴 양을 알린다.
+   *
+   * 이게 없으면 **문서 분석은 사용량에 0 으로 잡힌다.** 예전에 그랬고, 그래서 폴더를 통째로
+   * 등록해도 어디에도 기록이 남지 않았다.
+   */
+  onUsage?: (usage: EnrichUsage) => void;
 }
 
 export class LlmEnricher implements Enricher {
@@ -215,6 +229,9 @@ export class LlmEnricher implements Enricher {
       }
 
       const payload = (await response.json()) as unknown;
+      // 본문을 꺼내기 전에 쓴 양부터 기록한다 — 본문 파싱에 실패해도 **호출은 이미 나갔고
+      // 비용도 이미 발생했다.** 그걸 안 세면 사용량이 조용히 샌다.
+      this.options.onUsage?.({ ...request.usage(payload), model: `${key.provider}:${model}` });
       return request.extract(payload);
     } finally {
       clearTimeout(timer);
@@ -228,6 +245,8 @@ interface ProviderRequest {
   headers: Record<string, string>;
   body: unknown;
   extract: (payload: unknown) => string;
+  /** 응답에 담겨 오는 토큰 수. 제공자마다 이름이 달라 여기서 흡수한다. */
+  usage: (payload: unknown) => { inputTokens: number | null; outputTokens: number | null };
 }
 
 /**
@@ -249,6 +268,10 @@ function buildRequest(key: ResolvedLlmKey, model: string, prompt: string): Provi
         extract: (payload) =>
           pick(payload, ['candidates', 0, 'content', 'parts', 0, 'text']) ??
           fail('Gemini 응답에서 본문을 찾지 못했습니다.'),
+        usage: (payload) => ({
+          inputTokens: number(payload, ['usageMetadata', 'promptTokenCount']),
+          outputTokens: number(payload, ['usageMetadata', 'candidatesTokenCount']),
+        }),
       };
     case 'openai':
       return {
@@ -266,6 +289,10 @@ function buildRequest(key: ResolvedLlmKey, model: string, prompt: string): Provi
         extract: (payload) =>
           pick(payload, ['choices', 0, 'message', 'content']) ??
           fail('OpenAI 응답에서 본문을 찾지 못했습니다.'),
+        usage: (payload) => ({
+          inputTokens: number(payload, ['usage', 'prompt_tokens']),
+          outputTokens: number(payload, ['usage', 'completion_tokens']),
+        }),
       };
     case 'anthropic':
       return {
@@ -285,8 +312,22 @@ function buildRequest(key: ResolvedLlmKey, model: string, prompt: string): Provi
         extract: (payload) =>
           pick(payload, ['content', 0, 'text']) ??
           fail('Anthropic 응답에서 본문을 찾지 못했습니다.'),
+        usage: (payload) => ({
+          inputTokens: number(payload, ['usage', 'input_tokens']),
+          outputTokens: number(payload, ['usage', 'output_tokens']),
+        }),
       };
   }
+}
+
+/** 응답에서 숫자 하나를 꺼낸다. 없거나 숫자가 아니면 `null` — **0 으로 치지 않는다.** */
+function number(payload: unknown, keys: (string | number)[]): number | null {
+  let cursor: unknown = payload;
+  for (const key of keys) {
+    if (cursor === null || typeof cursor !== 'object') return null;
+    cursor = (cursor as Record<string | number, unknown>)[key];
+  }
+  return typeof cursor === 'number' && Number.isFinite(cursor) ? cursor : null;
 }
 
 function pick(payload: unknown, keys: (string | number)[]): string | null {

@@ -109,4 +109,21 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX IF NOT EXISTS idx_credits_subject ON usage_credits (subject_id);
   `,
+
+  // v6 — 사용량에 토큰·모델·제품 단위를 함께 남긴다.
+  //
+  // 금액(cost_usd) 하나만 남기면 나중에 아무것도 다시 계산할 수 없다. 모델 단가는 바뀌고
+  // (실제로 Sonnet 단가 인상이 예고돼 있다), 그때 과거 기록을 다시 환산하려면 **토큰이
+  // 있어야 한다.** 캐시가 걸리는지, 어느 모델이 얼마나 먹는지도 토큰 없이는 못 본다.
+  //
+  // 기존 행에는 NULL 이 들어간다 — 그건 "0" 이 아니라 "모른다"다. 둘을 섞지 않는다.
+  `
+  ALTER TABLE usage_events ADD COLUMN input_tokens INTEGER;
+  ALTER TABLE usage_events ADD COLUMN output_tokens INTEGER;
+  ALTER TABLE usage_events ADD COLUMN model TEXT;
+  -- 제품 단위 소모량. 대화는 1, 문서 분석은 분석한 문서 수.
+  -- 크레딧은 이 값으로 센다 — 모델 단가가 바뀌어도 사용자가 쓴 양은 그대로여야 한다.
+  ALTER TABLE usage_events ADD COLUMN units INTEGER NOT NULL DEFAULT 1;
+  CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_events (subject_id, source);
+  `,
 ];

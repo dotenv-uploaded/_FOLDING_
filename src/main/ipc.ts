@@ -153,6 +153,14 @@ export function registerIpcHandlers(
     services.approval.respond(id, approved);
   });
 
+  handle(
+    IPC.buildEstimateRespond,
+    '문서 분석 시작 여부를 전달하지 못했습니다.',
+    (id: string, approved: boolean) => {
+      services.buildEstimates.respond(id, approved);
+    },
+  );
+
   /* ----------------------------------------------------- L1 지식 그래프 */
 
   handle(IPC.wikiGraph, '지식 그래프를 불러오지 못했습니다.', () => services.getWikiGraph());

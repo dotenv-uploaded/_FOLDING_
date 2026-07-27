@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto';
 import {
   AuthError,
   LLM_KEY_MISSING_MESSAGE,
+  creditsForDocuments,
+  type BuildEstimate,
   type BuildPhase,
   type BuildState,
   type BuildStatus,
@@ -74,6 +76,15 @@ export interface BuildServiceOptions {
   onAuthError?: (error: AuthError) => void | Promise<void>;
   /** LLM 호출 동시성 (기본 4) */
   concurrency?: number;
+  /**
+   * 분석을 시작하기 전 사용자에게 예상 크레딧을 보이고 확인받는다.
+   *
+   * 없으면(테스트·자동 경로) 묻지 않고 진행한다. 화면이 붙어 있을 때만 물어야 하기 때문이다 —
+   * 물을 곳이 없는데 기다리면 빌드가 영원히 멈춘다.
+   */
+  confirmEstimate?: (estimate: BuildEstimate) => Promise<boolean>;
+  /** 문서 지갑에 남은 크레딧 — 확인 창에 함께 보여준다. */
+  remainingBuildCredits: () => number;
 }
 
 export class BuildService {
@@ -240,6 +251,28 @@ export class BuildService {
     }
 
     /* ------------------------------------------- ② enrichment (LLM 호출) */
+
+    /*
+     * 분석을 시작하기 **전에** 규모와 예상 크레딧을 보이고 확인받는다.
+     *
+     * 폴더를 통째로 등록하면 그 안의 문서 수만큼 호출이 나간다. 시작한 뒤에 알려주면 이미
+     * 늦다 — 크레딧은 그때 다 나가 있다. 이미 분석해 둔 문서는 다시 부르지 않으므로
+     * (내용이 같으면 캐시), **이번에 실제로 부를 문서만** 세어서 묻는다.
+     */
+    const pending = conversion.converted.filter(
+      (doc) => !previous.reusable(doc.virtualPath, doc.sourceSha256),
+    );
+    if (pending.length > 0 && this.options.confirmEstimate) {
+      const approved = await this.options.confirmEstimate({
+        documents: pending.length,
+        reused: conversion.converted.length - pending.length,
+        credits: creditsForDocuments(pending.length),
+        remainingCredits: this.options.remainingBuildCredits(),
+      });
+      // 거부는 실패가 아니다 — 사용자가 하지 않기로 정한 것이다. 이전 위키는 그대로 둔다.
+      if (!approved) throw new BuildCancelledError();
+    }
+
     this.emitPhase(buildId, 'enrich', 0, conversion.converted.length, '문서를 분석하는 중');
     const enrichment = await runEnrichment({
       docs: conversion.converted,

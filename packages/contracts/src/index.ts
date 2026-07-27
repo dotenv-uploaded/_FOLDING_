@@ -267,10 +267,19 @@ export interface UsageStatus {
   extraKrw: number;
   /** 남은 금액 (한도 + 크레딧 − 사용) */
   remainingKrw: number;
-  /** 한도를 넘겨 요청이 막히는 상태인가 */
+  /** 한도를 넘겨 요청이 막히는 상태인가 (대화 기준 — 하위 호환) */
   blocked: boolean;
   /** 지금까지 호출 횟수 */
   calls: number;
+  /**
+   * 지갑별 현황 — 화면에 보이는 것은 이쪽이다(크레딧 단위).
+   *
+   * 대화와 문서 분석은 서로의 몫을 갉아먹지 않는다. 폴더를 크게 등록한 날에도 대화는 되고,
+   * 대화를 많이 한 달에도 새 문서를 넣을 수 있어야 한다.
+   */
+  pools: Record<UsageKind, UsagePool>;
+  /** 추가로 산 크레딧 — 어느 지갑이든 기본이 떨어진 뒤에 쓰인다(공용). */
+  extraCredits: number;
 }
 
 /** 사용량 한 칸(기본 또는 추가 크레딧). */
@@ -318,6 +327,83 @@ export function usageBreakdown(usage: UsageStatus): UsageBreakdown {
 
 /** 구독에 포함된 1인 한도. 이걸 넘기면 추가 크레딧을 사야 한다. */
 export const USAGE_LIMIT_KRW = 20_000;
+
+/* ----------------------------------------------------------- 크레딧 (표시 단위)
+ *
+ * 사용자에게는 **크레딧**만 보인다. 토큰도 원화도 보여주지 않는다.
+ *
+ * 토큰은 사용자의 언어가 아니고("입력 12,400 토큰"이 비싼지 알 수 없다), 원화를 그대로
+ * 띄우면 우리 원가가 그대로 노출된다. 게다가 모델 단가가 바뀌면 같은 금액이 조용히 더 적은
+ * 사용량이 되어, 사용자에게는 설명 없는 다운그레이드로 보인다.
+ *
+ * 그래서 크레딧은 **제품 단위**로 정의한다 — 원가 환산값이 아니다.
+ *
+ *   대화 1건       = 1 크레딧
+ *   문서 20개 분석 = 1 크레딧
+ *
+ * 실제 원가(USD·토큰)는 따로 기록한다. 그건 우리가 볼 숫자이고 크레딧은 사용자가 볼
+ * 숫자다 — 둘을 섞지 않는다. 원가가 오르내려도 사용자가 내는 크레딧은 그대로다.
+ */
+
+/** 크레딧 1개로 분석하는 문서 수. */
+export const DOCUMENTS_PER_CREDIT = 20;
+
+/** 추가 크레딧을 살 때의 환산(원). 결제 화면에서만 쓴다. */
+export const KRW_PER_CREDIT = 100;
+
+/**
+ * 지갑은 둘이다 — **대화**와 **문서 분석**.
+ *
+ * 하나로 두면 폴더를 크게 등록한 날 대화를 한 번도 못 하게 된다. 반대로 대화를 많이 한 달에
+ * 새 문서를 못 넣는 것도 이상하다. 두 일은 성격이 다르므로 지갑을 나눈다 — 사용자는 문서도
+ * 넣고 대화도 할 수 있어야 한다.
+ */
+export type UsageKind = 'chat' | 'build';
+
+/** 구독에 포함된 기본 크레딧. */
+export const BASE_CREDITS: Record<UsageKind, number> = {
+  chat: 200, // 대화 200건
+  build: 100, // 문서 2,000개 분석
+};
+
+export const USAGE_KIND_LABEL: Record<UsageKind, string> = {
+  chat: '대화',
+  build: '문서 분석',
+};
+
+export interface UsagePool {
+  kind: UsageKind;
+  usedCredits: number;
+  limitCredits: number;
+  remainingCredits: number;
+}
+
+/**
+ * 문서 몇 개를 분석하는 데 드는 크레딧.
+ *
+ * 문서 수로 정해지므로 **어림이 아니라 정확한 값**이다. 문서가 길든 짧든, 모델이 바뀌든
+ * 사용자가 내는 크레딧은 같다 — 우리 원가의 출렁임을 사용자에게 떠넘기지 않는다.
+ */
+export function creditsForDocuments(documents: number): number {
+  return Math.ceil(Math.max(documents, 0) / DOCUMENTS_PER_CREDIT);
+}
+
+/** 원가(원) → 크레딧. 올림한다 — 쓴 것을 덜 세면 지갑이 조용히 샌다. */
+export function toCredits(krw: number): number {
+  return Math.ceil(Math.max(krw, 0) / KRW_PER_CREDIT);
+}
+
+/* ----------------------------------------------------------- 크레딧 (표시 단위)
+ *
+ * 사용자에게는 **크레딧**만 보인다. 토큰도 원화도 보여주지 않는다.
+ *
+ * 토큰은 사용자의 언어가 아니고("입력 12,400 토큰"이 비싼지 싼지 알 수 없다), 원화를 그대로
+ * 띄우면 **우리 원가가 그대로 노출된다.** 게다가 모델 단가가 바뀌면 같은 금액이 조용히 더
+ * 적은 사용량이 되어, 사용자에게는 설명 없는 다운그레이드로 보인다.
+ *
+ * 크레딧을 두면 단가가 움직여도 **크레딧당 원가만 조정**하면 되고 화면의 숫자는 그대로다.
+ * 저장은 여전히 USD 원가다 — 크레딧은 보여줄 때 환산한다.
+ */
 
 /** 한도를 넘겼을 때 사용자에게 보여줄 문장. */
 export const USAGE_BLOCKED_MESSAGE =
@@ -484,6 +570,8 @@ export const IPC = {
 
   // L1 — 활성 빌드의 지식 그래프 (그래프 탭)
   wikiGraph: 'wiki:graph',
+  /** 문서 분석 예상치에 대한 사용자의 답 */
+  buildEstimateRespond: 'build:estimate:respond',
 } as const;
 
 /** 메인 → 렌더러 (webContents.send, 단방향 푸시) */
@@ -492,6 +580,8 @@ export const IPC_EVENTS = {
   agentEvent: 'agent:event',
   /** 승인이 필요할 때. 렌더러는 IPC.approvalRespond 로 답한다. */
   approvalRequest: 'approval:request',
+  /** 문서 분석 시작 전 예상 크레딧 확인. 렌더러는 IPC.buildEstimateRespond 로 답한다. */
+  buildEstimate: 'build:estimate',
   buildState: 'build:state:changed',
   treeChanged: 'tree:changed',
   /** 사용량이 바뀌었다 — 설정 화면이 즉시 따라간다 */
@@ -550,6 +640,31 @@ export interface AgentEventEnvelope {
 export interface ApprovalEnvelope {
   id: string;
   request: ApprovalRequest;
+}
+
+/**
+ * 문서 분석을 시작하기 전에 받는 확인.
+ *
+ * 폴더를 통째로 등록하면 그 안의 문서 수만큼 분석이 돈다. **얼마나 드는지 모른 채 시작되면**
+ * 사용자는 크레딧이 사라진 뒤에야 알게 된다. 그래서 시작 전에 규모와 예상치를 보이고 묻는다.
+ *
+ * 이미 분석해 둔 문서는 다시 부르지 않으므로(내용이 같으면 캐시), 여기 숫자는 **이번에 실제로
+ * 분석할 문서**만 센 것이다.
+ */
+export interface BuildEstimate {
+  /** 이번에 분석할 문서 수 (캐시로 건너뛸 것은 뺀 수) */
+  documents: number;
+  /** 캐시가 있어 다시 분석하지 않는 문서 수 */
+  reused: number;
+  /** 이번에 드는 크레딧. 문서 수로 정해지므로 정확한 값이다. */
+  credits: number;
+  /** 문서 지갑에 남은 크레딧 */
+  remainingCredits: number;
+}
+
+export interface BuildEstimateEnvelope {
+  id: string;
+  estimate: BuildEstimate;
 }
 
 /* ============================================================================

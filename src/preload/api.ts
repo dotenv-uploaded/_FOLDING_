@@ -1,6 +1,7 @@
 import type {
   AgentEventEnvelope,
   ApprovalEnvelope,
+  BuildEstimateEnvelope,
   BuildState,
   ChatMessage,
   Conversation,
@@ -71,6 +72,12 @@ export interface CodegateApi {
   };
   approval: {
     onRequest(callback: (request: ApprovalEnvelope) => void): () => void;
+    respond(id: string, approved: boolean): Promise<void>;
+  };
+
+  /** 문서 분석 시작 전 예상 크레딧 확인 */
+  buildEstimate: {
+    onRequest(callback: (envelope: BuildEstimateEnvelope) => void): () => void;
     respond(id: string, approved: boolean): Promise<void>;
   };
   wiki: {

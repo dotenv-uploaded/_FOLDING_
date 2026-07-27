@@ -15,6 +15,11 @@ function status(partial: Partial<UsageStatus>): UsageStatus {
     remainingKrw: 0,
     blocked: false,
     calls: 0,
+    pools: {
+      chat: { kind: 'chat', usedCredits: 0, limitCredits: 200, remainingCredits: 200 },
+      build: { kind: 'build', usedCredits: 0, limitCredits: 50, remainingCredits: 50 },
+    },
+    extraCredits: 0,
     ...partial,
   };
 }

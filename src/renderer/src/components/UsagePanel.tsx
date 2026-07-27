@@ -1,25 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
-import { usageBreakdown, type UsageBucket, type UsageStatus } from '@contracts';
+import { KRW_PER_CREDIT, USAGE_KIND_LABEL, type UsagePool, type UsageStatus } from '@contracts';
 import { cn } from '@/lib/cn';
 
 /**
- * 사용량 한 칸(기본 또는 추가 크레딧)을 막대와 숫자로 보여준다.
+ * 지갑 하나를 막대와 숫자로 보여준다.
  *
- * 기본 사용량이 **먼저** 소진되고 그 뒤에 추가 크레딧이 준다. 그 순서를 화면에서도 그대로
- * 보이게 해, "기본이 남았는데 왜 크레딧이 줄지?" 같은 혼란이 없게 한다.
+ * 단위는 **크레딧**이다. 토큰은 사용자의 언어가 아니고("12,400 토큰"이 비싼지 알 수 없다),
+ * 원화를 그대로 띄우면 우리 원가가 노출된다. 게다가 모델 단가가 바뀌면 같은 금액이 조용히
+ * 더 적은 사용량이 되어 사용자에게는 설명 없는 다운그레이드로 보인다.
  */
-function TierBar({
+function PoolBar({
   label,
   hint,
-  bucket,
+  used,
+  limit,
   blocked,
 }: {
   label: string;
   hint?: string;
-  bucket: UsageBucket;
+  used: number;
+  limit: number;
   blocked?: boolean;
 }) {
-  const ratio = bucket.limitKrw > 0 ? Math.min(bucket.usedKrw / bucket.limitKrw, 1) : 0;
+  const ratio = limit > 0 ? Math.min(used / limit, 1) : 0;
   const near = ratio >= 0.8;
   return (
     <div>
@@ -29,15 +32,15 @@ function TierBar({
           {hint && <span className="ml-1.5 font-normal text-ink-400">{hint}</span>}
         </span>
         <span className="font-mono text-2xs text-ink-400 tabular-nums">
-          {bucket.usedKrw.toLocaleString()} / {bucket.limitKrw.toLocaleString()}원
+          {used.toLocaleString()} / {limit.toLocaleString()}
         </span>
       </div>
       <div
         className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-ink-100"
         role="progressbar"
         aria-valuemin={0}
-        aria-valuemax={bucket.limitKrw}
-        aria-valuenow={bucket.usedKrw}
+        aria-valuemax={limit}
+        aria-valuenow={used}
         aria-label={label}
       >
         <div
@@ -55,11 +58,10 @@ function TierBar({
 /**
  * 구독 사용량.
  *
- * 이 화면이 답해야 하는 질문은 하나다 — **"내가 얼마나 썼고 얼마나 남았나."** 그래서 남은
- * 금액을 가장 크게 두고, 쓴 금액과 한도는 그 근거로 아래에 둔다.
+ * 이 화면이 답해야 하는 질문은 하나다 — **"내가 얼마나 썼고 얼마나 남았나."**
  *
- * 막대는 장식이 아니다. 숫자만 있으면 "18,400원"이 많은 건지 적은 건지 한눈에 안 온다.
- * 남은 비율이 줄어드는 걸 색으로도 알리되, 색만으로 알리지는 않는다(색각 이상 고려).
+ * 지갑은 둘이다. 대화와 문서 분석이 서로의 몫을 갉아먹지 않아야, 폴더를 크게 등록한 날에도
+ * 대화가 되고 대화를 많이 한 달에도 새 문서를 넣을 수 있다.
  */
 export function UsagePanel() {
   const [usage, setUsage] = useState<UsageStatus | null>(null);
@@ -69,7 +71,7 @@ export function UsagePanel() {
   useEffect(() => {
     let alive = true;
     void window.codegate.usage.status().then((s) => alive && setUsage(s));
-    // 채팅을 보낼 때마다 사용량이 바뀐다 — 설정을 다시 열지 않아도 따라가게 한다.
+    // 대화를 보내거나 문서를 분석할 때마다 바뀐다 — 설정을 다시 열지 않아도 따라가게 한다.
     const off = window.codegate.usage.onChanged((s) => setUsage(s));
     return () => {
       alive = false;
@@ -93,11 +95,9 @@ export function UsagePanel() {
     return <p className="text-xs text-ink-400">사용량을 불러오는 중…</p>;
   }
 
-  const nearLimit = usage.limitKrw + usage.extraKrw > 0
-    ? usage.usedKrw / (usage.limitKrw + usage.extraKrw) >= 0.8
-    : false;
-  // 총액을 기본 → 추가 크레딧 순으로 나눈다(기본이 먼저 소진).
-  const { base, credit } = usageBreakdown(usage);
+  const pools: UsagePool[] = [usage.pools.chat, usage.pools.build];
+  const baseRemaining = pools.reduce((sum, pool) => sum + pool.remainingCredits, 0);
+  const remaining = baseRemaining + usage.extraCredits;
 
   return (
     <div className="flex flex-col gap-4">
@@ -111,45 +111,48 @@ export function UsagePanel() {
           <span
             className={cn(
               'font-mono text-h3 font-bold tabular-nums',
-              usage.blocked ? 'text-red-600' : nearLimit ? 'text-amber-600' : 'text-ink-950',
+              usage.blocked ? 'text-red-600' : remaining <= 20 ? 'text-amber-600' : 'text-ink-950',
             )}
           >
-            {Math.max(usage.remainingKrw, 0).toLocaleString()}
+            {remaining.toLocaleString()}
           </span>
-          <span className="text-sm text-ink-500">원 남음</span>
+          <span className="text-sm text-ink-500">크레딧 남음</span>
         </div>
         <p className="mt-1 font-mono text-2xs text-ink-400 tabular-nums">
-          기본 {base.remainingKrw.toLocaleString()}
-          {credit.limitKrw > 0 && ` · 크레딧 ${credit.remainingKrw.toLocaleString()}`} 남음
+          {USAGE_KIND_LABEL.chat} {usage.pools.chat.remainingCredits} ·{' '}
+          {USAGE_KIND_LABEL.build} {usage.pools.build.remainingCredits}
+          {usage.extraCredits > 0 && ` · 추가 ${usage.extraCredits}`} 남음
         </p>
       </div>
 
-      {/* 기본 사용량과 추가 크레딧을 나눠서 — 기본이 먼저 소진되는 구조를 그대로 보여준다. */}
+      {/*
+        지갑을 나눠서 보여준다 — 어느 쪽이 비어 가는지 알아야 무엇을 아낄지 정할 수 있다.
+        추가 크레딧은 어느 쪽이든 기본이 떨어진 뒤에 쓰이므로 따로 둔다.
+      */}
       <div className="flex flex-col gap-3">
-        <TierBar
-          label="기본 사용량"
-          hint="구독 포함"
-          bucket={base}
-          blocked={usage.blocked && credit.limitKrw === 0}
-        />
-        {credit.limitKrw > 0 && (
-          <TierBar
+        {pools.map((pool) => (
+          <PoolBar
+            key={pool.kind}
+            label={USAGE_KIND_LABEL[pool.kind]}
+            hint={pool.kind === 'build' ? '문서 등록·재분석' : '질문과 답변'}
+            used={pool.usedCredits}
+            limit={pool.limitCredits}
+            blocked={pool.remainingCredits === 0 && usage.extraCredits === 0}
+          />
+        ))}
+        {usage.extraCredits > 0 && (
+          <PoolBar
             label="추가 크레딧"
             hint="기본 소진 후 사용"
-            bucket={credit}
-            blocked={usage.blocked}
+            used={0}
+            limit={usage.extraCredits}
           />
         )}
       </div>
 
       {usage.blocked && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">
-          한도를 모두 썼습니다. 크레딧을 추가하기 전까지 새 요청이 처리되지 않습니다.
-        </p>
-      )}
-      {!usage.blocked && nearLimit && (
-        <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-600">
-          한도의 80%를 넘겼습니다.
+          대화 크레딧을 모두 썼습니다. 크레딧을 추가하기 전까지 새 질문이 처리되지 않습니다.
         </p>
       )}
 
@@ -177,7 +180,7 @@ export function UsagePanel() {
                 'hover:bg-ink-50 active:bg-ink-100 disabled:opacity-55 fold-focus',
               )}
             >
-              +{(amount / 10_000).toLocaleString()}만
+              +{(amount / KRW_PER_CREDIT).toLocaleString()}
             </button>
           ))}
         </div>

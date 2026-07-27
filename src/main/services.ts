@@ -19,7 +19,17 @@ import type {
   WikiGraph,
   UsageStatus,
 } from '@contracts';
-import { AuthError, IPC_EVENTS, USAGE_BLOCKED_MESSAGE, USAGE_LIMIT_KRW } from '@contracts';
+import {
+  AuthError,
+  BASE_CREDITS,
+  IPC_EVENTS,
+  USAGE_BLOCKED_MESSAGE,
+  USAGE_LIMIT_KRW,
+  creditsForDocuments,
+  toCredits,
+  type UsageKind,
+  type UsagePool,
+} from '@contracts';
 import { AuthService, SafeStorageAuthStorage } from '@main/auth';
 import { SafeStorageLlmKeyStore, type LlmKeyStore } from '@main/auth/llm-key';
 import { ManagedLlmKeyStore, readInternalApiKey } from '@main/auth/internal-key';
@@ -27,6 +37,8 @@ import { createConverter } from '@main/build/convert';
 import { LlmEnricher, MockEnricher } from '@main/build/enrich';
 import { createBuilderCore } from '@main/build/assemble';
 import { readWikiGraph } from '@main/build/graph';
+import { BuildEstimateBroker } from '@main/build/estimate-broker';
+import { costUsdOf } from '@main/build/pricing';
 import { BuildService } from '@main/build/service';
 import { openDb, Store, type FileRow } from '@main/db/store';
 import { ApprovalBroker } from '@main/agent/approval';
@@ -70,6 +82,8 @@ export class AppServices {
   readonly store: Store;
   readonly auth: AuthService;
   readonly approval: ApprovalBroker;
+  /** 문서 분석 예상 크레딧 확인 — 렌더러의 답을 여기로 전달한다. */
+  readonly buildEstimates: BuildEstimateBroker;
   readonly build: BuildService;
   readonly chat: ChatService;
   readonly watcher: FileWatcher;
@@ -103,6 +117,7 @@ export class AppServices {
       store: Store;
       auth: AuthService;
       approval: ApprovalBroker;
+      buildEstimates: BuildEstimateBroker;
       build: BuildService;
       chat: ChatService;
       watcher: FileWatcher;
@@ -117,6 +132,7 @@ export class AppServices {
     this.store = parts.store;
     this.auth = parts.auth;
     this.approval = parts.approval;
+    this.buildEstimates = parts.buildEstimates;
     this.build = parts.build;
     this.chat = parts.chat;
     this.watcher = parts.watcher;
@@ -190,6 +206,11 @@ export class AppServices {
       send: (envelope) => options.send(IPC_EVENTS.approvalRequest, envelope),
     });
 
+    // 문서 분석을 시작하기 전 예상 크레딧을 묻는 창.
+    const buildEstimates = new BuildEstimateBroker({
+      send: (envelope) => options.send(IPC_EVENTS.buildEstimate, envelope),
+    });
+
     const kordoc = createKordoc({ fixtureDir: path.join(wikiDir, 'fixtures') });
 
     /*
@@ -201,7 +222,23 @@ export class AppServices {
      */
     const mock = process.env.CODEGATE_MOCK === '1';
     const converter = createConverter({ kordoc, mock });
-    const enricher = mock ? new MockEnricher() : new LlmEnricher({ keys: llmKeys });
+    /*
+     * 문서 분석은 제공자가 **금액을 알려주지 않는다** — 토큰 수만 준다. 그래서 여기서
+     * 단가표로 값을 매겨 사용량에 남긴다. 이게 없으면 폴더를 통째로 등록해도 사용량은 0 이다.
+     * 단가를 모르는 모델이면 금액은 비우고 토큰만 남긴다 — "모른다"와 "안 썼다"는 다르다.
+     */
+    const enricher = mock
+      ? new MockEnricher()
+      : new LlmEnricher({
+          keys: llmKeys,
+          onUsage: (usage) =>
+            self?.recordUsage(costUsdOf(usage), 'build', {
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              model: usage.model,
+              units: 1, // 문서 하나를 분석했다
+            }),
+        });
     const builder = createBuilderCore({ mock });
 
     // 아직 인스턴스가 없으므로 나중에 채워 넣는 지연 참조
@@ -224,6 +261,8 @@ export class AppServices {
         if (authMode === 'cloud') await auth.ensureActiveSubscription();
       },
       onAuthError: (error: AuthError) => auth.handleAuthError(error),
+      remainingBuildCredits: () => self?.usageStatus().pools.build.remainingCredits ?? 0,
+      confirmEstimate: (estimate) => buildEstimates.request(estimate),
     });
 
     const watcher = new FileWatcher({
@@ -273,6 +312,7 @@ export class AppServices {
       store,
       auth,
       approval,
+      buildEstimates,
       build,
       chat,
       watcher,
@@ -493,24 +533,71 @@ export class AppServices {
     const extraKrw = this.store.creditTotalKrw(subject);
     const usedKrw = Math.round(costUsd * usdToKrwRate());
     const remainingKrw = USAGE_LIMIT_KRW + extraKrw - usedKrw;
+    const extraCredits = toCredits(extraKrw);
     return {
       usedKrw,
       limitKrw: USAGE_LIMIT_KRW,
       extraKrw,
       remainingKrw,
-      blocked: remainingKrw <= 0,
+      // 막히는 것은 **대화**다. 문서 분석은 자기 지갑을 따로 본다.
+      blocked: this.spendable('chat', extraCredits) <= 0,
       calls,
+      pools: { chat: this.pool('chat'), build: this.pool('build') },
+      extraCredits,
     };
   }
 
-  /** 호출 한 건의 비용을 기록한다. 금액을 모르면(null) 기록하지 않는다. */
-  recordUsage(costUsd: number | null | undefined, source: string): void {
+  /**
+   * 지갑 하나의 현황. `remainingCredits` 는 **기본 크레딧의 잔여만** 센다.
+   *
+   * 추가 크레딧은 지갑에 나눠 넣지 않는다 — 산 크레딧을 대화에 쓸지 문서에 쓸지는 그때그때
+   * 사용자가 정할 일이다. 그래서 공용으로 따로 두고, 두 지갑 어느 쪽이든 기본이 떨어진 뒤에
+   * 쓰인다. 여기서 더해 버리면 같은 크레딧이 두 지갑에 두 번 있는 것처럼 보인다.
+   */
+  private pool(kind: UsageKind): UsagePool {
+    const { units } = this.store.usageTotal(this.usageSubject(), kind);
+    // 대화는 한 건이 1 크레딧, 문서 분석은 20개가 1 크레딧 — 크레딧은 제품 단위지 원가가 아니다.
+    const usedCredits = kind === 'build' ? creditsForDocuments(units) : units;
+    const limitCredits = BASE_CREDITS[kind];
+    return {
+      kind,
+      usedCredits,
+      limitCredits,
+      remainingCredits: Math.max(limitCredits - usedCredits, 0),
+    };
+  }
+
+  /** 이 지갑으로 지금 쓸 수 있는 양 = 기본 잔여 + 공용 추가 크레딧. */
+  private spendable(kind: UsageKind, extraCredits: number): number {
+    return this.pool(kind).remainingCredits + Math.max(extraCredits, 0);
+  }
+
+  /**
+   * 호출 한 건이 쓴 양을 기록한다.
+   *
+   * 금액을 몰라도 **토큰이 있으면 남긴다.** 금액만 보고 버리면 "안 썼다"와 "모른다"가
+   * 같아지고, 그 순간 사용량은 조용히 새기 시작한다.
+   */
+  recordUsage(
+    costUsd: number | null | undefined,
+    source: string,
+    detail?: {
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      model?: string | null;
+      units?: number;
+    },
+  ): void {
     this.store.recordUsage({
       id: randomUUID(),
       subjectId: this.usageSubject(),
       costUsd: costUsd ?? null,
       source,
       createdAt: new Date().toISOString(),
+      inputTokens: detail?.inputTokens ?? null,
+      outputTokens: detail?.outputTokens ?? null,
+      model: detail?.model ?? null,
+      units: detail?.units ?? 1,
     });
     this.options.send(IPC_EVENTS.usageChanged, this.usageStatus());
   }

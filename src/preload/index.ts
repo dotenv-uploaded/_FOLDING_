@@ -4,6 +4,7 @@ import type { CodegateApi } from './api';
 import type {
   AgentEventEnvelope,
   ApprovalEnvelope,
+  BuildEstimateEnvelope,
   BuildState,
   ChatMessage,
   Conversation,
@@ -107,6 +108,14 @@ const api: CodegateApi = {
       subscribe<ApprovalEnvelope>(IPC_EVENTS.approvalRequest, cb),
     respond: (id: string, approved: boolean): Promise<void> =>
       ipcRenderer.invoke(IPC.approvalRespond, id, approved),
+  },
+
+  /** 문서 분석 시작 전 예상 크레딧 확인 */
+  buildEstimate: {
+    onRequest: (cb: (envelope: BuildEstimateEnvelope) => void): (() => void) =>
+      subscribe<BuildEstimateEnvelope>(IPC_EVENTS.buildEstimate, cb),
+    respond: (id: string, approved: boolean): Promise<void> =>
+      ipcRenderer.invoke(IPC.buildEstimateRespond, id, approved),
   },
 
   wiki: {

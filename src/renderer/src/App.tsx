@@ -7,6 +7,7 @@ import { OnboardingScreen } from './screens/OnboardingScreen';
 import { MainScreen } from './screens/MainScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { ApprovalModal } from './components/ApprovalModal';
+import { BuildEstimateModal } from './components/BuildEstimateModal';
 import { Mark } from './ui/Wordmark';
 
 /**
@@ -44,6 +45,9 @@ export function App() {
         onApprove={approval.approve}
         onReject={approval.reject}
       />
+
+      {/* 문서 분석 시작 전 예상 크레딧 확인 — 이것도 메인이 답을 기다리므로 항상 마운트한다 */}
+      <BuildEstimateModal />
 
       {session?.authenticated && (
         <SettingsScreen
