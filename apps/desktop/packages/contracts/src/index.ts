@@ -1,0 +1,781 @@
+/**
+ * codegate — 레포 간 인터페이스 계약 (스펙 v1.3 §2)
+ *
+ * 이 파일은 `codegate-2026-local`(우창)과 `codegate-2026-agent`(성주) 두 레포에
+ * 동일하게 커밋된다. M0의 완료 기준(DoD)이 바로 이 파일이다.
+ *
+ * 경계는 셋이다:
+ *   1. @codegate/agent 공개 인터페이스   — local(메인) → agent
+ *   2. IPC 채널                          — local(메인) ↔ local(렌더러)
+ *   3. 백엔드 REST                       — local(메인) → backend
+ */
+
+/* ============================================================================
+ * 1. @codegate/agent 공개 인터페이스
+ * ========================================================================== */
+
+/** 문서 인용 — 답변 말미에 `【DOC-ID rev.N §섹션】` 형태로 표기된다. */
+export interface Citation {
+  /** 위키 문서 ID (예: `PMC10300442`) */
+  docId: string;
+  /** 빌드 리비전 — 같은 문서라도 재빌드되면 증가한다 */
+  rev: string | number;
+  /** 섹션 라벨 (예: `Results 2`) */
+  section: string;
+  /** Backend snapshot and evidence identifiers. */
+  graphVersion?: string;
+  chunkId?: string;
+  sectionId?: string;
+  /**
+   * 원본 파일의 등록 폴더 기준 상대 경로.
+   * 렌더러에서 인용을 클릭하면 이 경로로 원본을 연다 (스펙 v1.3 §1 L1).
+   */
+  sourcePath?: string;
+}
+
+/** kordoc patch 결과. exit 2 = 일부 편집이 적용되지 않은 부분 실패. */
+export interface PatchResult {
+  /** exit 0 이면 true. exit 2(부분 실패)면 false. */
+  ok: boolean;
+  /** kordoc 프로세스 종료 코드. 2 = 미적용 편집 있음 (스펙 v1.3 §5). */
+  exitCode: number;
+  /** 적용된 편집 수 */
+  applied: number;
+  /**
+   * 적용되지 않은 편집들. exitCode 2 일 때 채워지며,
+   * 사용자에게 "부분 실패"로 반드시 표시해야 한다.
+   */
+  unapplied: string[];
+  /** 패치 직전 생성된 `.bak` 백업 경로 */
+  backupPath: string;
+}
+
+/** L3(kordoc 래퍼) 시그니처 — 메인 프로세스가 구현해 agent에 주입한다. */
+export interface KordocApi {
+  /** 문서를 마크다운으로 파싱 */
+  parse(path: string): Promise<string>;
+  /**
+   * 편집된 마크다운을 원본 문서에 역적용.
+   * 규칙: `.bak` 백업 → 임시파일 작성 → rename(원자적).
+   */
+  patch(path: string, editedMd: string): Promise<PatchResult>;
+  /** 마크다운에서 새 문서 생성 */
+  generate(md: string, outPath: string, preset?: string): Promise<void>;
+  /** 페이지 이미지 렌더 — **hwpx만 가능**. `.hwp`는 지원하지 않는다. */
+  render(path: string, pages?: number[]): Promise<Buffer[]>;
+}
+
+/**
+ * 도구 실행 위험도.
+ *
+ * 열린 에이전트는 도구를 가리지 않으므로, 무엇을 승인하는지 한눈에 구분돼야 한다.
+ * 애매하면 더 위험한 쪽으로 분류한다 — 사이드카의 `tool_risk` 와 같은 값이다.
+ */
+export type ToolRisk = 'safe' | 'caution' | 'danger';
+
+/**
+ * 도구가 승인을 요청할 때 전달되는 페이로드.
+ *
+ * 두 갈래가 이 한 타입을 함께 쓴다:
+ *   - 문서 편집 흐름 — `diff`·`target` 으로 무엇이 바뀌는지 보여준다
+ *   - 열린 에이전트 — 임의 도구(Bash·Write·WebFetch…)라 diff 가 없다. 대신 `risk`·
+ *     `summary` 로 무엇을 하려는지 보여준다.
+ */
+export interface ApprovalRequest {
+  /** 요청한 도구 이름 (`patch_document` · `Bash` · `Write` …) */
+  tool: string;
+  /** 대상 — 문서 편집이면 파일 절대경로, 열린 에이전트면 도구 입력 요약 */
+  target: string;
+  /** 통합 diff 문자열 — 있으면 승인 모달에 그대로 렌더된다. 임의 도구에는 없다. */
+  diff?: string;
+  /** 에이전트가 밝힌 근거 (모달의 "근거" 영역) */
+  rationale?: string;
+  /** Backend approval integrity fields. */
+  changePlanId?: string;
+  planHash?: string;
+
+  /* --- 열린 에이전트 전용 --------------------------------------------- */
+  /** 위험도. 모달이 색과 경고 문구를 이걸로 정한다. */
+  risk?: ToolRisk;
+  /** 도구 입력 요약(실행할 명령, 파일 경로, URL 등) */
+  summary?: string;
+  /**
+   * 사용자가 **원래 시킨 일**.
+   *
+   * 프롬프트 인젝션은 자동으로 가려낼 수 없다. 대신 판단 재료를 준다 — 요청과 도구가
+   * 어긋나면(요약을 시켰는데 `rm` 이 뜨면) 사람이 알아본다.
+   */
+  userRequest?: string;
+  /**
+   * 답이 없으면 이만큼 뒤에 **거부로** 처리된다(초).
+   *
+   * 모달이 남은 시간을 보여주고, 0 이 되면 스스로 거부한다 — 사용자가 언제까지 결정해야
+   * 하는지 알 수 있고, 화면과 서버의 판정이 어긋나지 않는다.
+   */
+  timeoutSeconds?: number;
+}
+
+/** local이 agent에 주입하는 의존성 묶음. */
+export interface AgentDeps {
+  config: {
+    /** 사용자가 등록한 폴더들. 이 밖의 경로 접근은 A3가 거부한다. */
+    roots: string[];
+    backendUrl: string;
+    /** L2가 관리하는 로컬 위키 경로 (`~/.codegate/wiki`) */
+    wikiDir: string;
+    /** 정규화된 문서(마크다운)가 놓인 곳 — 양식을 채울 근거로 읽는다 */
+    wikiInputRoot?: string;
+  };
+  /** L4 — keychain(safeStorage) 기반, 갱신 포함 */
+  auth: { getToken(): Promise<string>; canWrite(): boolean };
+  /** L3 */
+  kordoc: KordocApi;
+  /** L1 — 승인 모달. false 반환 시 도구 실행이 취소된다. */
+  approvalHandler: (req: ApprovalRequest) => Promise<boolean>;
+}
+
+/**
+ * 에이전트가 스트리밍하는 이벤트.
+ * 메인 프로세스가 그대로 IPC(`agent:event`)로 렌더러에 중계한다.
+ */
+export interface AgentSendOptions {
+  conversationId: string;
+  signal?: AbortSignal;
+}
+
+export type AgentEvent =
+  | { type: 'text_delta'; text: string }
+  | { type: 'tool_start'; name: string; summary: string }
+  | { type: 'approval_request'; diff: string; target: string }
+  | { type: 'auth_error'; kind: AuthErrorKind }
+  | { type: 'done'; citations: Citation[]; execution?: ExecutionSummary };
+
+export interface Agent {
+  send(userText: string, options: AgentSendOptions): AsyncIterable<AgentEvent>;
+}
+
+export type CreateAgent = (deps: AgentDeps) => Agent;
+
+/* ============================================================================
+ * 2. 앱 도메인 모델 (메인 ↔ 렌더러 공유)
+ * ========================================================================== */
+
+/** 등록된 감시 폴더. */
+export interface Root {
+  id: string;
+  path: string;
+  /** 스캔 시 포함된 파일 수 */
+  includedCount: number;
+  /** 제외된 파일 수 (지원하지 않는 확장자 등) */
+  excludedCount: number;
+  addedAt: string;
+}
+
+/** 스캔 미리보기 — 폴더 등록 시 사용자에게 포함/제외를 확인받는다. */
+export interface ScanPreview {
+  root: string;
+  included: string[];
+  excluded: { path: string; reason: string }[];
+}
+
+/** 우측 트리에 표시되는 파일별 상태 (스펙 v1.3 §1 L1). */
+export type FileStatus = 'pending' | 'converting' | 'done' | 'error';
+
+export interface FileNode {
+  /** 등록 폴더 기준 상대 경로 */
+  path: string;
+  name: string;
+  isDir: boolean;
+  status: FileStatus;
+  children?: FileNode[];
+}
+
+/**
+ * 로컬 빌드 파이프라인의 3단계 (스펙 v1.4 §0).
+ *   convert   — 변환 모듈(민규)이 원본을 INPUT_CONTRACT 마크다운으로
+ *   enrich    — enrichment: LLM API 직접 호출 (동시성 제한·재시도)
+ *   assemble  — 빌더 코어(용휘)가 불변 빌드로 조립
+ */
+export type BuildPhase = 'convert' | 'enrich' | 'assemble';
+
+export const BUILD_PHASE_LABEL: Record<BuildPhase, string> = {
+  convert: '변환',
+  enrich: '분석',
+  assemble: '조립',
+};
+
+/** v1.4: 업로드·폴링·회수 단계는 사라졌다. 전 과정이 이 컴퓨터에서 돈다. */
+export type BuildStatus =
+  | 'idle'
+  | 'scanning'
+  | 'converting'
+  | 'enriching'
+  | 'assembling'
+  | 'done'
+  | 'failed';
+
+export interface BuildState {
+  buildId: string | null;
+  status: BuildStatus;
+  /** 전체 진행률 0–100 */
+  progress: number;
+  /** 현재 단계의 세부 진행 — 렌더러가 "분석 12/37" 처럼 보여준다 */
+  phase?: { name: BuildPhase; done: number; total: number };
+  message: string;
+  /** 실패 시 사용자에게 보여줄 문장 (silent fail 금지 — 스펙 v1.4 §5) */
+  error?: string;
+  /**
+   * enrichment 부분 실패로 보류된 문서 (스펙 v1.4 §5).
+   * 한 문서가 실패해도 빌드 전체를 실패시키지 않고 그 문서만 보류한다.
+   */
+  deferred?: { path: string; reason: string }[];
+  updatedAt: string;
+}
+
+export interface Subscription {
+  /** 예: `Pro`, `Team` */
+  plan: string;
+  /** ISO date. 만료 표시에 사용 */
+  expiresAt: string;
+  active: boolean;
+}
+
+export interface Session {
+  authenticated: boolean;
+  email?: string;
+  subjectId?: string;
+  tenantId?: string;
+  readAccess?: string[];
+  writeScope?: 'none' | 'documents' | 'workspace';
+  writableDocumentIds?: string[];
+  provisioned?: boolean;
+  authzSource?: string;
+}
+
+/**
+ * 구독 사용량. 설정 화면이 보여주고, 한도를 넘으면 요청이 막힌다.
+ *
+ * 금액은 원 단위 정수다 — 화면에 원으로 보여주므로 표시 직전에 반올림하면 합계와 항목이
+ * 어긋난다. 저장은 USD 로 하고(제공자가 계산해 준 값), 환산은 이 경계에서 한 번만 한다.
+ */
+export interface UsageStatus {
+  /** 지금까지 쓴 금액 */
+  usedKrw: number;
+  /** 구독에 포함된 한도 */
+  limitKrw: number;
+  /** 추가 구매한 크레딧 */
+  extraKrw: number;
+  /** 남은 금액 (한도 + 크레딧 − 사용) */
+  remainingKrw: number;
+  /** 한도를 넘겨 요청이 막히는 상태인가 (대화 기준 — 하위 호환) */
+  blocked: boolean;
+  /** 지금까지 호출 횟수 */
+  calls: number;
+  /**
+   * 지갑별 현황 — 화면에 보이는 것은 이쪽이다(크레딧 단위).
+   *
+   * 대화와 문서 분석은 서로의 몫을 갉아먹지 않는다. 폴더를 크게 등록한 날에도 대화는 되고,
+   * 대화를 많이 한 달에도 새 문서를 넣을 수 있어야 한다.
+   */
+  pools: Record<UsageKind, UsagePool>;
+  /** 추가로 산 크레딧 — 어느 지갑이든 기본이 떨어진 뒤에 쓰인다(공용). */
+  extraCredits: number;
+}
+
+/** 사용량 한 칸(기본 또는 추가 크레딧). */
+export interface UsageBucket {
+  /** 이 칸에 배정된 금액 */
+  limitKrw: number;
+  /** 이 칸에서 쓴 금액 */
+  usedKrw: number;
+  /** 이 칸에 남은 금액 */
+  remainingKrw: number;
+}
+
+export interface UsageBreakdown {
+  /** 구독에 포함된 기본 사용량 — **먼저** 소진된다 */
+  base: UsageBucket;
+  /** 추가로 구매한 크레딧 — 기본이 다 떨어진 **뒤에** 소진된다 */
+  credit: UsageBucket;
+}
+
+/**
+ * 총 사용액을 기본 → 추가 크레딧 순으로 나눠 담는다.
+ *
+ * 저장은 "총 얼마 썼는가" 하나뿐이다. 어느 칸에서 나갔는지는 따로 기록하지 않고 여기서
+ * 나눈다 — 소진 순서가 정해져 있으므로(기본 먼저) 총액만 있으면 복원할 수 있다. 기록을
+ * 둘로 늘리면 두 값이 어긋날 수 있는데, 나누는 규칙 하나만 두면 그럴 일이 없다.
+ */
+export function usageBreakdown(usage: UsageStatus): UsageBreakdown {
+  const baseUsed = Math.min(usage.usedKrw, usage.limitKrw);
+  const spilledOver = Math.max(usage.usedKrw - usage.limitKrw, 0);
+  // 한도를 넘겨 쓴 경우 크레딧보다 더 썼을 수 있다 — 칸 밖으로 삐져나오지 않게 자른다.
+  const creditUsed = Math.min(spilledOver, usage.extraKrw);
+  return {
+    base: {
+      limitKrw: usage.limitKrw,
+      usedKrw: baseUsed,
+      remainingKrw: Math.max(usage.limitKrw - baseUsed, 0),
+    },
+    credit: {
+      limitKrw: usage.extraKrw,
+      usedKrw: creditUsed,
+      remainingKrw: Math.max(usage.extraKrw - creditUsed, 0),
+    },
+  };
+}
+
+/** 구독에 포함된 1인 한도. 이걸 넘기면 추가 크레딧을 사야 한다. */
+export const USAGE_LIMIT_KRW = 20_000;
+
+/* ----------------------------------------------------------- 크레딧 (표시 단위)
+ *
+ * 사용자에게는 **크레딧**만 보인다. 토큰도 원화도 보여주지 않는다.
+ *
+ * 토큰은 사용자의 언어가 아니고("입력 12,400 토큰"이 비싼지 알 수 없다), 원화를 그대로
+ * 띄우면 우리 원가가 그대로 노출된다. 게다가 모델 단가가 바뀌면 같은 금액이 조용히 더 적은
+ * 사용량이 되어, 사용자에게는 설명 없는 다운그레이드로 보인다.
+ *
+ * 그래서 크레딧은 **제품 단위**로 정의한다 — 원가 환산값이 아니다.
+ *
+ *   대화 1건       = 1 크레딧
+ *   문서 20개 분석 = 1 크레딧
+ *
+ * 실제 원가(USD·토큰)는 따로 기록한다. 그건 우리가 볼 숫자이고 크레딧은 사용자가 볼
+ * 숫자다 — 둘을 섞지 않는다. 원가가 오르내려도 사용자가 내는 크레딧은 그대로다.
+ */
+
+/** 크레딧 1개로 분석하는 문서 수. */
+export const DOCUMENTS_PER_CREDIT = 20;
+
+/** 추가 크레딧을 살 때의 환산(원). 결제 화면에서만 쓴다. */
+export const KRW_PER_CREDIT = 100;
+
+/**
+ * 지갑은 둘이다 — **대화**와 **문서 분석**.
+ *
+ * 하나로 두면 폴더를 크게 등록한 날 대화를 한 번도 못 하게 된다. 반대로 대화를 많이 한 달에
+ * 새 문서를 못 넣는 것도 이상하다. 두 일은 성격이 다르므로 지갑을 나눈다 — 사용자는 문서도
+ * 넣고 대화도 할 수 있어야 한다.
+ */
+export type UsageKind = 'chat' | 'build';
+
+/** 구독에 포함된 기본 크레딧. */
+export const BASE_CREDITS: Record<UsageKind, number> = {
+  chat: 200, // 대화 200건
+  build: 100, // 문서 2,000개 분석
+};
+
+export const USAGE_KIND_LABEL: Record<UsageKind, string> = {
+  chat: '대화',
+  build: '문서 분석',
+};
+
+export interface UsagePool {
+  kind: UsageKind;
+  usedCredits: number;
+  limitCredits: number;
+  remainingCredits: number;
+}
+
+/**
+ * 문서 몇 개를 분석하는 데 드는 크레딧.
+ *
+ * 문서 수로 정해지므로 **어림이 아니라 정확한 값**이다. 문서가 길든 짧든, 모델이 바뀌든
+ * 사용자가 내는 크레딧은 같다 — 우리 원가의 출렁임을 사용자에게 떠넘기지 않는다.
+ */
+export function creditsForDocuments(documents: number): number {
+  return Math.ceil(Math.max(documents, 0) / DOCUMENTS_PER_CREDIT);
+}
+
+/** 원가(원) → 크레딧. 올림한다 — 쓴 것을 덜 세면 지갑이 조용히 샌다. */
+export function toCredits(krw: number): number {
+  return Math.ceil(Math.max(krw, 0) / KRW_PER_CREDIT);
+}
+
+/* ----------------------------------------------------------- 크레딧 (표시 단위)
+ *
+ * 사용자에게는 **크레딧**만 보인다. 토큰도 원화도 보여주지 않는다.
+ *
+ * 토큰은 사용자의 언어가 아니고("입력 12,400 토큰"이 비싼지 싼지 알 수 없다), 원화를 그대로
+ * 띄우면 **우리 원가가 그대로 노출된다.** 게다가 모델 단가가 바뀌면 같은 금액이 조용히 더
+ * 적은 사용량이 되어, 사용자에게는 설명 없는 다운그레이드로 보인다.
+ *
+ * 크레딧을 두면 단가가 움직여도 **크레딧당 원가만 조정**하면 되고 화면의 숫자는 그대로다.
+ * 저장은 여전히 USD 원가다 — 크레딧은 보여줄 때 환산한다.
+ */
+
+/** 한도를 넘겼을 때 사용자에게 보여줄 문장. */
+export const USAGE_BLOCKED_MESSAGE =
+  '이번 달 사용 한도를 모두 썼습니다. 설정에서 크레딧을 추가하면 이어서 쓸 수 있습니다.';
+
+/** 좌측 채팅 목록의 한 줄. */
+export interface Conversation {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  role: ChatRole;
+  text: string;
+  /** assistant 메시지에만 채워진다 */
+  citations?: Citation[];
+  /** 스트리밍 중 표시된 도구 배지 */
+  tools?: { name: string; summary: string }[];
+  createdAt: string;
+  /** 스트리밍이 아직 진행 중인지 */
+  streaming?: boolean;
+  execution?: ExecutionSummary;
+  /**
+   * 이 답변이 승인을 거쳐 손댄 문서의 경로 (`ApprovalRequest.target` 과 같은 값).
+   * 답변에서 그 문서를 바로 열거나 폴더에서 찾아보게 하기 위한 것이다.
+   * 승인 요청 자체가 없었으면 비어 있다.
+   */
+  changedPath?: string;
+}
+
+/* ---- 지식 그래프 (활성 위키 빌드의 manifest + links) ---- */
+
+export interface WikiGraphNode {
+  /** 문서 식별자 — 엣지가 이 값으로 노드를 가리킨다 */
+  docId: string;
+  title: string;
+  /** regulation · policy · contract · report … 색 구분에 쓴다 */
+  docType: string;
+  /** active · draft · archived · superseded */
+  status: string;
+  /**
+   * 원본 파일을 가리키는 URI. **트리에서 고른 파일과 그래프 노드를 잇는 유일한 열쇠다.**
+   * 변환 단계에서 원본을 확인하지 못하면 비어 있을 수 있다.
+   */
+  sourceUri?: string;
+  sourceFilename?: string;
+  summary?: string;
+}
+
+export interface WikiGraphEdge {
+  from: string;
+  to: string;
+  /** references · implements · implemented_by · based_on · supersedes · superseded_by */
+  relationType: string;
+  /** explicit · llm-classified · entity-overlap — 이 관계가 어디서 왔는지 */
+  origin?: string;
+  /**
+   * **이 관계의 근거.** 두 문서가 함께 언급한 것들과, 각자 그것을 말한 문장.
+   *
+   * 관계를 그려 놓고 이유를 못 대면 사용자는 그것을 믿을 수도 고칠 수도 없다. 특히 지금
+   * 관계는 사람이 적은 링크가 아니라 **엔티티 겹침으로 유도한 것**이라 더욱 그렇다.
+   * 겹친 개수는 곧 연결의 강도다.
+   */
+  sharedEntities?: SharedEntity[];
+}
+
+export interface SharedEntity {
+  name: string;
+  /** role · organization · system · process · document … */
+  type?: string;
+  /** `from` 문서가 이것을 말한 문장 */
+  fromQuote: string;
+  /** `to` 문서가 이것을 말한 문장 */
+  toQuote: string;
+}
+
+export interface WikiGraph {
+  /** 활성 build id. 빌드가 없으면 `null` 이고 노드·엣지도 비어 있다. */
+  buildId: string | null;
+  nodes: WikiGraphNode[];
+  edges: WikiGraphEdge[];
+}
+
+export interface ExecutionSummary {
+  executionId: string;
+  documentId: string;
+  status: string;
+  stage: string;
+  terminal: boolean;
+  error?: { code: string; message: string; retryable: boolean };
+  canRetry: boolean;
+  canUndo: boolean;
+}
+
+/* ============================================================================
+ * 3. IPC 채널 계약 (메인 ↔ 렌더러)
+ * ========================================================================== */
+
+/** 렌더러 → 메인 (invoke/handle, 요청-응답) */
+export const IPC = {
+  // L4 — 인증
+  authLogin: 'auth:login',
+  authLogout: 'auth:logout',
+  authSession: 'auth:session',
+
+  // L4/L2 — 폴더
+  rootsList: 'roots:list',
+  rootsPickDialog: 'roots:pickDialog',
+  rootsPickDialogMulti: 'roots:pickDialogMulti',
+  rootsScanPreview: 'roots:scanPreview',
+  rootsAdd: 'roots:add',
+  rootsRemove: 'roots:remove',
+
+  // L2 — 답변을 한글 문서(HWPX)로 저장
+  documentSaveHwpx: 'document:saveHwpx',
+  // L2 — 한글 양식을 복사해 채운 사본 만들기 (원본 양식은 건드리지 않는다)
+  documentFillTemplate: 'document:fillTemplate',
+
+  // L2 — 로컬 빌드
+  buildTrigger: 'build:trigger',
+  buildState: 'build:state',
+  buildCancel: 'build:cancel',
+
+  // L4 — enrichment LLM 키 (자격증명 ②, 스펙 v1.4 §5)
+  llmKeyStatus: 'llm:status',
+  llmKeySet: 'llm:set',
+  llmKeyClear: 'llm:clear',
+
+  // L1 — 트리
+  treeGet: 'tree:get',
+
+  // L1 — 채팅
+  chatList: 'chat:list',
+  chatCreate: 'chat:create',
+  chatMessages: 'chat:messages',
+  chatSend: 'chat:send',
+  chatAbort: 'chat:abort',
+  /** 대화 하나를 기록째 지운다 — 되돌릴 수 없다. */
+  chatDelete: 'chat:delete',
+
+  // L4 — 구독 사용량
+  usageStatus: 'usage:status',
+  usagePurchase: 'usage:purchase',
+
+  executionRetry: 'execution:retry',
+  executionUndo: 'execution:undo',
+
+  // L2 — sidecar 프로세스 수명주기 (스펙 v2.1 §1 L2)
+  sidecarState: 'sidecar:state',
+  sidecarRestart: 'sidecar:restart',
+
+  // L1 — 승인 모달 응답
+  approvalRespond: 'approval:respond',
+
+  // L1 — 인용 클릭 시 원본 열기
+  openOriginal: 'shell:openOriginal',
+  /** L1 — 원본을 파일 탐색기에서 선택된 채로 보여준다 (백업 `.bak` 을 찾을 수 있게) */
+  revealOriginal: 'shell:revealOriginal',
+
+  // L1 — 활성 빌드의 지식 그래프 (그래프 탭)
+  wikiGraph: 'wiki:graph',
+  /** 문서 분석 예상치에 대한 사용자의 답 */
+  buildEstimateRespond: 'build:estimate:respond',
+} as const;
+
+/** 메인 → 렌더러 (webContents.send, 단방향 푸시) */
+export const IPC_EVENTS = {
+  /** AgentEvent 를 그대로 중계 (스펙 v1.3 §2) */
+  agentEvent: 'agent:event',
+  /** 승인이 필요할 때. 렌더러는 IPC.approvalRespond 로 답한다. */
+  approvalRequest: 'approval:request',
+  /** 문서 분석 시작 전 예상 크레딧 확인. 렌더러는 IPC.buildEstimateRespond 로 답한다. */
+  buildEstimate: 'build:estimate',
+  buildState: 'build:state:changed',
+  treeChanged: 'tree:changed',
+  /** 사용량이 바뀌었다 — 설정 화면이 즉시 따라간다 */
+  usageChanged: 'usage:changed',
+  sessionChanged: 'auth:session:changed',
+  /** sidecar 기동·재기동 상태 — 엔진이 준비되기 전 UI 가 멈춘 듯 보이지 않게 한다 */
+  sidecarState: 'sidecar:state:changed',
+} as const;
+
+/* ---------------------------------------------------------------------------
+ * sidecar 프로세스 수명주기 (스펙 v2.1 §1 L2)
+ *
+ * 앱이 `codegate-local` 을 직접 띄우고 지켜본다. 렌더러는 상태만 보며
+ * 프로세스를 직접 다루지 않는다.
+ * ------------------------------------------------------------------------- */
+
+export type SidecarStatus =
+  | 'external'
+  | 'stopped'
+  | 'starting'
+  | 'ready'
+  | 'unhealthy'
+  | 'crashed'
+  | 'restarting';
+
+export interface SidecarLifecycleState {
+  status: SidecarStatus;
+  /** `http://127.0.0.1:<port>` — 포트는 기동 전에 미리 잡으므로 값이 먼저 정해진다 */
+  baseUrl: string | null;
+  /** 사용자에게 그대로 보여줄 문장 */
+  message: string;
+  error?: string;
+  /** 비정상 종료 후 되살린 횟수 */
+  restarts: number;
+  updatedAt: string;
+}
+
+export const SIDECAR_STATUS_MESSAGE: Record<SidecarStatus, string> = {
+  external: '외부 엔진에 연결했습니다.',
+  stopped: '엔진이 꺼져 있습니다.',
+  starting: '엔진을 준비하는 중…',
+  ready: '준비됨',
+  unhealthy: '엔진이 응답하지 않습니다.',
+  crashed: '엔진이 예기치 않게 종료됐습니다.',
+  restarting: '엔진을 다시 시작하는 중…',
+};
+
+/** IPC로 오가는 AgentEvent 봉투 — 어느 대화의 이벤트인지 식별. */
+export interface AgentEventEnvelope {
+  conversationId: string;
+  messageId: string;
+  event: AgentEvent;
+}
+
+/** 승인 요청 봉투 — `id`로 응답을 짝짓는다. */
+export interface ApprovalEnvelope {
+  id: string;
+  request: ApprovalRequest;
+}
+
+/**
+ * 문서 분석을 시작하기 전에 받는 확인.
+ *
+ * 폴더를 통째로 등록하면 그 안의 문서 수만큼 분석이 돈다. **얼마나 드는지 모른 채 시작되면**
+ * 사용자는 크레딧이 사라진 뒤에야 알게 된다. 그래서 시작 전에 규모와 예상치를 보이고 묻는다.
+ *
+ * 이미 분석해 둔 문서는 다시 부르지 않으므로(내용이 같으면 캐시), 여기 숫자는 **이번에 실제로
+ * 분석할 문서**만 센 것이다.
+ */
+export interface BuildEstimate {
+  /** 이번에 분석할 문서 수 (캐시로 건너뛸 것은 뺀 수) */
+  documents: number;
+  /** 캐시가 있어 다시 분석하지 않는 문서 수 */
+  reused: number;
+  /** 이번에 드는 크레딧. 문서 수로 정해지므로 정확한 값이다. */
+  credits: number;
+  /** 문서 지갑에 남은 크레딧 */
+  remainingCredits: number;
+}
+
+export interface BuildEstimateEnvelope {
+  id: string;
+  estimate: BuildEstimate;
+}
+
+/* ============================================================================
+ * 4. 서버 REST 스키마 (스펙 v1.4 §2 — 우창 ↔ 용휘)
+ *
+ * v1.4 에서 서버의 역할은 **로그인·구독 확인뿐**이다. 아래 둘이 서버 API의 전부다.
+ * ========================================================================== */
+
+export type OAuthProvider = 'google';
+
+export interface LoginRequest {
+  provider: OAuthProvider;
+}
+
+/** `GET /me/subscription` */
+export interface SubscriptionResponse {
+  plan: string;
+  expiresAt: string;
+  active: boolean;
+}
+
+/*
+ * 서버 API는 위 둘이 전부다 (스펙 v1.4 §2).
+ *
+ * v1.3 에 있던 `POST /builds` · `GET /builds/{id}` · `/artifact` · `/ack` 는 삭제됐다.
+ * 문서·마크다운·위키는 자사 서버로 전송되지 않는다 — 변환·enrichment·조립이 전부
+ * 이 컴퓨터에서 돌기 때문이다. 밖으로 나가는 텍스트는 LLM 제공자로 가는 것뿐이다.
+ */
+
+/* ============================================================================
+ * 5. enrichment LLM 키 (자격증명 ② — 스펙 v1.4 §5)
+ *
+ * 자격증명은 셋이고 절대 섞지 않는다:
+ *   ① 백엔드 토큰(로그인)        — safeStorage
+ *   ② enrichment LLM 키(Gemini 등) — 설정 화면에서 입력, safeStorage   ← 여기
+ *   ③ Anthropic 자격증명(SDK 추론) — 환경변수
+ * ========================================================================== */
+
+export type LlmProvider = 'gemini' | 'openai' | 'anthropic';
+
+export const LLM_PROVIDER_LABEL: Record<LlmProvider, string> = {
+  gemini: 'Google Gemini',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+};
+
+/**
+ * 렌더러에 노출되는 키 상태.
+ * **원문 키는 절대 렌더러로 내려보내지 않는다** — 설정됨 여부와 끝 4자리만 준다.
+ */
+export interface LlmKeyStatus {
+  provider: LlmProvider;
+  configured: boolean;
+  /** 끝 4자리 (예: `…8f2a`). 설정돼 있을 때만. */
+  hint?: string;
+  /**
+   * 앱이 구독의 일부로 직접 공급하는 키.
+   * 사용자가 입력하지도, 지우지도 못한다 — 화면은 입력폼 대신 안내만 보여준다.
+   */
+  managed?: boolean;
+}
+
+/** 키 저장 요청. 메인이 safeStorage 로 암호화해 보관한다. */
+export interface LlmKeyInput {
+  provider: LlmProvider;
+  apiKey: string;
+}
+
+/**
+ * 문서 분석용 LLM 키를 구하지 못해 빌드를 시작할 수 없을 때 쓰는 문장.
+ *
+ * 키는 구독에 포함돼 앱이 내부적으로 공급한다(스펙 v2.4). 사용자가 할 수 있는 일이
+ * 없으므로 "키를 입력하라"고 하지 않는다.
+ */
+export const LLM_KEY_MISSING_MESSAGE =
+  '문서 분석 서비스에 연결하지 못했습니다. 구독 상태를 확인하거나 잠시 후 다시 시도해 주세요.';
+
+/** 인증/구독 오류 — 로그인·구독 확인 시 발생한다 (스펙 v1.4 §1 각주). */
+export class AuthError extends Error {
+  constructor(
+    public kind: AuthErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
+/** HTTP 상태코드 → AgentEvent 의 auth_error kind 매핑. */
+export function authErrorKindFromStatus(
+  status: number,
+): AuthErrorKind | null {
+  if (status === 401) return 'unauthenticated';
+  if (status === 402) return 'subscription_expired';
+  if (status === 403) return 'not_provisioned';
+  return null;
+}
+
+/** 401/402 를 사용자 문장으로 — silent fail 금지 (스펙 v1.3 §5). */
+export type AuthErrorKind = 'unauthenticated' | 'subscription_expired' | 'not_provisioned';
+
+export const AUTH_ERROR_MESSAGE: Record<AuthErrorKind, string> = {
+  unauthenticated: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
+  subscription_expired: '구독이 만료되었습니다. 구독을 갱신하면 빌드를 이어갈 수 있어요.',
+  not_provisioned: '계정에 Folding 작업 권한이 아직 연결되지 않았습니다.',
+};
+
+/** 위키에서 근거를 찾지 못했을 때 에이전트가 쓰는 고정 문구 (AGENT_GUIDE 규칙). */
+export const NOT_FOUND_IN_WIKI = '위키에서 확인되지 않음';
+
+/** 인용 렌더 형식 — `【DOC-ID rev.N §섹션】` */
+export function formatCitation(c: Citation): string {
+  return `【${c.docId} rev.${c.rev} §${c.sectionId ?? c.section}】`;
+}
