@@ -1,0 +1,28 @@
+{
+  "name": "codegate-2026-agent",
+  "version": "1.0.0",
+  "description": "성주가 담당하는 지식 그래프 기반 문서 검색·수정 에이전트의 FastAPI 백엔드다. Claude Agent SDK가 질문과 변경 의도를 구조화하고, 애플리케이션이 ACL·원문 근거·승인·파일 쓰기·Undo·지식 버전 공개를 결정적으로 통제한다.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dotenv-uploaded/codegate-2026-agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dotenv-uploaded/codegate-2026-agent/issues"
+  },
+  "homepage": "https://github.com/dotenv-uploaded/codegate-2026-agent#readme",
+  "dependencies": {
+    "kordoc": "^4.2.5"
+  }
+}
