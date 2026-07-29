@@ -1,0 +1,1062 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import re
+from enum import StrEnum
+from importlib.metadata import version
+from typing import Any, Literal, Protocol
+from uuid import UUID, uuid4
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeSDKClient,
+    ResultMessage,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from codegate_api.agent.instructions import (
+    PROMPT_CONTRACT_VERSION,
+    build_system_prompt,
+    build_turn_prompt,
+)
+from codegate_api.agent.local_llm import LocalLlmClient, LocalLlmError
+from codegate_api.agent.runtime import (
+    ALLOWED_AGENT_TOOLS,
+    SAFE_AGENT_TOOLS,
+    SDK_CONTROL_TOOLS,
+    SubprocessStderrTail,
+    build_claude_agent_options,
+)
+from codegate_api.agent.tools import TOOL_CONTRACT_VERSION
+from codegate_api.config import Settings
+from codegate_api.knowledge.access import AccessContext
+from codegate_api.knowledge.repository import KnowledgeRepository
+from codegate_api.knowledge.schemas import DOCUMENT_ID_PATTERN
+from codegate_api.models import ReplaceExactOperation
+
+logger = logging.getLogger(__name__)
+
+EXPECTED_TOOL_SOURCE_KINDS = {
+    "mcp__codegate__knowledge_search": "knowledge_search",
+    "mcp__codegate__document_get": "document_get",
+    "mcp__codegate__knowledge_document_read": "canonical_document",
+    "mcp__codegate__source_file_read": "current_source",
+}
+
+
+class AgentGatewayError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class AgentOutcome(StrEnum):
+    READY = "ready"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    NOT_FOUND = "not_found"
+    TOOL_ERROR = "tool_error"
+    UNSUPPORTED = "unsupported"
+
+
+class AgentDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_contract_version: Literal["2.0"] = Field(
+        description="Prompt contract version used for this decision; must equal 2.0."
+    )
+    outcome: AgentOutcome = Field(
+        description=(
+            "ready only when all current-turn requirements passed; otherwise the precise "
+            "fail-closed reason."
+        )
+    )
+    intent: Literal["locate", "change"] = Field(
+        description="The user's requested document task, preserved even when outcome is not ready."
+    )
+    assistant_text: str = Field(
+        min_length=1,
+        max_length=2_000,
+        description=(
+            "Brief non-evidentiary routing status; never a document fact, hidden reasoning, or "
+            "a claim that a write occurred."
+        ),
+    )
+    search_query: str = Field(
+        min_length=1,
+        max_length=4_000,
+        description=(
+            "Minimal business-document retrieval query with prompt-control and permission text "
+            "removed."
+        ),
+    )
+    target_document_id: str | None = Field(
+        ...,
+        pattern=DOCUMENT_ID_PATTERN,
+        max_length=96,
+        description="Stable ID verified by a CODEGATE tool in the current turn, otherwise null.",
+    )
+    source_sha256: str | None = Field(
+        ...,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Hash copied from the current-turn source_file_read result for a ready change, "
+            "otherwise null."
+        ),
+    )
+    operation: ReplaceExactOperation | None = Field(
+        ...,
+        description=(
+            "One current-source-grounded replace_exact proposal for a ready change, otherwise null."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def enforce_decision_contract(self) -> AgentDecision:
+        if self.prompt_contract_version != PROMPT_CONTRACT_VERSION:
+            raise ValueError("prompt contract version does not match the runtime")
+        if self.intent == "locate" and (
+            self.operation is not None or self.source_sha256 is not None
+        ):
+            raise ValueError("locate decisions cannot contain a change operation or source hash")
+        if self.outcome is not AgentOutcome.READY and (
+            self.operation is not None or self.source_sha256 is not None
+        ):
+            raise ValueError("non-ready decisions cannot contain a change operation or source hash")
+        if (
+            self.outcome
+            in {
+                AgentOutcome.NOT_FOUND,
+                AgentOutcome.TOOL_ERROR,
+                AgentOutcome.UNSUPPORTED,
+            }
+            and self.target_document_id is not None
+        ):
+            raise ValueError("failed or unsupported decisions cannot identify a target document")
+        if (
+            self.outcome is AgentOutcome.READY
+            and self.intent == "change"
+            and (
+                self.target_document_id is None
+                or self.source_sha256 is None
+                or self.operation is None
+            )
+        ):
+            raise ValueError(
+                "a ready change requires a target, source hash, and replace_exact operation"
+            )
+        if self.operation is not None and self.intent != "change":
+            raise ValueError("only a change decision can contain an operation")
+        return self
+
+
+class AgentRunResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: AgentDecision
+    provider: str
+    session_id: str | None = None
+    tool_calls: list[str] = Field(default_factory=list)
+    #: 이번 호출이 실제로 쓴 비용(USD). SDK 가 `ResultMessage.total_cost_usd` 로 알려준다.
+    #:
+    #: 구독제라 사용량을 사람 단위로 세야 하는데, 이 값을 버리면 셀 근거가 없다. 토큰 수로
+    #: 되계산하면 모델·캐시·도구 호출마다 단가가 달라 어긋난다 — 제공자가 계산해 준 금액을
+    #: 그대로 쓴다. 알 수 없으면 `None` 이고, 그 경우 0원으로 치지 않고 모름으로 남긴다.
+    cost_usd: float | None = None
+
+
+class AgentGateway(Protocol):
+    @property
+    def session_ttl_seconds(self) -> int | None: ...
+
+    def session_fingerprint(
+        self,
+        *,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+    ) -> str | None: ...
+
+    async def decide(
+        self,
+        *,
+        message: str,
+        selected_document_id: str | None,
+        conversation_id: str,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+        resume_session_id: str | None = None,
+    ) -> AgentRunResult: ...
+
+
+class DeterministicAgentGateway:
+    @property
+    def session_ttl_seconds(self) -> None:
+        return None
+
+    def session_fingerprint(
+        self,
+        *,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+    ) -> None:
+        del repository, access_context
+        return None
+
+    async def decide(
+        self,
+        *,
+        message: str,
+        selected_document_id: str | None,
+        conversation_id: str,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+        resume_session_id: str | None = None,
+    ) -> AgentRunResult:
+        del conversation_id, resume_session_id
+        operation = _parse_replace_operation(message)
+        document_id = selected_document_id or _extract_document_id(message)
+        if operation is not None:
+            source_sha256: str | None = None
+            if document_id is not None and operation.replacement_text in message:
+                source = repository.read_source_text(
+                    document_id,
+                    access_context=access_context,
+                )
+                if source is not None and source[1].count(operation.expected_text) == 1:
+                    source_sha256 = _current_source_sha256(source)
+            if source_sha256 is None:
+                return AgentRunResult(
+                    provider="deterministic",
+                    decision=AgentDecision(
+                        prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                        outcome=AgentOutcome.NEEDS_CLARIFICATION,
+                        intent="change",
+                        assistant_text="대상과 변경 문구를 더 명확히 확인해야 합니다.",
+                        search_query=message,
+                        target_document_id=document_id,
+                        source_sha256=None,
+                        operation=None,
+                    ),
+                )
+            return AgentRunResult(
+                provider="deterministic",
+                decision=AgentDecision(
+                    prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                    outcome=AgentOutcome.READY,
+                    intent="change",
+                    assistant_text="실제 원본을 기준으로 변경 미리보기를 만들겠습니다.",
+                    search_query=message,
+                    target_document_id=document_id,
+                    source_sha256=source_sha256,
+                    operation=operation,
+                ),
+            )
+        return AgentRunResult(
+            provider="deterministic",
+            decision=AgentDecision(
+                prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                outcome=AgentOutcome.READY,
+                intent="locate",
+                assistant_text="관련 문서와 근거를 찾았습니다.",
+                search_query=message,
+                target_document_id=document_id,
+                source_sha256=None,
+                operation=None,
+            ),
+        )
+
+
+class LocalAgentGateway:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: LocalLlmClient | None = None,
+    ) -> None:
+        self._settings = settings
+        self._client = client or LocalLlmClient(settings)
+
+    @property
+    def session_ttl_seconds(self) -> None:
+        return None
+
+    def session_fingerprint(
+        self,
+        *,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+    ) -> None:
+        del repository, access_context
+        return None
+
+    async def decide(
+        self,
+        *,
+        message: str,
+        selected_document_id: str | None,
+        conversation_id: str,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+        resume_session_id: str | None = None,
+    ) -> AgentRunResult:
+        del conversation_id, resume_session_id
+        documents = repository.search(message, access_context=access_context)
+        if selected_document_id:
+            selected = repository.get(selected_document_id, access_context=access_context)
+            if selected is not None:
+                documents = [
+                    selected,
+                    *[
+                        item
+                        for item in documents
+                        if item.document_id != selected_document_id
+                    ],
+                ]
+        source_context: dict[str, str] = {}
+        for document in documents[:5]:
+            if not document.can_write:
+                continue
+            source = repository.read_source_text(
+                document.document_id,
+                access_context=access_context,
+                max_bytes=32_768,
+            )
+            if source is not None:
+                source_context[document.document_id] = source[1]
+        if not documents and not source_context:
+            return AgentRunResult(
+                provider="local-gemma4",
+                decision=AgentDecision(
+                    prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                    outcome=AgentOutcome.NOT_FOUND,
+                    intent="change" if _looks_like_change(message) else "locate",
+                    assistant_text="검증된 로컬 문서 근거를 찾지 못했습니다.",
+                    search_query=message,
+                    target_document_id=None,
+                    source_sha256=None,
+                    operation=None,
+                ),
+            )
+        prompt = _local_turn_prompt(
+            message=message,
+            selected_document_id=selected_document_id,
+            documents=documents[:5],
+            source_context=source_context,
+        )
+        try:
+            completion = await self._client.complete_json(
+                system_prompt=_LOCAL_SYSTEM_PROMPT,
+                user_prompt=prompt,
+                response_schema=AgentDecision.model_json_schema(),
+            )
+            decision = AgentDecision.model_validate_json(completion.text)
+        except LocalLlmError as error:
+            raise AgentGatewayError(error.code, str(error)) from error
+        except ValidationError as error:
+            logger.warning("local agent decision validation failed: %s", error)
+            raise AgentGatewayError(
+                "LOCAL_LLM_RESULT_INVALID",
+                "로컬 Gemma 4가 안전한 구조화 결정을 반환하지 못했습니다.",
+            ) from error
+        decision = _verify_local_decision(
+            decision,
+            message=message,
+            selected_document_id=selected_document_id,
+            repository=repository,
+            access_context=access_context,
+            allowed_document_ids={item.document_id for item in documents},
+        )
+        return AgentRunResult(
+            provider=f"local-openai-compatible:{completion.model}",
+            decision=decision,
+        )
+
+
+class ClaudeAgentGateway:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    @property
+    def session_ttl_seconds(self) -> int:
+        return self._settings.claude_session_ttl_seconds
+
+    def session_fingerprint(
+        self,
+        *,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+    ) -> str:
+        system_prompt = build_system_prompt(repository.agent_guide)
+        fingerprint_payload = {
+            "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+            "system_prompt_sha256": hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
+            "tool_contract_version": TOOL_CONTRACT_VERSION,
+            "allowed_tools": sorted(ALLOWED_AGENT_TOOLS),
+            "output_schema": AgentDecision.model_json_schema(),
+            "agent_guide": repository.agent_guide.model_dump(mode="json"),
+            "graph_version": repository.version,
+            "model": self._settings.claude_model or "sdk-default",
+            "sdk_version": version("claude-agent-sdk"),
+            "access": {
+                "tenant_id": access_context.tenant_id,
+                "subject_id": access_context.subject_id,
+                "readable_access": sorted(level.value for level in access_context.readable_access),
+                "writable_document_ids": sorted(access_context.writable_document_ids),
+                "provisioned": access_context.provisioned,
+                "allow_all_writes": access_context.allow_all_writes,
+                "authz_source": access_context.authz_source,
+            },
+        }
+        encoded = json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def decide(
+        self,
+        *,
+        message: str,
+        selected_document_id: str | None,
+        conversation_id: str,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+        resume_session_id: str | None = None,
+    ) -> AgentRunResult:
+        session_id = str(uuid4())
+        effective_session_id = _canonical_session_id(resume_session_id or session_id)
+        state_root = self._settings.resolved_agent_state_root()
+        state_directory = (state_root / effective_session_id).resolve()
+        if not state_directory.is_relative_to(state_root):
+            raise AgentGatewayError(
+                "AGENT_SESSION_INVALID", "Claude session 경로가 유효하지 않습니다."
+            )
+        # 서브프로세스가 죽으면 SDK 는 "Check stderr output for details" 만 올리고 정작
+        # 그 stderr 를 버린다. 콜백을 붙여 붙잡아 뒀다가 실패했을 때 함께 남긴다.
+        stderr_tail = SubprocessStderrTail()
+        options = build_claude_agent_options(
+            repository,
+            working_directory=self._settings.resolved_source_root(),
+            state_directory=state_directory,
+            access_context=access_context,
+            output_schema=AgentDecision.model_json_schema(),
+            model=self._settings.claude_model,
+            session_id=None if resume_session_id else session_id,
+            resume=resume_session_id,
+            stderr=stderr_tail,
+        )
+        prompt = build_turn_prompt(
+            user_message=message,
+            selected_document_id=selected_document_id,
+            graph_version=repository.version,
+        )
+        try:
+            tool_calls: list[str] = []
+            tool_uses: list[ToolUseBlock] = []
+            tool_results: dict[str, ToolResultBlock] = {}
+            async with asyncio.timeout(self._settings.claude_timeout_seconds):
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(prompt)
+                    async for response in client.receive_response():
+                        if isinstance(response, AssistantMessage):
+                            current_tool_uses = [
+                                block
+                                for block in response.content
+                                if isinstance(block, ToolUseBlock)
+                            ]
+                            tool_uses.extend(current_tool_uses)
+                            tool_calls.extend(
+                                block.name
+                                for block in current_tool_uses
+                                if block.name in SAFE_AGENT_TOOLS
+                            )
+                            continue
+                        if isinstance(response, UserMessage):
+                            if isinstance(response.content, list):
+                                tool_results.update(
+                                    {
+                                        block.tool_use_id: block
+                                        for block in response.content
+                                        if isinstance(block, ToolResultBlock)
+                                    }
+                                )
+                            continue
+                        if not isinstance(response, ResultMessage):
+                            continue
+                        if response.subtype != "success" or response.structured_output is None:
+                            # SDK 는 호출이 실패해도 예외 대신 **실패한 ResultMessage** 를
+                            # 돌려준다. 그 subtype 을 버리면 남는 건 "결과를 반환하지
+                            # 못했습니다" 한 줄뿐이라, 프롬프트 문제인지 계정 문제인지
+                            # 알 수가 없다. 실제로 API 크레딧이 바닥난 것을 이 문구만 보고는
+                            # 못 찾아, Anthropic API 를 따로 찔러 보고서야 알았다.
+                            logger.warning(
+                                "agent result unusable: subtype=%s structured_output=%s result=%s",
+                                response.subtype,
+                                response.structured_output is not None,
+                                getattr(response, "result", None),
+                            )
+                            raise AgentGatewayError(
+                                "AGENT_RESULT_INVALID",
+                                "Claude Agent SDK가 검증된 구조화 결과를 반환하지 못했습니다."
+                                f" (subtype={response.subtype})",
+                            )
+                        returned_session_id = _canonical_session_id(response.session_id)
+                        if returned_session_id != effective_session_id:
+                            raise AgentGatewayError(
+                                "AGENT_SESSION_MISMATCH",
+                                "Claude Agent SDK session ID가 요청한 session과 다릅니다.",
+                            )
+                        decision = AgentDecision.model_validate(response.structured_output)
+                        _validate_tool_trace(
+                            decision,
+                            tool_uses,
+                            tool_results,
+                            expected_graph_version=repository.version,
+                            selected_document_id=selected_document_id,
+                        )
+                        return AgentRunResult(
+                            provider="claude-agent-sdk",
+                            session_id=returned_session_id,
+                            tool_calls=tool_calls,
+                            decision=decision,
+                            cost_usd=response.total_cost_usd,
+                        )
+        except TimeoutError as error:
+            raise AgentGatewayError(
+                "AGENT_TIMEOUT", "Claude 응답 시간이 초과되었습니다."
+            ) from error
+        except AgentGatewayError:
+            raise
+        except ValidationError as error:
+            # 무엇이 계약을 어겼는지 남긴다. 전에는 통째로 삼켜서, 실패해도 프롬프트를
+            # 고쳐야 할지 스키마를 고쳐야 할지 알 방법이 없었다.
+            logger.warning("agent decision validation failed: %s", error)
+            raise AgentGatewayError(
+                "AGENT_RESULT_INVALID",
+                "Claude Agent SDK가 prompt contract를 충족하지 못했습니다.",
+            ) from error
+        except Exception as error:
+            # 원인을 반드시 남긴다. 여기서 통째로 삼키는 바람에 "Claude Agent SDK 호출에
+            # 실패했습니다"만 보였고, 실제 원인(API 크레딧 소진)을 찾으려고 Anthropic API를
+            # 직접 찔러 봐야 했다. 로그 한 줄이면 바로 알 수 있는 일이었다.
+            #
+            # 서브프로세스가 죽은 경우(ProcessError)에는 SDK 가 stderr 를 버리므로,
+            # 붙잡아 둔 마지막 줄들을 함께 남긴다 — 그게 진짜 원인이 적힌 곳이다.
+            tail = stderr_tail.text()
+            logger.exception(
+                "agent gateway call failed: %s%s",
+                error,
+                f"\n--- subprocess stderr (last lines) ---\n{tail}" if tail else "",
+            )
+            # 이어받을 세션이 없어서 죽은 경우라면, 세션 없이 한 번 더 시도한다.
+            #
+            # 이어받기가 불가능하다는 이유로 **대화 전체가 실패할 이유는 없다.** 사용자에게는
+            # 앞선 대화가 화면에 그대로 보이는데 답만 안 나오는 상태였다. 이어지는 맥락은
+            # 잃더라도 질문에는 답하는 편이 낫고, 무엇을 잃었는지는 로그에 남긴다.
+            #
+            # 한 번만 재시도한다 — `resume_session_id=None` 으로 부르므로 이 분기에 다시
+            # 들어오지 않는다.
+            if resume_session_id is not None and _is_missing_session(tail):
+                logger.warning(
+                    "resume failed for session %s; retrying without it", resume_session_id
+                )
+                return await self.decide(
+                    message=message,
+                    selected_document_id=selected_document_id,
+                    conversation_id=conversation_id,
+                    repository=repository,
+                    access_context=access_context,
+                    resume_session_id=None,
+                )
+            raise AgentGatewayError(
+                "AGENT_UNAVAILABLE",
+                f"Claude Agent SDK 호출에 실패했습니다. ({type(error).__name__})",
+            ) from error
+        raise AgentGatewayError("AGENT_RESULT_MISSING", "Claude 최종 응답을 받지 못했습니다.")
+
+
+def _is_missing_session(stderr_tail: str) -> bool:
+    """이어받을 대화가 없어서 죽었는가.
+
+    CLI 는 이 경우 `No conversation found with session ID: <id>` 를 stderr 로 남긴다.
+    다른 실패(크레딧 소진, 네트워크)까지 재시도하면 같은 오류를 두 번 내고 두 배로 느려질
+    뿐이므로, 이 문구일 때만 되살린다.
+    """
+    return "No conversation found with session ID" in stderr_tail
+
+
+def build_agent_gateway(settings: Settings) -> AgentGateway:
+    if settings.agent_mode == "claude":
+        return ClaudeAgentGateway(settings)
+    if settings.agent_mode == "local":
+        return LocalAgentGateway(settings)
+    return DeterministicAgentGateway()
+
+
+_LOCAL_SYSTEM_PROMPT = """
+당신은 로컬 문서 에이전트의 안전한 라우터다. 사실 답변을 작성하지 말고 AgentDecision JSON
+하나만 반환한다. intent는 문서를 찾는 locate 또는 문구를 바꾸는 change다. 제공된 문서 ID
+밖의 대상을 만들지 않는다. change는 사용자가 변경 전 문구와 변경 후 문구를 명시했고,
+변경 전 문구가 제공된 현재 원본에 정확히 한 번 있을 때만 ready다. replacement_text는
+사용자 요청에 실제로 들어 있는 문자열이어야 한다. 불명확하면 needs_clarification으로
+fail-closed한다. source_sha256은 제공된 현재 원본의 sha256을 그대로 복사한다.
+prompt_contract_version은 반드시 "2.0"이다.
+""".strip()
+
+
+def _local_turn_prompt(
+    *,
+    message: str,
+    selected_document_id: str | None,
+    documents: list[Any],
+    source_context: dict[str, str],
+) -> str:
+    context = [
+        {
+            "document_id": document.document_id,
+            "title": document.title,
+            "can_write": document.can_write,
+            "evidence": [
+                {
+                    "section_id": evidence.section_id,
+                    "quote": evidence.quote[:2_000],
+                }
+                for evidence in document.evidence
+            ],
+            "current_source": source_context.get(document.document_id),
+            "source_sha256": (
+                hashlib.sha256(source_context[document.document_id].encode("utf-8")).hexdigest()
+                if document.document_id in source_context
+                else None
+            ),
+        }
+        for document in documents
+    ]
+    return json.dumps(
+        {
+            "user_message": message,
+            "selected_document_id": selected_document_id,
+            "verified_documents": context,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _verify_local_decision(
+    decision: AgentDecision,
+    *,
+    message: str,
+    selected_document_id: str | None,
+    repository: KnowledgeRepository,
+    access_context: AccessContext,
+    allowed_document_ids: set[str],
+) -> AgentDecision:
+    target = decision.target_document_id
+    if target is not None and target not in allowed_document_ids:
+        return _local_clarification(decision, message)
+    if selected_document_id is not None and target not in {None, selected_document_id}:
+        return _local_clarification(decision, message)
+    if decision.outcome is not AgentOutcome.READY or decision.intent != "change":
+        return decision
+    operation = decision.operation
+    if target is None or operation is None or operation.replacement_text not in message:
+        return _local_clarification(decision, message)
+    source = repository.read_source_text(target, access_context=access_context)
+    if source is None or source[1].count(operation.expected_text) != 1:
+        return _local_clarification(decision, message)
+    return decision.model_copy(
+        update={
+            "source_sha256": _current_source_sha256(source),
+        }
+    )
+
+
+def _local_clarification(decision: AgentDecision, message: str) -> AgentDecision:
+    return AgentDecision(
+        prompt_contract_version=PROMPT_CONTRACT_VERSION,
+        outcome=AgentOutcome.NEEDS_CLARIFICATION,
+        intent=decision.intent,
+        assistant_text="대상 문서와 변경 전후 문구를 더 명확히 확인해야 합니다.",
+        search_query=decision.search_query or message,
+        target_document_id=decision.target_document_id,
+        source_sha256=None,
+        operation=None,
+    )
+
+
+def _looks_like_change(message: str) -> bool:
+    return bool(re.search(r"수정|변경|바꿔|교체|replace", message, re.IGNORECASE))
+
+
+def _current_source_sha256(source: tuple[Any, str]) -> str:
+    manifest, text = source
+    if manifest.source.media_type in {"text/markdown", "text/plain"}:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return str(manifest.source.sha256)
+
+
+def _validate_tool_trace(
+    decision: AgentDecision,
+    tool_uses: list[ToolUseBlock],
+    tool_results: dict[str, ToolResultBlock],
+    *,
+    expected_graph_version: str,
+    selected_document_id: str | None,
+) -> None:
+    if any(tool_use.name not in SAFE_AGENT_TOOLS | SDK_CONTROL_TOOLS for tool_use in tool_uses):
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude가 허용되지 않은 도구를 사용했습니다.",
+        )
+    codegate_tool_uses = [tool_use for tool_use in tool_uses if tool_use.name in SAFE_AGENT_TOOLS]
+    names = [tool_use.name for tool_use in codegate_tool_uses]
+    source_tool = "mcp__codegate__source_file_read"
+    resolver_tools = {
+        "mcp__codegate__document_get",
+        "mcp__codegate__knowledge_search",
+    }
+    target = decision.target_document_id
+    target_get_indices = [
+        index
+        for index, tool_use in enumerate(codegate_tool_uses)
+        if tool_use.name == "mcp__codegate__document_get"
+        and tool_use.input.get("document_id") == target
+    ]
+    if target is not None and not target_get_indices:
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude가 현재 turn에서 대상 문서 ID를 검증하지 않았습니다.",
+        )
+    if target is not None:
+        target_payloads = [
+            _validated_tool_result_payload(
+                codegate_tool_uses[index],
+                tool_results.get(codegate_tool_uses[index].id),
+                expected_graph_version=expected_graph_version,
+            )
+            for index in target_get_indices
+        ]
+        if not any(_document_id_from_result(payload) == target for payload in target_payloads):
+            raise AgentGatewayError(
+                "AGENT_TOOL_RESULT_INVALID",
+                "Claude가 현재 turn에서 대상 문서 결과를 검증하지 못했습니다.",
+            )
+    if decision.outcome is AgentOutcome.TOOL_ERROR:
+        if not codegate_tool_uses or not any(
+            _tool_result_failed(
+                tool_use,
+                tool_results.get(tool_use.id),
+                expected_graph_version=expected_graph_version,
+            )
+            for tool_use in codegate_tool_uses
+        ):
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude의 tool_error 결정에 현재 turn의 실패한 도구 결과가 없습니다.",
+            )
+        return
+    if decision.outcome is AgentOutcome.NOT_FOUND:
+        if len(codegate_tool_uses) == 1:
+            tool_use = codegate_tool_uses[0]
+            if (
+                tool_use.name == "mcp__codegate__knowledge_search"
+                and tool_use.input.get("query") == decision.search_query
+            ):
+                try:
+                    payload = _validated_tool_result_payload(
+                        tool_use,
+                        tool_results.get(tool_use.id),
+                        expected_graph_version=expected_graph_version,
+                    )
+                except AgentGatewayError:
+                    pass
+                else:
+                    if payload.get("documents") == []:
+                        return
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude의 not_found 결정에 현재 turn의 빈 검색 결과가 없습니다.",
+        )
+    if decision.outcome is not AgentOutcome.READY:
+        return
+    result_payloads = {
+        tool_use.id: _validated_tool_result_payload(
+            tool_use,
+            tool_results.get(tool_use.id),
+            expected_graph_version=expected_graph_version,
+        )
+        for tool_use in codegate_tool_uses
+    }
+    search_indices = [
+        index
+        for index, tool_use in enumerate(codegate_tool_uses)
+        if tool_use.name == "mcp__codegate__knowledge_search"
+    ]
+    matching_search_indices = [
+        index
+        for index in search_indices
+        if codegate_tool_uses[index].input.get("query") == decision.search_query
+    ]
+    if search_indices and not matching_search_indices:
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude의 검색 도구 입력과 구조화 search_query가 일치하지 않습니다.",
+        )
+    if target is not None:
+        target_get_index = target_get_indices[0]
+        if selected_document_id == target:
+            target_resolved_in_order = target_get_index == 0
+        else:
+            target_resolved_in_order = any(
+                search_index < target_get_index
+                and target
+                in _search_result_document_ids(result_payloads[codegate_tool_uses[search_index].id])
+                for search_index in matching_search_indices
+            )
+        if not target_resolved_in_order:
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude의 검색과 대상 문서 확인 순서가 현재 routing hint와 일치하지 않습니다.",
+            )
+    if decision.intent == "locate":
+        if (
+            source_tool in names
+            or "mcp__codegate__knowledge_document_read" in names
+            or not any(name in resolver_tools for name in names)
+            or (target is not None and target_get_indices[0] != len(codegate_tool_uses) - 1)
+            or (target is None and not search_indices)
+            or (
+                target is None
+                and not any(
+                    _search_result_document_ids(result_payloads[codegate_tool_uses[index].id])
+                    for index in matching_search_indices
+                )
+            )
+        ):
+            raise AgentGatewayError(
+                "AGENT_TOOL_TRACE_INVALID",
+                "Claude가 현재 turn의 위치 검색 도구 계약을 지키지 않았습니다.",
+            )
+        return
+
+    source_indices = [index for index, name in enumerate(names) if name == source_tool]
+    if len(source_indices) != 1:
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude가 현재 turn의 원본 확인 도구 계약을 지키지 않았습니다.",
+        )
+    source_index = source_indices[0]
+    source_input = codegate_tool_uses[source_index].input
+    source_payload = result_payloads[codegate_tool_uses[source_index].id]
+    resolved_before_source = any(
+        tool_use.name == "mcp__codegate__document_get"
+        and tool_use.input.get("document_id") == target
+        for tool_use in codegate_tool_uses[:source_index]
+    )
+    if (
+        source_input.get("document_id") != target
+        or not resolved_before_source
+        or source_index != len(codegate_tool_uses) - 1
+    ):
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude의 대상 확인과 원본 확인 순서가 일치하지 않습니다.",
+        )
+    canonical_indices = [
+        index
+        for index, name in enumerate(names)
+        if name == "mcp__codegate__knowledge_document_read"
+    ]
+    if any(
+        not (
+            target_get_indices[0] < index < source_index
+            and codegate_tool_uses[index].input.get("document_id") == target
+        )
+        for index in canonical_indices
+    ):
+        raise AgentGatewayError(
+            "AGENT_TOOL_TRACE_INVALID",
+            "Claude의 canonical 문서 확인 순서나 대상이 일치하지 않습니다.",
+        )
+    if (
+        source_payload.get("document_id") != target
+        or source_payload.get("source_sha256") != decision.source_sha256
+        or source_payload.get("provenance", {}).get("source_kind") != "current_source"
+    ):
+        raise AgentGatewayError(
+            "AGENT_TOOL_RESULT_INVALID",
+            "Claude의 변경 결정이 현재 원본 도구 결과와 일치하지 않습니다.",
+        )
+
+
+def _validated_tool_result_payload(
+    tool_use: ToolUseBlock,
+    result: ToolResultBlock | None,
+    *,
+    expected_graph_version: str,
+) -> dict[str, Any]:
+    if result is None or result.is_error:
+        raise AgentGatewayError(
+            "AGENT_TOOL_RESULT_INVALID",
+            "Claude가 실패하거나 누락된 도구 결과를 ready 결정에 사용했습니다.",
+        )
+    payload = _decode_tool_result_payload(result.content)
+    provenance = payload.get("provenance") if payload is not None else None
+    if (
+        payload is None
+        or payload.get("tool_contract_version") != TOOL_CONTRACT_VERSION
+        or not isinstance(provenance, dict)
+        or provenance.get("trust") != "untrusted_content"
+        or provenance.get("graph_version") != expected_graph_version
+        or provenance.get("source_kind") != EXPECTED_TOOL_SOURCE_KINDS.get(tool_use.name)
+    ):
+        raise AgentGatewayError(
+            "AGENT_TOOL_RESULT_INVALID",
+            f"Claude 도구 결과 계약이 유효하지 않습니다: {tool_use.name}",
+        )
+    _validate_tool_result_shape(tool_use, payload)
+    return payload
+
+
+def _tool_result_failed(
+    tool_use: ToolUseBlock,
+    result: ToolResultBlock | None,
+    *,
+    expected_graph_version: str,
+) -> bool:
+    if result is None or result.is_error:
+        return True
+    try:
+        _validated_tool_result_payload(
+            tool_use,
+            result,
+            expected_graph_version=expected_graph_version,
+        )
+    except AgentGatewayError:
+        return True
+    return False
+
+
+def _decode_tool_result_payload(
+    content: str | list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    candidates: list[str] = []
+    if isinstance(content, str):
+        candidates.append(content)
+    elif isinstance(content, list):
+        candidates.extend(
+            str(block["text"])
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and "text" in block
+        )
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _document_id_from_result(payload: dict[str, Any]) -> str | None:
+    document = payload.get("document")
+    if not isinstance(document, dict):
+        return None
+    document_id = document.get("document_id")
+    return str(document_id) if isinstance(document_id, str) else None
+
+
+def _search_result_document_ids(payload: dict[str, Any]) -> set[str]:
+    documents = payload.get("documents")
+    if not isinstance(documents, list):
+        return set()
+    return {
+        str(document["document_id"])
+        for document in documents
+        if isinstance(document, dict) and isinstance(document.get("document_id"), str)
+    }
+
+
+def _validate_tool_result_shape(tool_use: ToolUseBlock, payload: dict[str, Any]) -> None:
+    tool_name = tool_use.name
+    requested_document_id = tool_use.input.get("document_id")
+    valid = False
+    if tool_name == "mcp__codegate__knowledge_search":
+        valid = isinstance(payload.get("documents"), list)
+    elif tool_name == "mcp__codegate__document_get":
+        valid = _document_id_from_result(payload) == requested_document_id
+    elif tool_name == "mcp__codegate__knowledge_document_read":
+        valid = payload.get("document_id") == requested_document_id and isinstance(
+            payload.get("content"), str
+        )
+    elif tool_name == "mcp__codegate__source_file_read":
+        valid = (
+            payload.get("document_id") == requested_document_id
+            and isinstance(payload.get("source_sha256"), str)
+            and isinstance(payload.get("content"), str)
+        )
+    if not valid:
+        raise AgentGatewayError(
+            "AGENT_TOOL_RESULT_INVALID",
+            f"Claude 도구 결과 payload가 유효하지 않습니다: {tool_name}",
+        )
+
+
+def _canonical_session_id(value: str) -> str:
+    try:
+        parsed = UUID(value)
+    except (ValueError, AttributeError) as error:
+        raise AgentGatewayError(
+            "AGENT_SESSION_INVALID",
+            "Claude Agent SDK session ID가 UUID 형식이 아닙니다.",
+        ) from error
+    canonical = str(parsed)
+    if value.lower() != canonical:
+        raise AgentGatewayError(
+            "AGENT_SESSION_INVALID",
+            "Claude Agent SDK session ID가 canonical UUID 형식이 아닙니다.",
+        )
+    return canonical
+
+
+def _extract_document_id(message: str) -> str | None:
+    match = re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", message)
+    if match is None:
+        return None
+    document_id = match.group(0)
+    return document_id if len(document_id) <= 96 else None
+
+
+def _parse_replace_operation(message: str) -> ReplaceExactOperation | None:
+    if not re.search(r"바꿔|변경|수정|교체|replace", message, re.IGNORECASE):
+        return None
+    quoted = re.search(
+        r"[\"'“‘](?P<old>.+?)[\"'”’]\s*(?:을|를)?\s*"
+        r"[\"'“‘](?P<new>.+?)[\"'”’]\s*(?:으로|로)",
+        message,
+    )
+    if quoted:
+        return ReplaceExactOperation(
+            expected_text=quoted.group("old"),
+            replacement_text=quoted.group("new"),
+        )
+    unquoted = re.search(
+        r"(?P<old>[^\s]+?)(?:을|를)\s+(?P<new>[^\s]+?)(?:으로|로)\s*"
+        r"(?:바꿔|변경|수정|교체)",
+        message,
+    )
+    if unquoted:
+        return ReplaceExactOperation(
+            expected_text=unquoted.group("old"),
+            replacement_text=unquoted.group("new"),
+        )
+    return None

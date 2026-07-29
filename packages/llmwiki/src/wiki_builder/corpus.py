@@ -1,0 +1,508 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import unicodedata
+from collections import Counter, defaultdict
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+from wiki_builder.config import WikiConfig
+from wiki_builder.errors import ValidationError
+from wiki_builder.models import BuildData, Document, Link, Section
+from wiki_builder.provenance import compatible_model_fingerprint, model_display_name
+from wiki_builder.schemas import validate_record
+
+MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+
+def normalize_alias(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+def split_section_text(text: str, max_chars: int, overlap_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+    paragraphs = re.split(r"\n{2,}", text)
+    parts: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            parts.append(current)
+            overlap = current[-overlap_chars:] if overlap_chars else ""
+            current = f"{overlap}\n\n{paragraph}" if overlap else paragraph
+        else:
+            cursor = 0
+            while cursor < len(paragraph):
+                end = min(cursor + max_chars, len(paragraph))
+                parts.append(paragraph[cursor:end])
+                if end == len(paragraph):
+                    current = ""
+                    break
+                cursor = max(end - overlap_chars, cursor + 1)
+        while len(current) > max_chars:
+            parts.append(current[:max_chars])
+            current = current[max_chars - overlap_chars :]
+    if current:
+        parts.append(current)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def build_chunks(config: WikiConfig, documents: Iterable[Document]) -> list[dict[str, Any]]:
+    max_chars = int(config.raw["chunking"]["max_chars"])
+    overlap_chars = int(config.raw["chunking"]["overlap_chars"])
+    records: list[dict[str, Any]] = []
+    for document in documents:
+        ordinal = 0
+        for section in document.sections:
+            parts = (
+                [section.text]
+                if section.pre_chunked
+                else split_section_text(section.text, max_chars, overlap_chars)
+            )
+            for part_number, text in enumerate(parts, start=1):
+                ordinal += 1
+                if section.pre_chunked:
+                    chunk_type = "source-fragment"
+                else:
+                    chunk_type = "section" if len(parts) == 1 else "section-part"
+                chunk_id = (
+                    f"{document.doc_id}@{document.revision}#{section.section_id}:c{part_number:03d}"
+                )
+                embedding_text = f"{document.title}\n{section.heading}\n{text}"
+                record = {
+                    "schema_version": config.schema_version,
+                    "wiki_version": config.wiki_version,
+                    "chunk_id": chunk_id,
+                    "doc_id": document.doc_id,
+                    "revision": document.revision,
+                    "ordinal": ordinal,
+                    "section_id": section.section_id,
+                    "heading_path": list(section.heading_path),
+                    "chunk_type": chunk_type,
+                    "text": text,
+                    "embedding_text": embedding_text,
+                    "char_count": len(text),
+                    "source_path": document.output_relative_path,
+                    "source_chunk_no": section.source_chunk_no,
+                    "source_input_path": (f"source-md/{section.source_input_relative_path}"),
+                    "source_input_sha256": section.source_input_sha256,
+                    "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    "status": document.metadata["status"],
+                    "effective_from": document.metadata["effective_from"],
+                    "effective_to": document.metadata["effective_to"],
+                    "tags": list(document.metadata["tags"]),
+                    "access": document.metadata["access"],
+                }
+                validate_record(config, "chunk", record, chunk_id)
+                records.append(record)
+    return records
+
+
+def build_aliases(config: WikiConfig, documents: Iterable[Document]) -> dict[str, Any]:
+    targets: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for document in documents:
+        for declared in document.metadata["aliases"]:
+            term = normalize_alias(str(declared))
+            target = {"doc_id": document.doc_id, "kind": "declared"}
+            if target not in targets[term]:
+                targets[term].append(target)
+    entries = [
+        {"term": term, "targets": sorted(items, key=lambda item: item["doc_id"])}
+        for term, items in sorted(targets.items(), key=lambda item: item[0])
+    ]
+    value = {
+        "schema_version": config.schema_version,
+        "normalization": "NFC+whitespace",
+        "entries": entries,
+    }
+    validate_record(config, "aliases", value, "aliases.json")
+    return value
+
+
+def _link_evidence_quote(section: Section, target: str) -> str:
+    for line in section.text.splitlines():
+        if f"]({target})" in line:
+            return line.strip()
+    raise ValidationError(f"링크 근거 행을 찾지 못했습니다: {target}")
+
+
+def extract_links(documents: Iterable[Document]) -> list[Link]:
+    document_list = list(documents)
+    known = {document.doc_id for document in document_list}
+    links: list[Link] = []
+    for document in document_list:
+        for section in document.sections:
+            for match in MARKDOWN_LINK_RE.finditer(section.text):
+                target = match.group(1).split("#", maxsplit=1)[0]
+                if "://" in target or target.startswith(("mailto:", "#")):
+                    continue
+                if not target.lower().endswith(".md"):
+                    continue
+                to_doc_id = Path(target).stem
+                if to_doc_id not in known:
+                    raise ValidationError(
+                        f"{document.doc_id} {section.section_id}: 깨진 내부 링크 {target}"
+                    )
+                links.append(
+                    Link(
+                        from_doc_id=document.doc_id,
+                        from_section_id=section.section_id,
+                        to_doc_id=to_doc_id,
+                        evidence_quote=_link_evidence_quote(section, match.group(1)),
+                    )
+                )
+    return links
+
+
+def build_links(
+    config: WikiConfig,
+    links: Iterable[Link],
+    enrichments: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for link in links:
+        relation_type = link.relation_type
+        origin = link.origin
+        enrichment = enrichments.get(link.from_doc_id)
+        if enrichment:
+            relation = next(
+                (item for item in enrichment["relations"] if item["to_doc_id"] == link.to_doc_id),
+                None,
+            )
+            if relation and relation["relation_type"] != "references":
+                relation_type = relation["relation_type"]
+                origin = "llm-classified"
+        record = {
+            "schema_version": config.schema_version,
+            "wiki_version": config.wiki_version,
+            "from_doc_id": link.from_doc_id,
+            "from_section_id": link.from_section_id,
+            "to_doc_id": link.to_doc_id,
+            "relation_type": relation_type,
+            "origin": origin,
+            "evidence_quote": link.evidence_quote,
+        }
+        if link.shared_entities:
+            # 명시적 링크에는 없는 값이라 있을 때만 적는다 — 빈 배열로 채우면 "근거를 못 찾았다"와
+            # "원래 이런 종류가 아니다"가 구분되지 않는다.
+            record["shared_entities"] = [dict(item) for item in link.shared_entities]
+        validate_record(
+            config,
+            "link",
+            record,
+            f"{link.from_doc_id}->{link.to_doc_id}",
+        )
+        records.append(record)
+    return sorted(
+        records,
+        key=lambda item: (
+            item["from_doc_id"],
+            item["from_section_id"],
+            item["to_doc_id"],
+        ),
+    )
+
+
+def infer_entity_links(
+    config: WikiConfig,
+    approved: dict[str, dict[str, Any]],
+    existing: Iterable[Link],
+) -> list[Link]:
+    """공유 엔티티로 문서 사이의 간선을 **유도**한다.
+
+    왜 필요한가
+    ----------
+    `extract_links` 는 문서 본문에 **명시적으로 적힌** 마크다운 링크만 간선으로 뽑는다.
+    변환된 실제 문서(hwp·docx·pdf)는 서로를 그렇게 링크하지 않으므로 그래프가 점만 남는다.
+    enrichment 가 이미 문서마다 엔티티를 뽑아 뒀으니, **같은 엔티티를 공유하는 문서끼리**
+    이어 주면 관계가 드러난다.
+
+    N² 폭발을 막는 두 가지
+    ---------------------
+    1. **흔한 엔티티 제외** — 폴더 이름처럼 거의 모든 문서에 나오는 엔티티는 판별력이 없다.
+       `max_entity_docs` 개보다 많은 문서에 나오면 잇지 않는다(전부를 전부에 잇게 된다).
+    2. **문서당 상한** — 각 문서는 가장 강하게 겹치는 `max_per_doc` 개까지만 잇는다.
+
+    기본은 꺼져 있다(`entity_links.enabled`). 켜는 것은 앱의 wiki.yaml 이고, 그래서 기존
+    합성 코퍼스 테스트(명시적 링크만 세는)는 그대로 통과한다.
+    """
+    settings = dict(config.raw.get("entity_links", {}))
+    if not settings.get("enabled", False):
+        return []
+    max_entity_docs = int(settings.get("max_entity_docs", 12))
+    max_per_doc = int(settings.get("max_per_doc", 6))
+    min_shared = int(settings.get("min_shared", 1))
+
+    # 엔티티(이름+종류) → {문서: (근거 섹션, 인용)}. 문서마다 첫 근거를 대표로 쓴다.
+    postings: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
+    # 표시용 이름은 따로 기억한다 — 비교는 casefold 로 하지만 화면에는 사람이 쓴 대로 보여야 한다.
+    display_names: dict[tuple[str, str], str] = {}
+    for doc_id, record in approved.items():
+        for entity in record.get("entities", []):
+            name = normalize_alias(str(entity.get("name", "")))
+            if not name:
+                continue
+            evidence = (entity.get("evidence") or [{}])[0]
+            section_id = evidence.get("section_id")
+            if not section_id:
+                continue  # 근거 섹션이 없으면 유효한 링크를 못 만든다
+            quote = str(evidence.get("quote") or name)
+            key = (name.casefold(), str(entity.get("type", "")))
+            postings[key].setdefault(doc_id, (str(section_id), quote))
+            display_names.setdefault(key, name)
+
+    # 이미 있는 간선(명시적)은 양방향으로 기억해 중복 생성하지 않는다.
+    seen_pairs: set[tuple[str, str]] = set()
+    for link in existing:
+        seen_pairs.add((link.from_doc_id, link.to_doc_id))
+        seen_pairs.add((link.to_doc_id, link.from_doc_id))
+
+    # 문서 쌍별로 **겹친 엔티티를 전부** 모은다. 개수가 곧 연결의 강도이고, 목록이 곧 근거다.
+    pair_keys: dict[frozenset[str], list[tuple[str, str]]] = defaultdict(list)
+    pair_evidence: dict[frozenset[str], tuple[str, str, str]] = {}
+    for key, docs in postings.items():
+        if not (2 <= len(docs) <= max_entity_docs):
+            continue  # 후보 없음(1개) 또는 너무 흔함
+        doc_ids = sorted(docs)
+        for i in range(len(doc_ids)):
+            for j in range(i + 1, len(doc_ids)):
+                a, b = doc_ids[i], doc_ids[j]
+                pair = frozenset((a, b))
+                pair_keys[pair].append(key)
+                if pair not in pair_evidence:
+                    section_id, quote = docs[a]
+                    pair_evidence[pair] = (a, section_id, quote)
+    pair_weight: dict[frozenset[str], int] = {
+        pair: len(keys) for pair, keys in pair_keys.items()
+    }
+
+    # 문서당 상한: 각 문서에서 가장 강한 것부터 max_per_doc 개만 남긴다.
+    candidates_by_doc: dict[str, list[tuple[int, frozenset[str]]]] = defaultdict(list)
+    for pair, weight in pair_weight.items():
+        if weight < min_shared:
+            continue
+        for doc_id in pair:
+            candidates_by_doc[doc_id].append((weight, pair))
+
+    kept: set[frozenset[str]] = set()
+    for candidates in candidates_by_doc.values():
+        # 강한 순, 동점은 문서 id 순으로 — 무작위 없이 결정적으로.
+        candidates.sort(key=lambda item: (-item[0], sorted(item[1])))
+        for _weight, pair in candidates[:max_per_doc]:
+            kept.add(pair)
+
+    links: list[Link] = []
+    for pair in sorted(kept, key=sorted):
+        from_doc, section_id, quote = pair_evidence[pair]
+        to_doc = next(doc_id for doc_id in pair if doc_id != from_doc)
+        if (from_doc, to_doc) in seen_pairs:
+            continue
+        links.append(
+            Link(
+                from_doc_id=from_doc,
+                from_section_id=section_id,
+                to_doc_id=to_doc,
+                evidence_quote=quote,
+                relation_type="references",
+                origin="entity-overlap",
+                shared_entities=_shared_entity_evidence(
+                    pair_keys[pair], postings, display_names, from_doc, to_doc
+                ),
+            )
+        )
+    return links
+
+
+def _shared_entity_evidence(
+    keys: list[tuple[str, str]],
+    postings: dict[tuple[str, str], dict[str, tuple[str, str]]],
+    display_names: dict[tuple[str, str], str],
+    from_doc: str,
+    to_doc: str,
+) -> tuple[dict[str, str], ...]:
+    """겹친 엔티티마다 **양쪽 문서가 각각 어느 문장에서 말했는지**를 남긴다.
+
+    한쪽 인용만 남기면 "이 문서가 저 문서를 가리킨다"로 읽히는데, 엔티티 겹침은 방향이 없다.
+    두 문장을 나란히 보여줘야 사용자가 "아, 둘 다 이 사람을 적었구나"를 스스로 확인한다.
+
+    이름순으로 정렬한다 — 같은 빌드를 다시 돌려도 같은 순서로 나와야 화면이 흔들리지 않는다.
+    """
+    evidence: list[dict[str, str]] = []
+    for key in sorted(set(keys)):
+        docs = postings[key]
+        from_side = docs.get(from_doc)
+        to_side = docs.get(to_doc)
+        if not from_side or not to_side:
+            continue
+        evidence.append(
+            {
+                "name": display_names.get(key, key[0]),
+                "type": key[1],
+                "from_section_id": from_side[0],
+                "from_quote": from_side[1],
+                "to_section_id": to_side[0],
+                "to_quote": to_side[1],
+            }
+        )
+    return tuple(evidence)
+
+
+def current_enrichments(
+    config: WikiConfig, documents: Iterable[Document]
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    approved_dir = config.resolve_path("enrichment_dir") / "approved"
+    approved: dict[str, dict[str, Any]] = {}
+    status: dict[str, str] = {}
+    for document in documents:
+        path = approved_dir / f"{document.doc_id}.json"
+        if not path.is_file():
+            status[document.doc_id] = "pending"
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            validate_record(config, "enrichment", record, document.doc_id)
+        except (json.JSONDecodeError, ValidationError):
+            status[document.doc_id] = "stale"
+            continue
+        is_current = all(
+            (
+                record["source_sha256"] == document.original_sha256,
+                record["prompt_version"] == config.prompt_version,
+                compatible_model_fingerprint(config, record["model_fingerprint"]),
+            )
+        )
+        if is_current:
+            approved[document.doc_id] = record
+            status[document.doc_id] = "approved"
+        else:
+            status[document.doc_id] = "stale"
+    needs_review_dir = config.resolve_path("enrichment_dir") / "needs-review"
+    for document in documents:
+        review_path = needs_review_dir / f"{document.doc_id}.json"
+        if review_path.is_file() and status.get(document.doc_id) != "approved":
+            try:
+                review = json.loads(review_path.read_text(encoding="utf-8"))
+                if review.get("source_sha256") == document.original_sha256:
+                    status[document.doc_id] = "needs-review"
+            except json.JSONDecodeError:
+                status[document.doc_id] = "needs-review"
+    return approved, status
+
+
+def build_manifest(
+    config: WikiConfig,
+    documents: Iterable[Document],
+    chunks: Iterable[dict[str, Any]],
+    links: Iterable[dict[str, Any]],
+    enrichments: dict[str, dict[str, Any]],
+    enrichment_status: dict[str, str],
+) -> list[dict[str, Any]]:
+    chunk_counts = Counter(chunk["doc_id"] for chunk in chunks)
+    link_counts = Counter(link["from_doc_id"] for link in links)
+    display_model = model_display_name(config)
+    records: list[dict[str, Any]] = []
+    for document in documents:
+        enrichment = enrichments.get(document.doc_id)
+        output_bytes = document.normalized_markdown.encode("utf-8")
+        status = enrichment_status[document.doc_id]
+        record = {
+            "schema_version": config.schema_version,
+            "wiki_version": config.wiki_version,
+            "doc_id": document.doc_id,
+            "revision": document.revision,
+            "title": document.title,
+            "doc_type": document.metadata["doc_type"],
+            "language": document.metadata["language"],
+            "status": document.metadata["status"],
+            "official_number": document.metadata["official_number"],
+            "authority_level": document.metadata["authority_level"],
+            "issuing_org": document.metadata["issuing_org"],
+            "issued_on": document.metadata["issued_on"],
+            "effective_from": document.metadata["effective_from"],
+            "effective_to": document.metadata["effective_to"],
+            "path": document.output_relative_path,
+            "access": document.metadata["access"],
+            "tags": list(document.metadata["tags"]),
+            "aliases": list(document.metadata["aliases"]),
+            "source": dict(document.metadata["source"]),
+            "ingest": {
+                "aggregate_sha256": document.original_sha256,
+                "fragments": [
+                    {
+                        "chunk_no": fragment.chunk_no,
+                        "path": f"source-md/{fragment.input_relative_path}",
+                        "sha256": fragment.original_sha256,
+                    }
+                    for fragment in document.source_fragments
+                ],
+            },
+            "source_fragment_count": len(document.source_fragments),
+            "chunking_mode": document.chunking_mode,
+            "content_sha256": hashlib.sha256(output_bytes).hexdigest(),
+            "section_count": len(document.sections),
+            "chunk_count": chunk_counts[document.doc_id],
+            "link_count": link_counts[document.doc_id],
+            "summary": enrichment["summary"]["text"] if enrichment else None,
+            "keywords": list(enrichment["keywords"]) if enrichment else [],
+            "enrichment": {
+                "status": status,
+                "model": display_model if enrichment else None,
+                "prompt_version": config.prompt_version if enrichment else None,
+                "record_ref": (
+                    f"retrieval/enrichments.jsonl#{document.doc_id}" if enrichment else None
+                ),
+            },
+        }
+        validate_record(config, "manifest", record, document.doc_id)
+        records.append(record)
+    return sorted(records, key=lambda item: item["doc_id"])
+
+
+def assemble_build_data(config: WikiConfig, documents: list[Document]) -> BuildData:
+    approved, statuses = current_enrichments(config, documents)
+    explicit_links = extract_links(documents)
+    # 공유 엔티티로 유도한 간선을 명시적 링크에 더한다(설정으로 켤 때만).
+    inferred_links = infer_entity_links(config, approved, explicit_links)
+    chunks = build_chunks(config, documents)
+    aliases = build_aliases(config, documents)
+    links = build_links(config, [*explicit_links, *inferred_links], approved)
+    manifest = build_manifest(config, documents, chunks, links, approved, statuses)
+    return BuildData(
+        documents=documents,
+        chunks=chunks,
+        aliases=aliases,
+        links=links,
+        manifest=manifest,
+        enrichments=[approved[key] for key in sorted(approved)],
+    )
+
+
+def verify_expected_corpus(expected: dict[str, Any], data: BuildData) -> None:
+    actual_type_counts = Counter(doc.metadata["doc_type"] for doc in data.documents)
+    actual_status_counts = Counter(doc.metadata["status"] for doc in data.documents)
+    checks = {
+        "documents": (len(data.documents), int(expected["documents"])),
+        "chunks": (len(data.chunks), int(expected["chunks"])),
+        "aliases": (len(data.aliases["entries"]), int(expected["aliases"])),
+        "explicit_links": (len(data.links), int(expected["explicit_links"])),
+    }
+    failures = [
+        f"{name}: 실제 {actual}, 예상 {wanted}"
+        for name, (actual, wanted) in checks.items()
+        if actual != wanted
+    ]
+    for name, wanted in expected["doc_types"].items():
+        if actual_type_counts[name] != wanted:
+            failures.append(f"doc_type {name}: 실제 {actual_type_counts[name]}, 예상 {wanted}")
+    for name, wanted in expected["statuses"].items():
+        if actual_status_counts[name] != wanted:
+            failures.append(f"status {name}: 실제 {actual_status_counts[name]}, 예상 {wanted}")
+    if failures:
+        raise ValidationError("코퍼스 합격 기준 불일치\n- " + "\n- ".join(failures))

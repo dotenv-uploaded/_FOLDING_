@@ -1,0 +1,103 @@
+schema_version: "1.0.0"
+wiki_version: "0.1.0"
+prompt_version: enrichment-v1
+
+compatibility:
+  accepted_enrichment_fingerprints:
+    - f1c34c90254d02b7eb93f443ca61de11c97ebb3a238ed9ce16748295d007713c
+
+paths:
+  input_dir: samples/input
+  storage_root: wiki-storage
+  output_dir: ../llm-wiki
+  schemas_dir: schemas
+  prompt_file: prompts/enrichment-v1.md
+  enrichment_dir: enrichment
+  env_file: .env
+
+defaults:
+  tenant_id: local
+  wiki_id: sample-wiki
+  synthetic_corpus: true
+
+normalization:
+  unicode: NFC
+  line_endings: LF
+  trim_trailing_whitespace: true
+  section_anchor_prefix: sec-
+  section_anchor_hash_length: 10
+
+input_limits:
+  max_documents: 10000
+  max_source_files: 50000
+  max_markdown_file_bytes: 10485760
+  max_total_markdown_bytes: 1073741824
+  max_sections_per_document: 500
+  max_semantic_chunk_chars: 12000
+
+chunking:
+  max_chars: 2400
+  overlap_chars: 200
+
+provider:
+  name: local-openai
+  backend: auto
+  api: chat.completions
+  api_version: v1
+  base_url: http://127.0.0.1:11434/v1
+  requested_model: gemma4:e2b
+  model: gemma4:e2b
+  migration_reason: local-first-no-api-key
+  api_key_env: CODEGATE_LOCAL_LLM_API_TOKEN
+  temperature: 0.1
+  top_p: 0.8
+  top_k: 20
+  seed: 42
+  max_output_tokens: 4096
+  thinking_level: minimal
+  request_timeout_seconds: 180
+  api_max_attempts: 5
+  retry_base_seconds: 1.0
+  data_policy: local-only
+  pricing:
+    currency: USD
+    effective_on: 2026-07-29
+    input_per_million_tokens: 0.0
+    output_per_million_tokens: 0.0
+
+security:
+  require_paid_policy_for_nonpublic: true
+  paid_policy_name: paid-no-training
+  external_llm_allowed_access:
+    - public
+    - internal
+  block_restricted: true
+
+# 공유 엔티티로 그래프 간선을 유도한다.
+#
+# 파일에서는 꺼 둔다 — 이 파일은 wiki-builder 테스트도 함께 읽어서, 켜면 명시적 링크만
+# 세는 고정 기대값 테스트가 깨진다. 앱(codegate)이 로드 후 프로그램적으로 켠다. 임계값은
+# 여기서 조정할 수 있다.
+entity_links:
+  enabled: false
+  max_entity_docs: 12   # 이보다 많은 문서에 나오는 엔티티는 흔해서 제외(전부-전부 연결 방지)
+  max_per_doc: 6        # 문서당 유도 간선 상한
+  min_shared: 1         # 이만큼 엔티티가 겹쳐야 잇는다
+
+enrichment:
+  max_attempts: 3
+  summary_min_sentences: 2
+  summary_max_sentences: 3
+  key_points_min: 3
+  key_points_max: 5
+  keywords_min: 5
+  keywords_max: 10
+  faq_min: 2
+  faq_max: 3
+  relation_types:
+    - references
+    - implements
+    - implemented_by
+    - based_on
+    - supersedes
+    - superseded_by

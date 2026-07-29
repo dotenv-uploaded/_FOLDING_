@@ -1,0 +1,164 @@
+import { useState } from 'react';
+import { FolderOpen, Plus, Trash2 } from 'lucide-react';
+import type { Session } from '@contracts';
+import type { useWorkspace } from '@/state/useWorkspace';
+import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/ui/Dialog';
+import { Button } from '@/ui/Button';
+import { Badge } from '@/ui/Badge';
+import { UsagePanel } from '@/components/UsagePanel';
+import { cn } from '@/lib/cn';
+
+type Workspace = ReturnType<typeof useWorkspace>;
+
+type Tab = 'general' | 'usage' | 'account';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'general', label: '일반' },
+  { id: 'usage', label: '사용량' },
+  { id: 'account', label: '계정' },
+];
+
+/**
+ * 설정 — 일반(등록 폴더) · 사용량 · 계정 세 갈래로 나눈다.
+ *
+ * 한 화면에 모두 쌓으면 정작 자주 보는 것(사용량·폴더)이 계정 정보에 묻힌다. 성격이 다른
+ * 세 가지를 탭으로 갈라, 필요한 것만 보게 한다.
+ *
+ * 문서 분석 키 입력란은 없다. 토큰은 구독으로 우리가 내므로 사용자가 키를 넣을 일이 없다.
+ */
+export function SettingsScreen({
+  open,
+  onClose,
+  session,
+  workspace,
+  onLogout,
+}: {
+  open: boolean;
+  onClose: () => void;
+  session: Session;
+  workspace: Workspace;
+  onLogout: () => Promise<void>;
+}) {
+  const [tab, setTab] = useState<Tab>('general');
+
+  async function addFolder() {
+    const path = await workspace.pickFolder();
+    if (!path) return;
+    await workspace.addRoot(path);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="w-[min(640px,calc(100vw-64px))]">
+        <DialogHeader title="설정" />
+
+        {/* 탭 바 */}
+        <div role="tablist" aria-label="설정 분류" className="flex gap-1 border-b border-ink-100 px-7">
+          {TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className={cn(
+                'relative -mb-px px-3 py-2.5 text-sm font-medium transition-colors fold-focus',
+                tab === id
+                  ? 'text-ink-900 after:absolute after:inset-x-3 after:-bottom-px after:h-0.5 after:rounded-full after:bg-blue-500'
+                  : 'text-ink-400 hover:text-ink-700',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-auto px-7 py-6">
+          {tab === 'general' && (
+            <section>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="fold-eyebrow">등록 폴더</h3>
+                <Button variant="ghost" size="sm" iconLeft={<Plus size={14} />} onClick={addFolder}>
+                  폴더 추가
+                </Button>
+              </div>
+              <ul className="flex flex-col gap-2">
+                {workspace.roots.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex items-center gap-3 rounded-md border border-ink-100 px-4 py-3"
+                  >
+                    <FolderOpen size={16} className="shrink-0 text-ink-400" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium text-ink-800">{r.path}</div>
+                      <div className="mt-0.5 font-mono text-2xs text-ink-400">
+                        {r.includedCount}개 포함 · {r.excludedCount}개 제외
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => workspace.removeRoot(r.id)}
+                      aria-label="폴더 해제"
+                      className="shrink-0 rounded-sm p-1.5 text-ink-300 transition-colors hover:bg-red-50 hover:text-red-500 fold-focus"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </li>
+                ))}
+                {workspace.roots.length === 0 && (
+                  <li className="rounded-md border border-dashed border-ink-150 px-4 py-6 text-center text-xs text-ink-400">
+                    등록된 폴더가 없습니다.
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
+
+          {tab === 'usage' && (
+            <section>
+              <h3 className="fold-eyebrow mb-3">구독 사용량</h3>
+              <UsagePanel />
+            </section>
+          )}
+
+          {tab === 'account' && (
+            <section>
+              <h3 className="fold-eyebrow mb-3">계정</h3>
+              <div className="flex items-center gap-3 rounded-md border border-ink-100 px-4 py-3.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold text-ink-900">
+                    {session.email ?? '로그인됨'}
+                  </div>
+                  <div className="mt-0.5 text-xs text-ink-400">
+                    tenant {session.tenantId ?? '미확인'} · 쓰기 범위 {session.writeScope ?? 'none'}
+                  </div>
+                </div>
+                <Badge tone={session.provisioned ? 'success' : 'danger'}>
+                  {session.provisioned ? '권한 연결됨' : '권한 없음'}
+                </Badge>
+              </div>
+              {!session.provisioned && (
+                <p className="mt-2 text-xs text-red-600">
+                  계정 provisioning이 끝나기 전에는 문서 쓰기 승인을 실행하지 않습니다.
+                </p>
+              )}
+            </section>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              await onLogout();
+              onClose();
+            }}
+          >
+            로그아웃
+          </Button>
+          <Button variant="secondary" onClick={onClose}>
+            닫기
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

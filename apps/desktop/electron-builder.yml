@@ -1,0 +1,67 @@
+appId: kr.folding.desktop
+productName: Folding
+copyright: Copyright © 2026 Folding contributors
+
+directories:
+  output: release
+
+files:
+  - out/**
+  - package.json
+  - node_modules/**
+
+asar: true
+compression: normal
+asarUnpack:
+  - node_modules/**
+
+extraResources:
+  - from: build/runtime/current/sidecar
+    to: sidecar
+  - from: build/runtime/current/doc2md
+    to: doc2md
+  - from: build/runtime/current/local-llm
+    to: local-llm
+  - from: build/runtime/current/prerequisites
+    to: prerequisites
+  - from: ../../packages/llmwiki
+    to: LLMWIKI
+    filter:
+      - config/**
+      - enrichment/**
+      - prompts/**
+      - schemas/**
+      - src/**
+      - INPUT_CONTRACT.md
+      - README.md
+      - SERVER_INTEGRATION.md
+      - pyproject.toml
+
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+win:
+  target:
+    - nsis
+
+nsis:
+  include: build/installer/windows-prerequisites.nsh
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  minimumSystemVersion: "14.0"
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+linux:
+  target:
+    - AppImage
+  category: Office
+
+publish: null

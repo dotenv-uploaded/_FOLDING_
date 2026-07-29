@@ -1,0 +1,76 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2025
+            architecture: x64
+          - name: macOS arm64
+            os: macos-15
+            architecture: arm64
+          - name: macOS x64
+            os: macos-15-intel
+            architecture: x64
+          - name: Linux x64
+            os: ubuntu-22.04
+            architecture: x64
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            architecture: arm64
+
+    defaults:
+      run:
+        working-directory: apps/desktop
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install desktop dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test desktop
+        run: pnpm test
+
+      - name: Build installer
+        run: pnpm package
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: folding-${{ runner.os }}-${{ matrix.architecture }}
+          path: apps/desktop/release/*
+          if-no-files-found: error
+          compression-level: 0
