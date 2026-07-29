@@ -503,6 +503,14 @@ export interface ExecutionSummary {
   canUndo: boolean;
 }
 
+export type LocalLlmAcceleration = 'cpu' | 'gpu';
+
+export interface LocalLlmSettings {
+  model: 'gemma4:e2b';
+  acceleration: LocalLlmAcceleration;
+  restartRequired: boolean;
+}
+
 /* ============================================================================
  * 3. IPC 채널 계약 (메인 ↔ 렌더러)
  * ========================================================================== */
@@ -536,6 +544,8 @@ export const IPC = {
   llmKeyStatus: 'llm:status',
   llmKeySet: 'llm:set',
   llmKeyClear: 'llm:clear',
+  localLlmSettings: 'local-llm:settings',
+  localLlmSetAcceleration: 'local-llm:set-acceleration',
 
   // L1 — 트리
   treeGet: 'tree:get',

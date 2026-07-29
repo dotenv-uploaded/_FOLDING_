@@ -15,6 +15,12 @@ const executable =
   (process.platform === 'win32'
     ? path.join(appRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
     : path.join(appRoot, 'node_modules', 'electron', 'dist', 'electron'));
+if (!process.env.CODEGATE_ELECTRON_EXECUTABLE) {
+  const mainEntry = path.join(appRoot, 'out', 'main', 'index.js');
+  await fs.access(mainEntry).catch(() => {
+    throw new Error(`Electron build output is missing: ${mainEntry}. Run "pnpm build" first.`);
+  });
+}
 const launchArguments = [
   ...(process.env.CODEGATE_ELECTRON_EXECUTABLE ? [] : ['.']),
   `--remote-debugging-port=${port}`,
@@ -45,7 +51,8 @@ try {
     const preview = await window.codegate.roots.scanPreview(rootPath);
     const registered = await window.codegate.roots.add(rootPath);
     const roots = await window.codegate.roots.list();
-    return { previewIncluded: preview.included.length, registered, roots };
+    const localLlm = await window.codegate.localLlm.setAcceleration('gpu');
+    return { previewIncluded: preview.included.length, registered, roots, localLlm };
   })()`;
   const response = await cdp.command('Runtime.evaluate', {
     expression,
@@ -60,6 +67,9 @@ try {
   if (!result?.roots?.some((root) => path.resolve(root.path) === sourceRoot)) {
     throw new Error(`Electron IPC did not register ${sourceRoot}`);
   }
+  if (result.localLlm?.model !== 'gemma4:e2b' || result.localLlm?.acceleration !== 'gpu') {
+    throw new Error(`Electron local model settings did not persist: ${JSON.stringify(result)}`);
+  }
   const bundleModule = path.join(profileRoot, 'sidecar', 'llmwiki-bundle', 'src', 'wiki_builder');
   const bundleStat = await fs.stat(bundleModule).catch(() => null);
   if (!bundleStat?.isDirectory()) {
@@ -68,6 +78,35 @@ try {
 
   await cdp.command('Page.reload', { ignoreCache: true });
   await waitForBridge(cdp, child);
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  const settingsResponse = await cdp.command('Runtime.evaluate', {
+    expression: `(async () => {
+      const settings = await window.codegate.localLlm.settings();
+      const settingsButton = document.querySelector('svg.lucide-settings')?.closest('button');
+      if (!settingsButton) throw new Error('Settings button is missing after reload');
+      settingsButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const accelerators = Array.from(document.querySelectorAll('button'))
+        .map((button) => button.textContent?.trim().toUpperCase())
+        .filter((text) => text === 'CPU' || text === 'GPU');
+      return { settings, accelerators };
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
+  if (settingsResponse.result?.exceptionDetails) {
+    throw new Error(JSON.stringify(settingsResponse.result.exceptionDetails));
+  }
+  const reloadedSettings = settingsResponse.result?.result?.value;
+  if (
+    reloadedSettings?.settings?.acceleration !== 'gpu' ||
+    reloadedSettings?.accelerators?.join(',') !== 'CPU,GPU'
+  ) {
+    throw new Error(
+      `Electron local model settings did not survive reload: ${JSON.stringify(reloadedSettings)}`,
+    );
+  }
   await new Promise((resolve) => setTimeout(resolve, 1_500));
   const capture = await cdp.command('Page.captureScreenshot', { format: 'png' });
   await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
@@ -77,6 +116,7 @@ try {
       sourceRoot,
       previewIncluded: result.previewIncluded,
       registeredRoot: result.registered.path,
+      localLlm: reloadedSettings.settings,
       screenshotPath,
     }),
   );
@@ -164,7 +204,8 @@ async function waitForBridge(cdp, process) {
       throw new Error(`Electron exited before the preload bridge was ready (${process.exitCode})`);
     }
     const response = await cdp.command('Runtime.evaluate', {
-      expression: 'Boolean(window.codegate?.roots?.scanPreview && window.codegate?.roots?.add)',
+      expression:
+        'Boolean(window.codegate?.roots?.scanPreview && window.codegate?.roots?.add && window.codegate?.localLlm?.settings)',
       returnByValue: true,
     });
     if (response.result?.result?.value === true) return;

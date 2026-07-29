@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { LocalLlmAcceleration } from '@contracts';
 import { LoopbackProcessSupervisor } from '@main/process/loopback-supervisor';
 import { resolveLocalLlm, selectGemmaModel } from './local-openai';
 
@@ -7,6 +8,7 @@ export interface LocalModelRuntimeOptions {
   modelsDir: string;
   externalBaseUrl?: string;
   fetchImpl?: typeof fetch;
+  acceleration?: LocalLlmAcceleration;
 }
 
 export class LocalModelRuntimeSupervisor {
@@ -70,7 +72,7 @@ export class LocalModelRuntimeSupervisor {
       cwd: path.dirname(this.options.binary),
       args: () => ['serve'],
       env: (origin) => ({
-        ...safeProcessEnvironment(process.env),
+        ...safeProcessEnvironment(process.env, this.options.acceleration),
         OLLAMA_HOST: new URL(origin).host,
         OLLAMA_MODELS: path.resolve(this.options.modelsDir),
         OLLAMA_KEEP_ALIVE: '10m',
@@ -128,7 +130,10 @@ function isOllamaUrl(baseUrl: string): boolean {
   return url.port === '11434' || process.env.CODEGATE_LOCAL_LLM_BACKEND === 'ollama';
 }
 
-function safeProcessEnvironment(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function safeProcessEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  acceleration: LocalLlmAcceleration = 'cpu',
+): NodeJS.ProcessEnv {
   const safe: NodeJS.ProcessEnv = {};
   for (const name of [
     'PATH',
@@ -155,6 +160,9 @@ function safeProcessEnvironment(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     'HSA_OVERRIDE_GFX_VERSION',
   ]) {
     if (baseEnv[name] !== undefined) safe[name] = baseEnv[name];
+  }
+  if (acceleration === 'cpu') {
+    safe.OLLAMA_LLM_LIBRARY = 'cpu';
   }
   return safe;
 }

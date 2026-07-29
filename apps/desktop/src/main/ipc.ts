@@ -7,7 +7,13 @@
  */
 import path from 'node:path';
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
-import { IPC, type LlmKeyInput, type LlmProvider, type LoginRequest } from '@contracts';
+import {
+  IPC,
+  type LlmKeyInput,
+  type LlmProvider,
+  type LocalLlmAcceleration,
+  type LoginRequest,
+} from '@contracts';
 import type { AppServices } from '@main/services';
 import { GENERATED_EXTENSION, titleFromMarkdown, writeHwpx } from '@main/kordoc/generate';
 import { fillTemplate } from '@main/kordoc/template';
@@ -106,6 +112,14 @@ export function registerIpcHandlers(
 
   handle(IPC.llmKeyClear, 'LLM 키를 삭제하지 못했습니다.', (provider: LlmProvider) =>
     services.clearLlmKey(provider),
+  );
+  handle(IPC.localLlmSettings, '로컬 모델 설정을 불러오지 못했습니다.', () =>
+    services.getLocalLlmSettings(),
+  );
+  handle(
+    IPC.localLlmSetAcceleration,
+    '로컬 모델 가속 설정을 저장하지 못했습니다.',
+    (acceleration: LocalLlmAcceleration) => services.setLocalLlmAcceleration(acceleration),
   );
 
   /* ------------------------------------------------------------- L1 트리 */

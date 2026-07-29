@@ -14,6 +14,8 @@ import type {
   LlmKeyInput,
   LlmKeyStatus,
   LlmProvider,
+  LocalLlmAcceleration,
+  LocalLlmSettings,
   Root,
   ScanPreview,
   Session,
@@ -63,8 +65,10 @@ import { executionSummary } from '@main/agent/sidecar-agent';
 import { syncNormalizedInputs, type InputSyncProgress } from '@main/sidecar/input-sync';
 import { Doc2MdSupervisor, type Doc2MdProcessConfig } from '@main/doc2md/supervisor';
 import { LocalModelRuntimeSupervisor } from '@main/llm/runtime-supervisor';
+import { LOCAL_GEMMA_MODEL } from '@main/llm/local-openai';
 
 const DEFAULT_CLOUD_API_URL = 'http://127.0.0.1:8787/api/v1';
+const LOCAL_LLM_ACCELERATION_KEY = 'local_llm_acceleration';
 const LLMWIKI_BUNDLE_ENTRIES = [
   'config',
   'enrichment',
@@ -113,6 +117,7 @@ export class AppServices {
   readonly wikiDir: string;
   /** 상용 API 모드에서만 사용량 한도와 결제 크레딧을 적용한다. */
   private readonly billingEnabled: boolean;
+  private readonly localLlmAcceleration: LocalLlmAcceleration;
 
   /**
    * `AgentDeps.config.roots` 는 에이전트 생성 시 한 번만 전달되므로,
@@ -148,6 +153,7 @@ export class AppServices {
       wikiDir: string;
       agentRoots: string[];
       billingEnabled: boolean;
+      localLlmAcceleration: LocalLlmAcceleration;
     },
   ) {
     this.store = parts.store;
@@ -166,6 +172,7 @@ export class AppServices {
     this.wikiDir = parts.wikiDir;
     this.agentRoots = parts.agentRoots;
     this.billingEnabled = parts.billingEnabled;
+    this.localLlmAcceleration = parts.localLlmAcceleration;
   }
 
   static async create(options: ServicesOptions): Promise<AppServices> {
@@ -194,10 +201,14 @@ export class AppServices {
 
     const doc2md = new Doc2MdSupervisor(doc2mdProcessConfig(options));
     const doc2mdUrl = await doc2md.prepare();
+    const localLlmAcceleration = readLocalLlmAcceleration(store);
     const localModel = new LocalModelRuntimeSupervisor({
       binary: ollamaBinary(options),
-      modelsDir: path.join(options.userDataDir, 'models', 'ollama'),
+      modelsDir:
+        process.env.CODEGATE_OLLAMA_MODELS_DIR ??
+        path.join(options.userDataDir, 'models', 'ollama'),
       externalBaseUrl: process.env.CODEGATE_LOCAL_LLM_BASE_URL,
+      acceleration: localLlmAcceleration,
     });
 
     /*
@@ -362,6 +373,7 @@ export class AppServices {
       wikiDir,
       agentRoots,
       billingEnabled: authMode === 'cloud',
+      localLlmAcceleration,
     });
     self = services;
 
@@ -696,6 +708,23 @@ export class AppServices {
     return status;
   }
 
+  getLocalLlmSettings(): LocalLlmSettings {
+    const acceleration = readLocalLlmAcceleration(this.store);
+    return {
+      model: LOCAL_GEMMA_MODEL,
+      acceleration,
+      restartRequired: acceleration !== this.localLlmAcceleration,
+    };
+  }
+
+  setLocalLlmAcceleration(acceleration: LocalLlmAcceleration): LocalLlmSettings {
+    if (acceleration !== 'cpu' && acceleration !== 'gpu') {
+      throw new UserFacingError('로컬 모델 가속 방식은 CPU 또는 GPU여야 합니다.');
+    }
+    this.store.setKv(LOCAL_LLM_ACCELERATION_KEY, acceleration);
+    return this.getLocalLlmSettings();
+  }
+
   /* --------------------------------------------------------------- 정리 */
 
   async dispose(): Promise<void> {
@@ -1026,6 +1055,10 @@ export function watchChangeNeedsKnowledgeSync(
   return !(previous && !previous.dirty && previous.sha256 === next.sha256);
 }
 
+function readLocalLlmAcceleration(store: Store): LocalLlmAcceleration {
+  return store.getKv(LOCAL_LLM_ACCELERATION_KEY) === 'gpu' ? 'gpu' : 'cpu';
+}
+
 function sidecarRuntimePaths(
   options: ServicesOptions,
   sourceRoot: string,
@@ -1048,7 +1081,7 @@ function sidecarRuntimePaths(
     claudeAgent: process.env.CODEGATE_AGENT_MODE === 'claude',
     localLlmBackend: process.env.CODEGATE_LOCAL_LLM_BACKEND ?? 'auto',
     localLlmBaseUrl: process.env.CODEGATE_LOCAL_LLM_BASE_URL,
-    localLlmModel: process.env.CODEGATE_LOCAL_LLM_MODEL ?? 'gemma4:e2b',
+    localLlmModel: LOCAL_GEMMA_MODEL,
     localLlmApiToken: process.env.CODEGATE_LOCAL_LLM_API_TOKEN,
     localLlmTimeoutSeconds: Number(process.env.CODEGATE_LOCAL_LLM_TIMEOUT_SECONDS ?? 120),
     localLlmContextTokens: Number(process.env.CODEGATE_LOCAL_LLM_CONTEXT_TOKENS ?? 8192),

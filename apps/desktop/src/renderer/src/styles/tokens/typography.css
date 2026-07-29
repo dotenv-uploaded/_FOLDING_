@@ -1,9 +1,8 @@
-/* Folding — Typography  (design system 원본 그대로)
-   Pretendard for everything (Latin + Hangul), JetBrains Mono for data. */
+/* Folding typography uses one bundled family across every platform. */
 
 :root {
   --font-sans: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  --font-mono: var(--font-sans);
 
   /* Font sizes */
   --fs-display-2xl: 72px;

@@ -2,7 +2,7 @@
 name = "doc2md"
 version = "0.2.0"
 description = "Native-Python document-to-markdown conversion API (markitdown + pyhwp2md)"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

@@ -40,6 +40,7 @@ extraResources:
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 
 win:
+  icon: build/icon.png
   target:
     - nsis
 
@@ -52,14 +53,17 @@ nsis:
   createStartMenuShortcut: true
 
 mac:
+  icon: build/icon.png
   target:
     - dmg
   category: public.app-category.productivity
   minimumSystemVersion: "14.0"
   hardenedRuntime: true
   gatekeeperAssess: false
+  notarize: true
 
 linux:
+  icon: build/icon.png
   target:
     - AppImage
   category: Office

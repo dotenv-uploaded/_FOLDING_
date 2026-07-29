@@ -8,6 +8,8 @@ import type {
   ExecutionSummary,
   FileNode,
   LlmKeyStatus,
+  LocalLlmAcceleration,
+  LocalLlmSettings,
   Root,
   ScanPreview,
   Session,
@@ -65,6 +67,11 @@ export function createWebBridge(): CodegateApi {
     { provider: 'gemini', configured: false },
     { provider: 'openai', configured: false },
   ];
+  let localLlmSettings: LocalLlmSettings = {
+    model: 'gemma4:e2b',
+    acceleration: 'cpu',
+    restartRequired: false,
+  };
   let sequence = 0;
 
   const previews = new Map<string, PreviewEntry>();
@@ -208,6 +215,21 @@ export function createWebBridge(): CodegateApi {
           status.provider === provider ? { provider, configured: false } : status,
         );
         return keyStatuses;
+      },
+    },
+    localLlm: {
+      async settings(): Promise<LocalLlmSettings> {
+        return localLlmSettings;
+      },
+      async setAcceleration(
+        acceleration: LocalLlmAcceleration,
+      ): Promise<LocalLlmSettings> {
+        localLlmSettings = {
+          ...localLlmSettings,
+          acceleration,
+          restartRequired: true,
+        };
+        return localLlmSettings;
       },
     },
 

@@ -14,6 +14,8 @@ body {
   letter-spacing: var(--ls-normal);
 }
 
+button, input, textarea, select { font: inherit; }
+
 h1, h2, h3, h4, h5, h6 { margin: 0; color: var(--text-strong); letter-spacing: var(--ls-tight); }
 p { margin: 0; text-wrap: pretty; }
 

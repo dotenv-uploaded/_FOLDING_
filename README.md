@@ -24,9 +24,10 @@ a versioned knowledge base so users can ask questions in natural language, inspe
 and edit documents within the same conversation.
 
 The default mode is **fully local**. Conversion, analysis, retrieval, assembly, and editing run on the user's
-computer without an API key, account, or subscription. Gemma 4 is accessed through the OpenAI-compatible loopback
-API exposed by Ollama or LM Studio. Anthropic, Gemini, or OpenAI can be connected through the same provider boundary
-only when commercial API mode is explicitly enabled.
+computer without a third-party AI API key. The current local build supports only `gemma4:e2b`, accessed through the
+OpenAI-compatible loopback API exposed by Ollama or LM Studio. This describes the inference path, not the product
+license: a commercial distribution may still require a Folding account, license, or subscription. Cloud AI
+providers remain a separate future commercial boundary and are not selected by the local settings interface.
 
 The agent is not restricted to a small tool list. Instead, **every tool invocation passes through an approval
 gate**. The interface shows what the agent intends to do, the associated risk, and the user's original request so
@@ -281,7 +282,13 @@ checks the OS, architecture, memory, disk space, GPU availability, and bundled n
 
 DirectX and Metal are operating-system components, while GPU drivers are supplied by hardware vendors or Linux
 distributions. Folding does not overwrite arbitrary system DLLs or drivers. When acceleration requirements are not
-met, diagnostics explain the limitation and Ollama can fall back to CPU execution.
+met, diagnostics explain the limitation. Bundled Ollama defaults Gemma 4 to CPU execution on every operating system
+so laptops with low-memory GPUs do not fail during model startup. Advanced users can opt into a supported GPU
+backend by explicitly setting `OLLAMA_LLM_LIBRARY`.
+
+If a Windows user profile or installation path contains characters that the native Ollama model loader cannot read,
+set `CODEGATE_OLLAMA_MODELS_DIR` to an absolute ASCII-only directory such as `C:\FoldingModels`. The application uses
+that directory for bundled Ollama model storage without changing user document locations.
 
 User documents, model files, OAuth sessions, API keys, and local knowledge indexes are not stored in Git or bundled
 inside installers. Commercial API mode is enabled only when `CODEGATE_LLM_PROVIDER` and `CODEGATE_AGENT_MODE` are
@@ -289,6 +296,7 @@ explicitly changed.
 
 ## Further Reading
 
+- [Code-signing setup](docs/CODE_SIGNING.md)
 - [Discord LLMWiki architecture](docs/DISCORD_LLMWIKI.md)
 - [Integrated architecture and startup order](docs/ARCHITECTURE.md)
 - [Local testing and installer builds](docs/LOCAL_TEST_INSTALLER.md)

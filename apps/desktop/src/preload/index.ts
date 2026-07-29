@@ -13,6 +13,8 @@ import type {
   LlmKeyInput,
   LlmKeyStatus,
   LlmProvider,
+  LocalLlmAcceleration,
+  LocalLlmSettings,
   LoginRequest,
   Root,
   ScanPreview,
@@ -64,6 +66,11 @@ const api: CodegateApi = {
     set: (input: LlmKeyInput): Promise<LlmKeyStatus[]> => ipcRenderer.invoke(IPC.llmKeySet, input),
     clear: (provider: LlmProvider): Promise<LlmKeyStatus[]> =>
       ipcRenderer.invoke(IPC.llmKeyClear, provider),
+  },
+  localLlm: {
+    settings: (): Promise<LocalLlmSettings> => ipcRenderer.invoke(IPC.localLlmSettings),
+    setAcceleration: (acceleration: LocalLlmAcceleration): Promise<LocalLlmSettings> =>
+      ipcRenderer.invoke(IPC.localLlmSetAcceleration, acceleration),
   },
 
   tree: {
