@@ -203,6 +203,66 @@ pnpm package
 | macOS arm64/x64 | `Folding-<version>-mac-<arch>.dmg` |
 | Linux arm64/x64 | `Folding-<version>-linux-<arch>.AppImage` |
 
+### OS별 설치
+
+GitHub Releases 또는 `Desktop installers` CI artifact에서 운영체제와 architecture에 맞는 파일 하나를
+받습니다. 공식 release에 SHA-256 값이 함께 제공되면 설치 전에 내려받은 파일의 해시와 비교합니다.
+최초 실행 시 기존 Ollama/LM Studio의 `gemma4:e2b`를 먼저 찾고, 없으면 내장 Ollama가 모델을 한 번
+다운로드하므로 인터넷 연결과 모델 저장 공간이 필요합니다.
+
+#### Windows 10/11 x64
+
+1. `Folding-<version>-win-x64.exe`를 실행합니다.
+2. UAC 요청을 승인하고 기본 설치 위치를 사용합니다. 위치를 바꿀 때는 `C:\Apps\Folding`처럼 짧은
+   경로를 권장합니다.
+3. 설치기는 Windows 10 22H2(build 19045) 이상인지 확인하고, Microsoft VC++ Runtime이 기준보다
+   낮을 때만 검증된 설치 파일로 갱신합니다.
+4. 시작 메뉴에서 **Folding**을 실행합니다. VC++ 설치기가 재시작을 요구했다면 Windows를 재시작한
+   뒤 실행합니다.
+
+```powershell
+Get-FileHash .\Folding-<version>-win-x64.exe -Algorithm SHA256
+```
+
+서명되지 않은 개발 빌드가 SmartScreen 또는 Smart App Control에 차단되면 보안 기능을 끄지 말고
+공식 checksum과 서명이 제공된 release를 사용합니다. 이전 버전을 제거하지 못했다는 메시지가 나오면
+Folding을 완전히 종료하고 설치기를 다시 실행하며, 계속 실패하면 Windows를 재시작한 뒤 재시도합니다.
+
+#### macOS 14 이상
+
+1. Apple Silicon은 `arm64`, Intel Mac은 `x64` DMG를 받습니다. architecture는 `uname -m`으로
+   확인할 수 있습니다.
+2. `Folding-<version>-mac-<arch>.dmg`를 열고 **Folding**을 `Applications` 폴더로 끕니다.
+3. `Applications`에서 Folding을 실행하고 최초 실행 확인을 승인합니다.
+
+```bash
+shasum -a 256 Folding-<version>-mac-<arch>.dmg
+```
+
+배포용 DMG는 Developer ID 서명과 Apple notarization을 완료해야 합니다. 내부 테스트용 unsigned
+빌드는 출처와 checksum을 직접 확인한 경우에만 한 번 실행을 시도한 뒤 **System Settings → Privacy
+& Security → Open Anyway**를 사용합니다. Gatekeeper 전체 비활성화나 `xattr` 일괄 제거는 요구하지
+않습니다.
+
+#### Linux glibc 2.35 이상
+
+1. `uname -m` 결과가 `x86_64`이면 `x64`, `aarch64`이면 `arm64` AppImage를 받습니다.
+2. 실행 권한을 부여하고 AppImage를 직접 실행합니다. 시스템 전체 설치나 별도 Python/Node 설치는
+   필요하지 않습니다.
+
+```bash
+sha256sum Folding-<version>-linux-<arch>.AppImage
+chmod +x Folding-<version>-linux-<arch>.AppImage
+./Folding-<version>-linux-<arch>.AppImage
+```
+
+배포판에 FUSE 2가 없어 AppImage를 mount하지 못하면 시스템 패키지를 강제로 변경하지 않고 다음
+fallback으로 실행할 수 있습니다. 이 방식은 실행할 때마다 임시 추출하므로 일반 실행보다 느립니다.
+
+```bash
+./Folding-<version>-linux-<arch>.AppImage --appimage-extract-and-run
+```
+
 Windows 설치 파일은 Microsoft 서명과 SHA-256을 검증한 VC++ Runtime을 포함하고, 설치된 버전이
 낮을 때만 갱신합니다. 모든 OS에서 첫 실행 전에 OS·architecture·메모리·디스크·GPU·동봉 native
 파일을 검사하며 결과는 `runtime-diagnostics.json`에 남습니다. DirectX와 Metal은 OS 구성 요소이고
