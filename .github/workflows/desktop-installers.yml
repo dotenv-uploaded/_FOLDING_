@@ -64,7 +64,20 @@ jobs:
       - name: Test desktop
         run: pnpm test
 
-      - name: Build installer
+      - name: Build signed Windows or macOS installer
+        if: runner.os != 'Linux'
+        run: pnpm package:signed
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build Linux installer
+        if: runner.os == 'Linux'
         run: pnpm package
 
       - name: Upload installer

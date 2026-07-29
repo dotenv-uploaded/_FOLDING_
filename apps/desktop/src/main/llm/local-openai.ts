@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import { UserFacingError } from '@main/util/errors';
 import type { LocalLlmBackend, ResolvedLlmKey } from '@main/build/types';
 
-const DEFAULT_MODEL = 'gemma4:e2b';
+export const LOCAL_GEMMA_MODEL = 'gemma4:e2b' as const;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 const DEFAULT_CONTEXT_TOKENS = 8_192;
@@ -42,7 +42,7 @@ export function resolveLocalLlm(
     provider: 'local',
     backend,
     baseUrl: baseUrl ? normalizeLocalOpenAiBaseUrl(baseUrl) : undefined,
-    model: env.CODEGATE_LOCAL_LLM_MODEL?.trim() || DEFAULT_MODEL,
+    model: LOCAL_GEMMA_MODEL,
     apiKey: env.CODEGATE_LOCAL_LLM_API_TOKEN?.trim() || undefined,
     timeoutMs: positiveInteger(env.CODEGATE_LOCAL_LLM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     maxOutputTokens: positiveInteger(
@@ -223,14 +223,15 @@ export function normalizeLocalOpenAiBaseUrl(value: string): string {
 }
 
 export function selectGemmaModel(models: string[], requested: string): string | null {
+  if (requested !== LOCAL_GEMMA_MODEL) return null;
   const exact = models.find((model) => model === requested);
   if (exact) return exact;
-  const requestedBase = requested.split(':', 1)[0]?.replace(/[-_.]/g, '').toLowerCase();
-  const sameFamily = models.find(
-    (model) => model.split(':', 1)[0]?.replace(/[-_.]/g, '').toLowerCase() === requestedBase,
+  return (
+    models.find((model) => {
+      const normalized = model.replace(/[-_.:/ ]/g, '').toLowerCase();
+      return normalized.includes('gemma4') && normalized.includes('e2b');
+    }) ?? null
   );
-  if (sameFamily) return sameFamily;
-  return models.find((model) => /gemma[-_. ]?4/i.test(model)) ?? null;
 }
 
 function candidateBaseUrls(

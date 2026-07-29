@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FolderOpen, Plus, Trash2 } from 'lucide-react';
-import type { Session } from '@contracts';
+import type { LocalLlmAcceleration, LocalLlmSettings, Session } from '@contracts';
 import type { useWorkspace } from '@/state/useWorkspace';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/ui/Dialog';
 import { Button } from '@/ui/Button';
@@ -40,11 +40,45 @@ export function SettingsScreen({
   onLogout: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>('general');
+  const [localLlm, setLocalLlm] = useState<LocalLlmSettings | null>(null);
+  const [localLlmError, setLocalLlmError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setLocalLlmError(null);
+    void window.codegate.localLlm
+      .settings()
+      .then((settings) => {
+        if (active) setLocalLlm(settings);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setLocalLlmError(
+            error instanceof Error ? error.message : '로컬 모델 설정을 불러오지 못했습니다.',
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
 
   async function addFolder() {
     const path = await workspace.pickFolder();
     if (!path) return;
     await workspace.addRoot(path);
+  }
+
+  async function setAcceleration(acceleration: LocalLlmAcceleration) {
+    setLocalLlmError(null);
+    try {
+      setLocalLlm(await window.codegate.localLlm.setAcceleration(acceleration));
+    } catch (error) {
+      setLocalLlmError(
+        error instanceof Error ? error.message : '로컬 모델 설정을 저장하지 못했습니다.',
+      );
+    }
   }
 
   return (
@@ -75,6 +109,50 @@ export function SettingsScreen({
         <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-auto px-7 py-6">
           {tab === 'general' && (
             <section>
+              <div className="mb-7">
+                <h3 className="fold-eyebrow mb-3">로컬 AI</h3>
+                <div className="rounded-md border border-ink-100 px-4 py-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold text-ink-900">Gemma 4 e2b</div>
+                      <div className="mt-0.5 text-xs text-ink-400">
+                        Folding에서 지원하는 로컬 모델
+                      </div>
+                    </div>
+                    <div className="flex rounded-md bg-ink-50 p-1">
+                      {(['cpu', 'gpu'] as const).map((acceleration) => (
+                        <button
+                          key={acceleration}
+                          type="button"
+                          aria-pressed={localLlm?.acceleration === acceleration}
+                          disabled={!localLlm}
+                          onClick={() => setAcceleration(acceleration)}
+                          className={cn(
+                            'rounded-sm px-3 py-1.5 text-xs font-semibold uppercase transition-colors fold-focus',
+                            localLlm?.acceleration === acceleration
+                              ? 'bg-white text-blue-600 shadow-sm'
+                              : 'text-ink-400 hover:text-ink-700',
+                          )}
+                        >
+                          {acceleration}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-ink-500">
+                    CPU가 기본값입니다. GPU를 선택하면 Ollama가 사용 가능한 GPU를 자동 감지합니다.
+                    메모리가 부족한 GPU에서는 시작에 실패할 수 있습니다.
+                  </p>
+                  {localLlm?.restartRequired && (
+                    <p className="mt-2 text-xs font-medium text-blue-600">
+                      변경사항은 앱을 다시 시작하면 적용됩니다.
+                    </p>
+                  )}
+                  {localLlmError && (
+                    <p className="mt-2 text-xs font-medium text-red-600">{localLlmError}</p>
+                  )}
+                </div>
+              </div>
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="fold-eyebrow">등록 폴더</h3>
                 <Button variant="ghost" size="sm" iconLeft={<Plus size={14} />} onClick={addFolder}>

@@ -67,6 +67,24 @@ def test_loads_expected_documents_without_modifying_inputs(config: WikiConfig) -
     assert before == after
 
 
+def test_source_hash_is_stable_across_line_endings(config: WikiConfig, tmp_path) -> None:
+    input_dir = tmp_path / "source-md"
+    input_dir.mkdir()
+    source = config.resolve_path("input_dir") / "MAN-000001.md"
+    normalized = normalize_text(source.read_text(encoding="utf-8"))
+    target = input_dir / source.name
+    target.write_bytes(normalized.encode("utf-8"))
+    scoped = _semantic_config(config, input_dir)
+    lf_hash = load_documents(scoped)[0].original_sha256
+
+    target.write_bytes(normalized.replace("\n", "\r\n").encode("utf-8"))
+    crlf_hash = load_documents(scoped)[0].original_sha256
+
+    expected = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    assert lf_hash == expected
+    assert crlf_hash == expected
+
+
 def test_generated_anchors_do_not_change_body(config: WikiConfig) -> None:
     for document in load_documents(config):
         source = normalize_text(document.input_path.read_text(encoding="utf-8"))

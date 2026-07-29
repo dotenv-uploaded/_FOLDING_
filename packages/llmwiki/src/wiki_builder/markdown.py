@@ -299,7 +299,7 @@ def _parse_source(path: Path, input_dir: Path, config: WikiConfig) -> ParsedSour
             input_path=path,
             input_relative_path=path.relative_to(input_dir).as_posix(),
             chunk_no=(str(metadata["chunk_no"]) if metadata.get("chunk_no") else None),
-            original_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+            original_sha256=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
             normalized_body=body,
         ),
     )

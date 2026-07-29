@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   LocalOpenAiClient,
   normalizeLocalOpenAiBaseUrl,
+  resolveLocalLlm,
   selectGemmaModel,
 } from '@main/llm/local-openai';
 import type { ResolvedLlmKey } from '@main/build/types';
@@ -17,6 +18,13 @@ const config: Extract<ResolvedLlmKey, { provider: 'local' }> = {
 };
 
 describe('local OpenAI-compatible client', () => {
+  it('always resolves the supported Gemma 4 e2b model', () => {
+    expect(resolveLocalLlm({ CODEGATE_LOCAL_LLM_MODEL: 'other-model' }).model).toBe(
+      'gemma4:e2b',
+    );
+    expect(selectGemmaModel(['gemma4:e4b'], 'gemma4:e2b')).toBeNull();
+  });
+
   it('loopback 주소만 허용하고 /v1을 보존한다', () => {
     expect(normalizeLocalOpenAiBaseUrl('http://localhost:11434')).toBe(
       'http://localhost:11434/v1',

@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import threading
+import unicodedata
 from collections import defaultdict
 from contextlib import suppress
 from dataclasses import dataclass
@@ -1102,7 +1103,12 @@ class NativeLLMWikiPipeline:
                 raise LLMWikiCompatibilityError(
                     f"normalized Markdown cannot be read: {document_id}"
                 ) from error
-            current_sha256 = _sha256(current_bytes)
+            try:
+                current_sha256 = _normalized_markdown_sha256(current_bytes)
+            except UnicodeDecodeError as error:
+                raise LLMWikiCompatibilityError(
+                    f"normalized Markdown must be UTF-8: {document_id}"
+                ) from error
             if (
                 current_sha256 != baseline.file_sha256
                 and not self._state.is_known_llmwiki_input_state(
@@ -1233,7 +1239,7 @@ class NativeLLMWikiPipeline:
             active_build_id=active_build_id,
             source_sha256=source_sha256,
             revision=revision,
-            content_sha256=_sha256(text.encode("utf-8")),
+            content_sha256=_normalized_markdown_sha256(text.encode("utf-8")),
             event_ids=event_ids,
         )
         _atomic_write_text(path, text)
@@ -1711,6 +1717,14 @@ def _next_revision(revision: str) -> str:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _normalized_markdown_sha256(content: bytes) -> str:
+    text = content.decode("utf-8")
+    normalized = unicodedata.normalize("NFC", text.replace("\r\n", "\n").replace("\r", "\n"))
+    lines = [line.rstrip(" \t") for line in normalized.split("\n")]
+    canonical = "\n".join(lines).rstrip("\n") + "\n"
+    return _sha256(canonical.encode("utf-8"))
 
 
 def _write_local_indexes(

@@ -10,6 +10,8 @@ import type {
   LlmKeyInput,
   LlmKeyStatus,
   LlmProvider,
+  LocalLlmAcceleration,
+  LocalLlmSettings,
   LoginRequest,
   Root,
   ScanPreview,
@@ -44,6 +46,10 @@ export interface CodegateApi {
     status(): Promise<LlmKeyStatus[]>;
     set(input: LlmKeyInput): Promise<LlmKeyStatus[]>;
     clear(provider: LlmProvider): Promise<LlmKeyStatus[]>;
+  };
+  localLlm: {
+    settings(): Promise<LocalLlmSettings>;
+    setAcceleration(acceleration: LocalLlmAcceleration): Promise<LocalLlmSettings>;
   };
   tree: {
     get(): Promise<FileNode[]>;

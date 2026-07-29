@@ -904,6 +904,27 @@ def test_native_pipeline_updates_normalized_body_source_hash_and_revision(
     assert "개인정보는 3년간 보관한다." in lines[2]
 
 
+def test_native_pipeline_accepts_equivalent_windows_line_endings(tmp_path: Path) -> None:
+    fixture = _create_native_fixture(tmp_path)
+    fixture.input_path.write_bytes(
+        fixture.input_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+    pipeline = _build_pipeline(fixture, tmp_path)
+
+    changed_source = fixture.source_path.read_text(encoding="utf-8").replace("1년", "3년")
+    fixture.source_path.write_bytes(changed_source.encode())
+    event = _event(
+        fixture,
+        event_id="evt_windows_line_endings",
+        before_sha256=fixture.before_sha256,
+        after_sha256=_sha256(changed_source.encode()),
+        expected_text="1년",
+        replacement_text="3년",
+    )
+
+    assert pipeline._apply_inputs([event]) == {"REG-100001"}  # noqa: SLF001
+
+
 def test_native_pipeline_updates_server_v2_single_fragment_idempotently(
     tmp_path: Path,
 ) -> None:
