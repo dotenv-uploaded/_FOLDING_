@@ -22,6 +22,7 @@ from uuid import uuid4
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
+from codegate_api.changes.kordoc import is_hwp
 from codegate_api.files.atomic import DocumentLockManager, SafeFileError, SafeSourceFileStore
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.integrations.doc2md import Doc2MdClient, Doc2MdError
@@ -44,7 +45,6 @@ from codegate_api.knowledge.schemas import (
     SourceReference,
 )
 from codegate_api.state.store import PendingEvent, StateStore
-from codegate_api.changes.kordoc import is_hwp
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +380,10 @@ class LLMWikiCompatibilityAdapter:
         )
 
     def materialize(self, build: NativeBuild) -> Path:
-        destination = self._compatibility_root / f"{build.build_id}-codegate-{COMPAT_RENDER_VERSION}"
+        destination = (
+            self._compatibility_root
+            / f"{build.build_id}-codegate-{COMPAT_RENDER_VERSION}"
+        )
         with self._lock:
             if destination.is_dir():
                 return destination
@@ -942,9 +945,8 @@ class NativeLLMWikiPipeline:
         않아 안전하고, 이걸 락 안에 두면 문서 편집이 그만큼(첫 실행 약 80초) 막힌다.
         """
         await asyncio.to_thread(self._catalog.refresh_enrichment)
-        async with self._lock:
-            async with self._locks.acquire_publish():
-                return await asyncio.to_thread(self._catalog.rebuild)
+        async with self._lock, self._locks.acquire_publish():
+            return await asyncio.to_thread(self._catalog.rebuild)
 
     async def process_pending(self) -> str:
         async with self._lock:
@@ -1916,7 +1918,11 @@ def _media_type(filename: str) -> str:
 
 def _atomic_write_text(path: Path, content: str) -> None:
     temporary = path.parent / f".{path.name}.{uuid4().hex}.tmp"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
     try:
         payload = content.encode("utf-8")
         view = memoryview(payload)
@@ -1939,7 +1945,9 @@ def _discard_tree(root: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
     finally:
@@ -1956,10 +1964,11 @@ def _fsync_tree(root: Path) -> None:
             continue
         if not path.is_file():
             raise LLMWikiCompatibilityError("compatibility cache contains a non-regular file")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        if os.name != "nt":
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
         _fsync_directory(directory)

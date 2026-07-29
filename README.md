@@ -10,7 +10,7 @@
 <p align="center">
   <code>Electron · React · TypeScript</code>&nbsp;&nbsp;
   <code>FastAPI · Python</code>&nbsp;&nbsp;
-  <code>Claude Agent SDK</code>&nbsp;&nbsp;
+  <code>Gemma 4 · Ollama · LM Studio</code>&nbsp;&nbsp;
   <code>HWP · DOCX · XLSX · PPTX · PDF</code>
 </p>
 
@@ -22,8 +22,9 @@
 것도 매번 끊깁니다. Folding은 사용자가 고른 로컬 폴더를 하나의 지식 버전으로 정리해 자연어로
 묻고, 답의 근거를 원문에서 확인하고, 같은 대화 안에서 문서를 고칠 수 있게 합니다.
 
-**문서는 이 컴퓨터를 떠나지 않습니다.** 서버에 묻는 것은 로그인과 구독뿐이고 변환·분석·조립·
-편집은 전부 사용자 PC에서 돕니다.
+기본값은 **완전한 로컬 실행**입니다. API 키·로그인·구독 없이 변환·분석·질의·조립·편집이
+사용자 PC에서 돌고, Gemma 4는 Ollama 또는 LM Studio의 OpenAI 호환 loopback API로 호출됩니다.
+상용화할 때만 같은 provider 경계에 Anthropic·Gemini·OpenAI API를 명시적으로 연결합니다.
 
 에이전트는 도구를 가리지 않습니다. 대신 **모든 도구 사용이 승인 게이트를 지납니다.** 무엇을
 하려는지, 얼마나 위험한지, 원래 시킨 일이 무엇이었는지를 보여 주고 사람이 정합니다.
@@ -95,7 +96,9 @@
 
 ## 크레딧
 
-사용자에게는 토큰도 원화도 보이지 않습니다. 토큰은 사용자의 언어가 아니고, 원화를 그대로
+크레딧과 과금 한도는 **상용 API 모드에만** 적용됩니다. 로컬 Gemma 4 모드에는 외부 호출 비용이
+없으므로 대화·문서 분석을 크레딧으로 막지 않습니다. 상용 모드에서 사용자에게는 토큰도 원화도
+보이지 않습니다. 토큰은 사용자의 언어가 아니고, 원화를 그대로
 띄우면 모델 단가가 바뀔 때마다 같은 금액이 조용히 다른 양이 됩니다.
 
 ```
@@ -115,18 +118,21 @@ flowchart LR
     U[사용자] --> UI[Electron + React<br/>대화 · 그래프 · 승인 · 사용량]
 
     subgraph DEVICE[사용자 기기]
-        UI --> MAIN[Electron Main<br/>폴더 권한 · 사이드카 수명주기 · OAuth]
-        MAIN --> AGENT[FastAPI 사이드카<br/>Claude 열린 에이전트 · 승인 게이트]
+        UI --> MAIN[Electron Main<br/>폴더 권한 · 프로세스 수명주기]
+        MAIN --> AGENT[FastAPI 사이드카<br/>로컬 에이전트 · 승인 게이트]
         MAIN --> CONV[doc2md<br/>HWP · Office · PDF → Markdown]
         MAIN --> WIKI[LLMWIKI<br/>불변 빌드 · 관계 유도]
+        MAIN --> LOCAL[Ollama 또는 LM Studio<br/>Gemma 4 e2b]
         CONV --> WIKI
         WIKI --> AGENT
+        LOCAL --> AGENT
+        LOCAL --> WIKI
         AGENT --> WRITER[형식 전용 writer<br/>원본 보존 · 재파싱 검증]
     end
 
-    MAIN -. OAuth + PKCE .-> CLOUD[folding-cloud-api]
-    AGENT -. 모델 추론 .-> CLAUDE[Anthropic API]
-    WIKI -. 문서 분석 .-> GEMINI[Gemini API]
+    MAIN -. 상용 모드 OAuth + PKCE .-> CLOUD[folding-cloud-api]
+    AGENT -. 선택적 상용 provider .-> API[Anthropic · Gemini · OpenAI]
+    WIKI -. 선택적 상용 provider .-> API
     WRITER --> FILES[(사용자 원본 문서)]
     FILES --> CONV
 ```
@@ -139,7 +145,7 @@ flowchart LR
 | 모듈 | 역할 | 온 곳 |
 | --- | --- | --- |
 | [`apps/desktop`](apps/desktop) | Electron 앱, 3분할 UI, 승인 모달, 사용량, 사이드카 감독 | `codegate-2026-local` |
-| [`services/agent`](services/agent) | Claude 열린 에이전트, 승인 게이트, 형식 전용 writer | `codegate-2026-agent` |
+| [`services/agent`](services/agent) | 로컬 Gemma 4/선택적 Claude 에이전트, 승인 게이트, 형식 전용 writer | `codegate-2026-agent` |
 | [`services/convert`](services/convert) | doc2md — 원본을 마크다운으로 | `codegate-2026-convert` (민규) |
 | [`packages/llmwiki`](packages/llmwiki) | 위키 빌더 — 불변 빌드, 관계 유도, 근거 보존 | `codegate-2026-backend` (용휘·성주) |
 
@@ -152,34 +158,66 @@ OAuth·세션·구독 서버는 [`folding-cloud-api`](https://github.com/dotenv-
 
 ## 실행
 
-> **아직 `pnpm dev` 하나로 전부 뜨지 않습니다.** 지금은 기록을 보존한 채 코드를 한곳에 모은
-> 상태이고, 각 폴더는 자기 저장소였을 때의 설정을 그대로 들고 있습니다. 남은 배선은
-> [`docs/MIGRATION.md`](docs/MIGRATION.md) 에 순서대로 적어 두었습니다.
-
 ### 준비 사항
 
-- macOS 또는 Linux
-- Node.js 18 이상 · pnpm
-- [uv](https://docs.astral.sh/uv/)
-- Anthropic API key · Gemini API key
+- Windows 10 22H2 이상, macOS 14 이상, 또는 glibc 2.35 이상 Linux
+- 개발 실행: Node.js 22, pnpm 11, [uv](https://docs.astral.sh/uv/)
+- 로컬 모델: 설치본에 포함된 Ollama 또는 이미 실행 중인 Ollama/LM Studio
+- API 키: **필요 없음**
 
 ```bash
 git clone https://github.com/dotenv-uploaded/folding.git
 cd folding
 ```
 
-배선이 끝나기 전까지는 각 폴더에서 원래 방식대로 실행합니다.
-
-```bash
-# 데스크톱 + 사이드카 + 변환기를 함께
-cd apps/desktop && cp .env.example .env   # 경로와 키를 채운다
-node scripts/dev-integrated.mjs
+```shell
+cd services/agent
+uv sync --group dev
+cd ../../services/convert/services/doc2md
+uv sync --extra test
+cd ../../../../apps/desktop
+pnpm install --frozen-lockfile
+pnpm dev:integrated
 ```
 
-API key, OAuth 세션, 사용자 문서, 로컬 지식 인덱스는 Git에 포함되지 않습니다.
+두 Python 모듈은 각자의 `.venv`만 사용합니다. 최초 로컬 실행에는 Ollama 또는 LM Studio에서
+`gemma4:e2b`를 준비합니다. 설치본은 내장 Ollama를 시작하고 모델이 없으면 최초 한 번 약 7.2 GB를
+다운로드합니다.
+
+```shell
+# PyInstaller 사이드카까지 포함한 로컬 전체 계약
+cd apps/desktop
+pnpm runtime:python
+pnpm runtime:prerequisites
+pnpm runtime:smoke
+
+# 현재 OS용 설치 파일 1개
+pnpm package
+```
+
+운영체제 하나가 다른 운영체제의 실행 형식을 직접 실행할 수는 없으므로 산출물은 OS별 한 개입니다.
+
+| OS | 산출물 |
+| --- | --- |
+| Windows x64 | `Folding-<version>-win-x64.exe` |
+| macOS arm64/x64 | `Folding-<version>-mac-<arch>.dmg` |
+| Linux arm64/x64 | `Folding-<version>-linux-<arch>.AppImage` |
+
+Windows 설치 파일은 Microsoft 서명과 SHA-256을 검증한 VC++ Runtime을 포함하고, 설치된 버전이
+낮을 때만 갱신합니다. 모든 OS에서 첫 실행 전에 OS·architecture·메모리·디스크·GPU·동봉 native
+파일을 검사하며 결과는 `runtime-diagnostics.json`에 남습니다. DirectX와 Metal은 OS 구성 요소이고
+GPU 드라이버는 제조사/배포판 구성 요소이므로 임의 DLL을 덮어쓰지 않고, 기준 미달 시 진단과
+CPU 폴백을 사용합니다.
+
+사용자 문서, 모델 파일, OAuth 세션, API 키, 로컬 지식 인덱스는 Git과 설치 파일에 포함되지
+않습니다. 상용 API 전환은 `CODEGATE_LLM_PROVIDER`와 `CODEGATE_AGENT_MODE`를 명시적으로 바꿀
+때만 일어납니다.
 
 ## 더 보기
 
+- [Discord LLMWiki architecture](docs/DISCORD_LLMWIKI.md)
+- [통합 아키텍처와 시작 순서](docs/ARCHITECTURE.md)
+- [로컬 테스트와 설치 파일](docs/LOCAL_TEST_INSTALLER.md)
 - [남은 이관 배선](docs/MIGRATION.md)
 - [쓰기 도구 설계](services/agent/docs/WRITE_TOOLS_DESIGN.md)
 - [프런트엔드 명세](apps/desktop/docs/FRONTEND_SPEC.md)

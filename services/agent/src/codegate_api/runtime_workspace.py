@@ -38,7 +38,12 @@ class RuntimeWorkspace:
         staging = self._source_root.parent / f".source-seed-{uuid4().hex}"
         shutil.copytree(self._seed_source_root, staging, copy_function=shutil.copy2)
         os.replace(staging, self._source_root)
-        descriptor = os.open(self._source_root.parent, os.O_RDONLY | os.O_DIRECTORY)
+        if os.name == "nt":
+            return
+        descriptor = os.open(
+            self._source_root.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
             os.fsync(descriptor)
         finally:

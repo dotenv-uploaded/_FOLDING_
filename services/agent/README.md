@@ -1,12 +1,14 @@
 # CODEGATE 2026 Backend
 
-성주가 담당하는 지식 그래프 기반 문서 검색·수정 에이전트의 FastAPI 백엔드다. Claude Agent SDK가 질문과 변경 의도를 구조화하고, 애플리케이션이 ACL·원문 근거·승인·파일 쓰기·Undo·지식 버전 공개를 결정적으로 통제한다.
+성주가 담당하는 지식 그래프 기반 문서 검색·수정 에이전트의 FastAPI 백엔드다. 기본 로컬
+Gemma 4 gateway 또는 선택적 Claude Agent SDK가 질문과 변경 의도를 구조화하고, 애플리케이션이
+ACL·원문 근거·승인·파일 쓰기·Undo·지식 버전 공개를 결정적으로 통제한다.
 
 합성 fixture와 협업자의 실제 `LLMWIKI@acf94f7` checkout 기준으로 다음 수직 흐름이 동작한다.
 
 ```text
 질문 또는 변경 요청
-→ Claude Agent SDK 또는 deterministic local gateway
+→ local Gemma 4, Claude Agent SDK 또는 deterministic gateway
 → status·효력 기간·ACL 필터
 → alias·chunk·verified relation 검색
 → canonical section/quote 근거 검증
@@ -20,17 +22,17 @@
 → immutable knowledge VERSION 원자 공개
 ```
 
-다운로드 앱에서는 Claude Agent SDK process, session, app-owned read tools, 파일 write,
-LLMWIKI build를 사용자 장치에서 실행한다. Claude 모델 추론은 Anthropic API 호출이므로
-네트워크와 사용자 API key가 필요하다. 원본 파일이 정본이고 LLMWIKI는 로컬 파생 지식
-snapshot이다.
+다운로드 앱에서는 app-owned read tools, 파일 write, LLMWIKI build와 로컬 Gemma 4 추론을
+사용자 장치에서 실행한다. 기본값은 Ollama/LM Studio loopback이며 API 키가 필요하지 않다.
+Claude Agent SDK는 상용 API 모드에서만 명시적으로 선택한다. 원본 파일이 정본이고 LLMWIKI는
+로컬 파생 지식 snapshot이다.
 
 ## 빠른 시작
 
 Python 3.12와 [uv](https://docs.astral.sh/uv/)가 필요하다.
 
 ```bash
-uv sync --all-groups
+uv sync --group dev
 cp .env.example .env
 uv run uvicorn codegate_api.main:app --reload
 ```
@@ -93,9 +95,19 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
 
 팀원이 꼭 맞춰야 하는 필드와 이벤트는 [통합 계약](docs/INTEGRATION_CONTRACT.md), 바로 보낼 내용은 [팀 handoff](docs/TEAM_HANDOFF.md), 성주 역할은 [역할 및 로드맵](docs/ROLE_AND_ROADMAP.md)에 있다.
 
-## Claude와 production
+## 로컬 기본값과 상용 provider
 
-실제 Claude Agent SDK session은 다음 설정으로 활성화한다.
+로컬 Gemma 4 session은 다음 설정으로 활성화한다.
+
+```text
+CODEGATE_AGENT_MODE=local
+CODEGATE_LOCAL_LLM_BACKEND=auto
+CODEGATE_LOCAL_LLM_MODEL=gemma4:e2b
+CODEGATE_LOCAL_LLM_CONTEXT_TOKENS=8192
+CODEGATE_LOCAL_LLM_MAX_OUTPUT_TOKENS=2048
+```
+
+상용 Claude Agent SDK session은 다음 설정으로 명시적으로 전환한다.
 
 ```text
 CODEGATE_AGENT_MODE=claude
@@ -116,11 +128,13 @@ Frontend가 Supabase Auth에 직접 로그인하고 access token만 cloud Backen
 
 ## 다운로드 앱 로컬 실행
 
-앱과 함께 검증된 LLMWIKI bundle, 사용자가 허용한 source root, 별도 정규화 Markdown root와 storage root를 넘긴다.
+앱과 함께 검증된 LLMWIKI bundle, 사용자가 허용한 source root, 별도 정규화 Markdown root와
+storage root를 넘긴다. Ollama 또는 LM Studio에서 `gemma4:e2b`가 준비되어 있어야 한다.
 
 ```bash
-export ANTHROPIC_API_KEY=<user-api-key>
-export CODEGATE_CLAUDE_MODEL=<exact-model-id>
+export CODEGATE_AGENT_MODE=local
+export CODEGATE_LOCAL_LLM_BACKEND=auto
+export CODEGATE_LOCAL_LLM_MODEL=gemma4:e2b
 
 uv run codegate-local \
   --source-root /workspace/source \
@@ -131,7 +145,9 @@ uv run codegate-local \
   --cors-origin http://127.0.0.1:3000
 ```
 
-source, LLMWIKI input, storage root는 서로 겹치면 startup 전에 거부한다. 제품 기본은 Claude mode이며 `--deterministic-agent`는 오프라인 상태 머신 개발용이다.
+source, LLMWIKI input, storage root는 서로 겹치면 startup 전에 거부한다. 제품 기본은 local
+mode이며 `--deterministic-agent`는 LLM 없는 상태 머신 개발용, `--claude-agent`는 상용 API
+경로 검증용이다.
 
 ## 검증
 

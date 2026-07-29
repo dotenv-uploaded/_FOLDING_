@@ -13,10 +13,10 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, AsyncIterator
-from uuid import uuid4
-
 import re
+from collections.abc import AsyncIterator
+from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -80,6 +80,17 @@ async def stream_agent(
     access_context: Annotated[AccessContext, Depends(get_access_context)],
     container: Annotated[AppContainer, Depends(get_container)],
 ) -> StreamingResponse:
+    if container.settings.agent_mode != "claude":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CLAUDE_AGENT_DISABLED",
+                "message": (
+                    "열린 에이전트 스트림은 Claude 모드에서만 지원합니다. "
+                    "로컬 Gemma 4 대화는 /chat/messages를 사용합니다."
+                ),
+            },
+        )
     stream_id = f"stream_{uuid4().hex}"
     registry = container.approval_hub.open(
         stream_id,

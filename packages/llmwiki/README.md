@@ -2,7 +2,8 @@
 
 전체 프로젝트 구조와 담당자별 진입점은 저장소 루트의 `README.md`를 먼저 참고한다.
 
-서버에 저장된 정규화 Markdown을 읽어 Gemini 기반 enrichment와 검색 데이터를 생성하는
+서버에 저장된 정규화 Markdown을 읽어 로컬 Gemma 4 또는 선택적 상용 provider 기반
+enrichment와 검색 데이터를 생성하는
 테넌트 단위 위키 빌드 엔진이다. 입력 원문은 수정하지 않으며 각 결과는 내용 기반
 `build_id`를 가진 불변 디렉터리로 저장한다.
 
@@ -13,7 +14,7 @@
 - Markdown 입력 계약 검증과 본문 보존
 - 같은 `id`와 서로 다른 `chunk_no`를 가진 의미 청크 파일의 논리 문서 결합
 - 섹션 앵커, manifest, chunks, aliases, links 생성
-- Gemini 기반 요약·핵심사항·키워드·엔티티·FAQ·관계 분류
+- OpenAI 호환 로컬 provider 또는 Gemini 기반 요약·핵심사항·키워드·엔티티·FAQ·관계 분류
 - 원문 근거, 숫자, 날짜와 링크 대상 검증
 - 입력 변경에 따른 enrichment 무효화
 - 테넌트·위키별 불변 빌드, current 포인터와 활성화 감사 로그
@@ -124,19 +125,23 @@ result = service.rebuild_documents(request, {"DOC-000001"})
 print(result.build.build_id, result.build.activated)
 ```
 
-## Gemini와 데이터 정책
+## Provider와 데이터 정책
 
-API 키는 `.env` 또는 서버의 Secret Manager를 통해 `GEMINI_API_KEY` 환경변수로만
-주입한다. 키는 빌드, manifest, 오류 메시지와 로그에 기록하지 않는다.
+기본 설정은 API 키가 없는 `local-openai-compatible` provider와 `gemma4:e2b`다.
+`CODEGATE_LOCAL_LLM_BACKEND=auto`는 Ollama와 LM Studio의 loopback endpoint를 찾는다.
+고정 서버는 `CODEGATE_LOCAL_LLM_BASE_URL`, 모델은 `CODEGATE_LOCAL_LLM_MODEL`로 지정한다.
 
-실제 비공개 문서를 외부 LLM으로 처리하려면 운영자가 `provider.data_policy`를
-`paid-no-training`으로 명시해야 한다. `restricted` 문서는 기본적으로 외부 LLM 전송을
-차단한다. 개발용 가상 코퍼스만 `synthetic_corpus=true`로 이 검사를 우회할 수 있다.
+상용화할 때는 `provider.kind`와 모델을 배포 설정에서 명시적으로 바꾸고, API 키는 `.env` 또는
+Secret Manager의 환경변수로만 주입한다. 키는 build, manifest, 오류 메시지와 로그에 기록하지
+않는다.
 
-기존 요청 모델 `gemini-2.5-flash-lite`는 현재 계정에서 생성 호출이 허용되지 않아
-접근 확인된 `gemini-3.1-flash-lite`를 사용한다. 모델, 프롬프트와 enrichment 스키마가
-변경되면 캐시가 자동으로 오래된 결과가 된다.
+실제 비공개 문서를 **외부** LLM으로 처리하려면 운영자가 `provider.data_policy`를
+`paid-no-training`으로 명시해야 한다. `restricted` 문서는 외부 LLM 전송을 차단한다. 로컬
+loopback provider는 사용자 장비 밖으로 문서를 전송하지 않는다.
 
-새 API 호출의 토큰 수와 설정된 가격표 기준 추정 비용은 enrichment의 `generation.usage`와
+모델, endpoint, 프롬프트와 enrichment 스키마가 변경되면 fingerprint가 달라져 캐시가 자동으로
+오래된 결과가 된다.
+
+provider가 반환한 토큰 수와 설정된 가격표 기준 추정 비용은 enrichment의 `generation.usage`와
 각 빌드의 `build-meta.json`에 기록한다. 전환 전에 생성된 기존 50개 enrichment는 API가
 사용량을 반환하던 시점의 기록이 없어 `unmeasured_records`로 표시된다.

@@ -8,8 +8,8 @@ import { cn } from '@/lib/cn';
  * 원격 링크를 쓰지 않는다 — 앱은 오프라인에서도 동작해야 한다.
  */
 
-const MARK_SRC = '/brand/folding-mark.png';
-const LOGO_SRC = '/brand/folding-logo.png';
+const MARK_SRC = './brand/folding-mark.png';
+const LOGO_SRC = './brand/folding-logo.png';
 
 /** 폴더 마크만. 세로가 긴 비율(632×774)이라 높이를 기준으로 잡는다. */
 export function Mark({ size = 26, className }: { size?: number; className?: string }) {

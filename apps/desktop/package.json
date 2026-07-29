@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:integrated": "node scripts/dev-integrated.mjs",
-    "dev:mock": "CODEGATE_MOCK=1 electron-vite dev",
+    "dev:mock": "node scripts/dev-mock.mjs",
     "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && electron-vite build",
     "build:web": "tsc --noEmit -p tsconfig.web.json && vite build --config vite.web.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
@@ -21,6 +21,14 @@
     "mock-server": "node scripts/mock-server.mjs",
     "integrations:check": "node scripts/check-integrations.mjs",
     "integrations:smoke": "node scripts/smoke-integrations.mjs",
+    "electron:smoke": "node scripts/electron-cdp-smoke.mjs",
+    "runtime:smoke": "node scripts/smoke-packaged-runtime.mjs",
+    "runtime:python": "node scripts/build-python-sidecars.mjs",
+    "runtime:ollama": "node scripts/prepare-ollama-runtime.mjs",
+    "runtime:prerequisites": "node scripts/prepare-platform-prerequisites.mjs",
+    "runtime:prepare": "pnpm runtime:python && pnpm runtime:ollama && pnpm runtime:prerequisites",
+    "package": "pnpm runtime:prepare && pnpm build && electron-builder --config electron-builder.yml",
+    "package:dir": "pnpm runtime:prepare && pnpm build && electron-builder --config electron-builder.yml --dir",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "electron-builder install-app-deps"

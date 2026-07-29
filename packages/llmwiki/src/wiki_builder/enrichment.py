@@ -14,11 +14,11 @@ from jsonschema import Draft202012Validator
 from wiki_builder.config import WikiConfig, WikiScope, scoped_config
 from wiki_builder.corpus import extract_links
 from wiki_builder.errors import ProviderError, ValidationError
-from wiki_builder.gemini import GeminiClient, get_api_key
 from wiki_builder.io_utils import atomic_write_json
 from wiki_builder.markdown import load_documents
 from wiki_builder.models import Document, Link
 from wiki_builder.provenance import compatible_model_fingerprint, model_fingerprint
+from wiki_builder.provider import build_provider_client, ensure_provider_ready
 from wiki_builder.schemas import load_schema, validate_record
 
 NUMBER_RE = re.compile(r"(?<![0-9A-Za-z])[0-9]+(?:[.,][0-9]+)*(?![0-9A-Za-z])")
@@ -283,7 +283,7 @@ def _request_payload(document: Document, links: list[Link]) -> dict[str, Any]:
 
 
 def _check_provider_ready(config: WikiConfig) -> str:
-    get_api_key(config, required=True)
+    ensure_provider_ready(config)
     fingerprint = model_fingerprint(config)
     return fingerprint
 
@@ -292,6 +292,8 @@ def _enforce_external_processing_policy(
     config: WikiConfig,
     documents: list[Document],
 ) -> None:
+    if config.provider["name"] == "local-openai":
+        return
     if bool(config.scope.get("synthetic_corpus", False)):
         return
     access_levels = {str(document.metadata["access"]) for document in documents}
@@ -396,7 +398,7 @@ def enrich_documents(
     system_prompt = config.resolve_path("prompt_file").read_text(encoding="utf-8")
     response_schema = model_response_schema(config)
     max_attempts = int(config.enrichment["max_attempts"])
-    with GeminiClient(config) as client:
+    with build_provider_client(config) as client:
         for document_number, document in enumerate(pending, start=1):
             if progress:
                 progress(f"[{document_number}/{len(pending)}] {document.doc_id} 생성 시작")

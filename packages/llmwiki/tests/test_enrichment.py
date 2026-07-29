@@ -17,6 +17,19 @@ from wiki_builder.errors import ValidationError
 from wiki_builder.markdown import load_documents
 
 
+def _external_config(config: WikiConfig) -> WikiConfig:
+    raw = deepcopy(config.raw)
+    raw["provider"].update(
+        {
+            "name": "google-gemini",
+            "backend": "auto",
+            "base_url": "https://generativelanguage.googleapis.com",
+            "data_policy": "development-free",
+        }
+    )
+    return WikiConfig(path=config.path, raw=raw)
+
+
 def _valid_record(config: WikiConfig):
     document = next(doc for doc in load_documents(config) if doc.doc_id == "REG-000001")
     links = [
@@ -197,6 +210,7 @@ def test_production_nonpublic_documents_require_paid_data_policy(
     config: WikiConfig,
     tmp_path: Path,
 ) -> None:
+    config = _external_config(config)
     scope = WikiScope(
         tenant_id="tenant-a",
         wiki_id="private-wiki",
@@ -216,6 +230,7 @@ def test_synthetic_corpus_can_use_development_policy(
     config: WikiConfig,
     tmp_path: Path,
 ) -> None:
+    config = _external_config(config)
     scope = WikiScope(
         tenant_id="tenant-a",
         wiki_id="sample",
@@ -231,6 +246,7 @@ def test_restricted_document_is_always_blocked(
     config: WikiConfig,
     tmp_path: Path,
 ) -> None:
+    config = _external_config(config)
     scope = WikiScope(
         tenant_id="tenant-a",
         wiki_id="restricted-wiki",
@@ -249,3 +265,23 @@ def test_restricted_document_is_always_blocked(
     )
     with pytest.raises(ValidationError, match="restricted"):
         _enforce_external_processing_policy(paid_config, [restricted])
+
+
+def test_local_provider_keeps_private_documents_on_device(
+    config: WikiConfig,
+    tmp_path: Path,
+) -> None:
+    scope = WikiScope(
+        tenant_id="tenant-a",
+        wiki_id="private-local",
+        input_dir=config.resolve_path("input_dir"),
+        storage_root=tmp_path,
+        synthetic_corpus=False,
+    )
+    active_config = scoped_config(config, scope)
+    document = load_documents(active_config)[0]
+    restricted = replace(
+        document,
+        metadata={**document.metadata, "access": "restricted"},
+    )
+    _enforce_external_processing_policy(active_config, [restricted])

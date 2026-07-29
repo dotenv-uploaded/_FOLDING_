@@ -10,8 +10,6 @@ from importlib.metadata import version
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 
-logger = logging.getLogger(__name__)
-
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeSDKClient,
@@ -27,6 +25,7 @@ from codegate_api.agent.instructions import (
     build_system_prompt,
     build_turn_prompt,
 )
+from codegate_api.agent.local_llm import LocalLlmClient, LocalLlmError
 from codegate_api.agent.runtime import (
     ALLOWED_AGENT_TOOLS,
     SAFE_AGENT_TOOLS,
@@ -40,6 +39,8 @@ from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.repository import KnowledgeRepository
 from codegate_api.knowledge.schemas import DOCUMENT_ID_PATTERN
 from codegate_api.models import ReplaceExactOperation
+
+logger = logging.getLogger(__name__)
 
 EXPECTED_TOOL_SOURCE_KINDS = {
     "mcp__codegate__knowledge_search": "knowledge_search",
@@ -227,7 +228,7 @@ class DeterministicAgentGateway:
                     access_context=access_context,
                 )
                 if source is not None and source[1].count(operation.expected_text) == 1:
-                    source_sha256 = source[0].source.sha256
+                    source_sha256 = _current_source_sha256(source)
             if source_sha256 is None:
                 return AgentRunResult(
                     provider="deterministic",
@@ -267,6 +268,112 @@ class DeterministicAgentGateway:
                 source_sha256=None,
                 operation=None,
             ),
+        )
+
+
+class LocalAgentGateway:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: LocalLlmClient | None = None,
+    ) -> None:
+        self._settings = settings
+        self._client = client or LocalLlmClient(settings)
+
+    @property
+    def session_ttl_seconds(self) -> None:
+        return None
+
+    def session_fingerprint(
+        self,
+        *,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+    ) -> None:
+        del repository, access_context
+        return None
+
+    async def decide(
+        self,
+        *,
+        message: str,
+        selected_document_id: str | None,
+        conversation_id: str,
+        repository: KnowledgeRepository,
+        access_context: AccessContext,
+        resume_session_id: str | None = None,
+    ) -> AgentRunResult:
+        del conversation_id, resume_session_id
+        documents = repository.search(message, access_context=access_context)
+        if selected_document_id:
+            selected = repository.get(selected_document_id, access_context=access_context)
+            if selected is not None:
+                documents = [
+                    selected,
+                    *[
+                        item
+                        for item in documents
+                        if item.document_id != selected_document_id
+                    ],
+                ]
+        source_context: dict[str, str] = {}
+        for document in documents[:5]:
+            if not document.can_write:
+                continue
+            source = repository.read_source_text(
+                document.document_id,
+                access_context=access_context,
+                max_bytes=32_768,
+            )
+            if source is not None:
+                source_context[document.document_id] = source[1]
+        if not documents and not source_context:
+            return AgentRunResult(
+                provider="local-gemma4",
+                decision=AgentDecision(
+                    prompt_contract_version=PROMPT_CONTRACT_VERSION,
+                    outcome=AgentOutcome.NOT_FOUND,
+                    intent="change" if _looks_like_change(message) else "locate",
+                    assistant_text="검증된 로컬 문서 근거를 찾지 못했습니다.",
+                    search_query=message,
+                    target_document_id=None,
+                    source_sha256=None,
+                    operation=None,
+                ),
+            )
+        prompt = _local_turn_prompt(
+            message=message,
+            selected_document_id=selected_document_id,
+            documents=documents[:5],
+            source_context=source_context,
+        )
+        try:
+            completion = await self._client.complete_json(
+                system_prompt=_LOCAL_SYSTEM_PROMPT,
+                user_prompt=prompt,
+                response_schema=AgentDecision.model_json_schema(),
+            )
+            decision = AgentDecision.model_validate_json(completion.text)
+        except LocalLlmError as error:
+            raise AgentGatewayError(error.code, str(error)) from error
+        except ValidationError as error:
+            logger.warning("local agent decision validation failed: %s", error)
+            raise AgentGatewayError(
+                "LOCAL_LLM_RESULT_INVALID",
+                "로컬 Gemma 4가 안전한 구조화 결정을 반환하지 못했습니다.",
+            ) from error
+        decision = _verify_local_decision(
+            decision,
+            message=message,
+            selected_document_id=selected_document_id,
+            repository=repository,
+            access_context=access_context,
+            allowed_document_ids={item.document_id for item in documents},
+        )
+        return AgentRunResult(
+            provider=f"local-openai-compatible:{completion.model}",
+            decision=decision,
         )
 
 
@@ -488,7 +595,112 @@ def _is_missing_session(stderr_tail: str) -> bool:
 def build_agent_gateway(settings: Settings) -> AgentGateway:
     if settings.agent_mode == "claude":
         return ClaudeAgentGateway(settings)
+    if settings.agent_mode == "local":
+        return LocalAgentGateway(settings)
     return DeterministicAgentGateway()
+
+
+_LOCAL_SYSTEM_PROMPT = """
+당신은 로컬 문서 에이전트의 안전한 라우터다. 사실 답변을 작성하지 말고 AgentDecision JSON
+하나만 반환한다. intent는 문서를 찾는 locate 또는 문구를 바꾸는 change다. 제공된 문서 ID
+밖의 대상을 만들지 않는다. change는 사용자가 변경 전 문구와 변경 후 문구를 명시했고,
+변경 전 문구가 제공된 현재 원본에 정확히 한 번 있을 때만 ready다. replacement_text는
+사용자 요청에 실제로 들어 있는 문자열이어야 한다. 불명확하면 needs_clarification으로
+fail-closed한다. source_sha256은 제공된 현재 원본의 sha256을 그대로 복사한다.
+prompt_contract_version은 반드시 "2.0"이다.
+""".strip()
+
+
+def _local_turn_prompt(
+    *,
+    message: str,
+    selected_document_id: str | None,
+    documents: list[Any],
+    source_context: dict[str, str],
+) -> str:
+    context = [
+        {
+            "document_id": document.document_id,
+            "title": document.title,
+            "can_write": document.can_write,
+            "evidence": [
+                {
+                    "section_id": evidence.section_id,
+                    "quote": evidence.quote[:2_000],
+                }
+                for evidence in document.evidence
+            ],
+            "current_source": source_context.get(document.document_id),
+            "source_sha256": (
+                hashlib.sha256(source_context[document.document_id].encode("utf-8")).hexdigest()
+                if document.document_id in source_context
+                else None
+            ),
+        }
+        for document in documents
+    ]
+    return json.dumps(
+        {
+            "user_message": message,
+            "selected_document_id": selected_document_id,
+            "verified_documents": context,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _verify_local_decision(
+    decision: AgentDecision,
+    *,
+    message: str,
+    selected_document_id: str | None,
+    repository: KnowledgeRepository,
+    access_context: AccessContext,
+    allowed_document_ids: set[str],
+) -> AgentDecision:
+    target = decision.target_document_id
+    if target is not None and target not in allowed_document_ids:
+        return _local_clarification(decision, message)
+    if selected_document_id is not None and target not in {None, selected_document_id}:
+        return _local_clarification(decision, message)
+    if decision.outcome is not AgentOutcome.READY or decision.intent != "change":
+        return decision
+    operation = decision.operation
+    if target is None or operation is None or operation.replacement_text not in message:
+        return _local_clarification(decision, message)
+    source = repository.read_source_text(target, access_context=access_context)
+    if source is None or source[1].count(operation.expected_text) != 1:
+        return _local_clarification(decision, message)
+    return decision.model_copy(
+        update={
+            "source_sha256": _current_source_sha256(source),
+        }
+    )
+
+
+def _local_clarification(decision: AgentDecision, message: str) -> AgentDecision:
+    return AgentDecision(
+        prompt_contract_version=PROMPT_CONTRACT_VERSION,
+        outcome=AgentOutcome.NEEDS_CLARIFICATION,
+        intent=decision.intent,
+        assistant_text="대상 문서와 변경 전후 문구를 더 명확히 확인해야 합니다.",
+        search_query=decision.search_query or message,
+        target_document_id=decision.target_document_id,
+        source_sha256=None,
+        operation=None,
+    )
+
+
+def _looks_like_change(message: str) -> bool:
+    return bool(re.search(r"수정|변경|바꿔|교체|replace", message, re.IGNORECASE))
+
+
+def _current_source_sha256(source: tuple[Any, str]) -> str:
+    manifest, text = source
+    if manifest.source.media_type in {"text/markdown", "text/plain"}:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return str(manifest.source.sha256)
 
 
 def _validate_tool_trace(

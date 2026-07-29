@@ -254,6 +254,42 @@ class KnowledgeRebuildResponse(StrictModel):
     knowledge_version: str
 
 
+class DiscordSourceStatusResponse(StrictModel):
+    enabled: Literal[True] = True
+    guild_id: str
+    allowed_channels: list[str]
+    event_count: int
+    projected_documents: list[str]
+    last_knowledge_version: str | None
+    gateway_enabled: bool
+    gateway_running: bool
+    gateway_error: str | None
+
+
+class DiscordProjectionResponse(StrictModel):
+    status: Literal["projected"]
+    changed: bool
+    event_count: int
+    document_ids: list[str]
+    fragment_files: list[str]
+    raw_files: list[str]
+    knowledge_version: str
+
+
+class DiscordBackfillResponse(DiscordProjectionResponse):
+    inserted_events: int
+
+
+class DiscordContextResponse(StrictModel):
+    query: str
+    documents: list[DocumentResult]
+
+
+class DiscordExportResponse(StrictModel):
+    media_type: Literal["text/markdown"] = "text/markdown"
+    content: str
+
+
 class DemoResetResponse(StrictModel):
     status: Literal["reset"]
     knowledge_version: str

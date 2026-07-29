@@ -3,6 +3,7 @@
  * IPC 핸들러(`ipc.ts`)와 앱 부트스트랩(`index.ts`)은 이 객체만 본다.
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -60,8 +61,21 @@ import {
 } from '@main/sidecar/supervisor';
 import { executionSummary } from '@main/agent/sidecar-agent';
 import { syncNormalizedInputs, type InputSyncProgress } from '@main/sidecar/input-sync';
+import { Doc2MdSupervisor, type Doc2MdProcessConfig } from '@main/doc2md/supervisor';
+import { LocalModelRuntimeSupervisor } from '@main/llm/runtime-supervisor';
 
 const DEFAULT_CLOUD_API_URL = 'http://127.0.0.1:8787/api/v1';
+const LLMWIKI_BUNDLE_ENTRIES = [
+  'config',
+  'enrichment',
+  'prompts',
+  'schemas',
+  'src',
+  'INPUT_CONTRACT.md',
+  'README.md',
+  'SERVER_INTEGRATION.md',
+  'pyproject.toml',
+] as const;
 // sidecar 주소는 더 이상 고정값이 아니다 — SidecarSupervisor 가 빈 포트를 잡아 정한다.
 // 이미 떠 있는 엔진에 붙으려면 CODEGATE_SIDECAR_URL 로 지정한다.
 
@@ -93,8 +107,12 @@ export class AppServices {
   readonly sidecar: SidecarClient;
   /** L2 — sidecar 프로세스를 띄우고 지켜본다 (스펙 v2.1 §1 L2). */
   readonly supervisor: SidecarSupervisor;
+  readonly doc2md: Doc2MdSupervisor;
+  readonly localModel: LocalModelRuntimeSupervisor;
   /** `~/.codegate/wiki` — `AgentDeps.config.wikiDir` 로 주입된다. */
   readonly wikiDir: string;
+  /** 상용 API 모드에서만 사용량 한도와 결제 크레딧을 적용한다. */
+  private readonly billingEnabled: boolean;
 
   /**
    * `AgentDeps.config.roots` 는 에이전트 생성 시 한 번만 전달되므로,
@@ -125,8 +143,11 @@ export class AppServices {
       llmKeys: LlmKeyStore;
       sidecar: SidecarClient;
       supervisor: SidecarSupervisor;
+      doc2md: Doc2MdSupervisor;
+      localModel: LocalModelRuntimeSupervisor;
       wikiDir: string;
       agentRoots: string[];
+      billingEnabled: boolean;
     },
   ) {
     this.store = parts.store;
@@ -140,8 +161,11 @@ export class AppServices {
     this.llmKeys = parts.llmKeys;
     this.sidecar = parts.sidecar;
     this.supervisor = parts.supervisor;
+    this.doc2md = parts.doc2md;
+    this.localModel = parts.localModel;
     this.wikiDir = parts.wikiDir;
     this.agentRoots = parts.agentRoots;
+    this.billingEnabled = parts.billingEnabled;
   }
 
   static async create(options: ServicesOptions): Promise<AppServices> {
@@ -152,23 +176,29 @@ export class AppServices {
       DEFAULT_CLOUD_API_URL;
     const wikiDir = path.join(options.homeDir, '.codegate', 'wiki');
     await ensureDir(wikiDir);
+    await prepareLlmwikiRuntimeBundle(options);
     const store = new Store(openDb(path.join(options.userDataDir, 'codegate.db')));
     store.clearStaleStreaming();
-    /*
-     * 문서 분석 키는 **구독에 포함**된다 — 사용자는 발급받지도 입력하지도 않는다.
-     * 내부 키가 있으면 그것이 이기고, 없으면 예전처럼 사용자가 넣어 둔 키로 폴백한다.
-     * (내부 키를 설치본에 심는 것은 임시 배선이다 — 근거는 internal-key.ts 주석 참고)
-     */
+    // 기본 추론은 API 키가 없는 로컬 Gemma4다. 클라우드는 명시적으로 고른 경우에만 쓴다.
     const internalApiKey = readInternalApiKey(process.env);
     const llmKeys = new ManagedLlmKeyStore(
       new SafeStorageLlmKeyStore(options.userDataDir),
       internalApiKey,
     );
     console.info(
-      internalApiKey
-        ? '[codegate:llm] 구독 키(내부)로 동작합니다 — 사용자 키 입력 단계 없음.'
-        : '[codegate:llm] 내부 키가 없습니다. 설정에 저장된 사용자 키로 폴백합니다.',
+      process.env.CODEGATE_LLM_PROVIDER &&
+        !['local', 'auto'].includes(process.env.CODEGATE_LLM_PROVIDER)
+        ? '[codegate:llm] 명시적으로 선택한 클라우드 제공자를 사용합니다.'
+        : '[codegate:llm] API 키 없이 로컬 Gemma4를 사용합니다.',
     );
+
+    const doc2md = new Doc2MdSupervisor(doc2mdProcessConfig(options));
+    const doc2mdUrl = await doc2md.prepare();
+    const localModel = new LocalModelRuntimeSupervisor({
+      binary: ollamaBinary(options),
+      modelsDir: path.join(options.userDataDir, 'models', 'ollama'),
+      externalBaseUrl: process.env.CODEGATE_LOCAL_LLM_BASE_URL,
+    });
 
     /*
      * sidecar 수명주기 (스펙 v2.1 §1 L2).
@@ -261,7 +291,10 @@ export class AppServices {
         if (authMode === 'cloud') await auth.ensureActiveSubscription();
       },
       onAuthError: (error: AuthError) => auth.handleAuthError(error),
-      remainingBuildCredits: () => self?.usageStatus().pools.build.remainingCredits ?? 0,
+      remainingBuildCredits: () =>
+        authMode === 'cloud'
+          ? (self?.usageStatus().pools.build.remainingCredits ?? 0)
+          : Number.MAX_SAFE_INTEGER,
       confirmEstimate: (estimate) => buildEstimates.request(estimate),
     });
 
@@ -283,7 +316,11 @@ export class AppServices {
         roots: agentRoots,
         backendUrl: sidecarUrl,
         wikiDir,
-        wikiInputRoot: sidecarRuntimePaths(options, initialRoot?.path ?? '').llmwikiInputRoot,
+        wikiInputRoot: sidecarRuntimePaths(
+          options,
+          initialRoot?.path ?? '',
+          doc2mdUrl,
+        ).llmwikiInputRoot,
       },
       auth: {
         getToken: () => auth.getToken(),
@@ -320,8 +357,11 @@ export class AppServices {
       llmKeys,
       sidecar,
       supervisor,
+      doc2md,
+      localModel,
       wikiDir,
       agentRoots,
+      billingEnabled: authMode === 'cloud',
     });
     self = services;
 
@@ -391,7 +431,11 @@ export class AppServices {
         excludedCount: preview?.excluded.length ?? 0,
         addedAt: new Date().toISOString(),
       };
-      const runtime = sidecarRuntimePaths(this.options, rootPath);
+      const runtime = sidecarRuntimePaths(
+        this.options,
+        rootPath,
+        this.doc2md.baseUrl ?? undefined,
+      );
       await validateSidecarRuntimePaths(runtime);
       const pendingRows = (preview?.included ?? []).map((relativePath) =>
         pendingFileRow(root.id, root.path, relativePath),
@@ -459,7 +503,11 @@ export class AppServices {
    */
   async getWikiGraph(): Promise<WikiGraph> {
     const root = this.store.listRoots()[0];
-    const runtime = sidecarRuntimePaths(this.options, root?.path ?? '');
+    const runtime = sidecarRuntimePaths(
+      this.options,
+      root?.path ?? '',
+      this.doc2md.baseUrl ?? undefined,
+    );
     return readWikiGraph({
       storageRoot: runtime.llmwikiStorageRoot,
       // 런타임 설정에서 비어 있으면 sidecarRuntimePaths 와 같은 기본값을 쓴다 —
@@ -508,7 +556,7 @@ export class AppServices {
   sendChat(conversationId: string, text: string): { messageId: string } {
     // 한도를 넘겼으면 **보내기 전에** 막는다. 보내고 나서 막으면 이미 돈이 나간 뒤다.
     const usage = this.usageStatus();
-    if (usage.blocked) {
+    if (this.billingEnabled && usage.blocked) {
       throw new UserFacingError(USAGE_BLOCKED_MESSAGE);
     }
     return this.chat.send(conversationId, text);
@@ -540,7 +588,7 @@ export class AppServices {
       extraKrw,
       remainingKrw,
       // 막히는 것은 **대화**다. 문서 분석은 자기 지갑을 따로 본다.
-      blocked: this.spendable('chat', extraCredits) <= 0,
+      blocked: this.billingEnabled && this.spendable('chat', extraCredits) <= 0,
       calls,
       pools: { chat: this.pool('chat'), build: this.pool('build') },
       extraCredits,
@@ -659,8 +707,10 @@ export class AppServices {
     this.approval.rejectAll();
     this.chat.abortAll();
     await this.watcher.close();
-    // 파이썬을 고아 프로세스로 남기지 않는다 (스펙 v2.1 §1 L2)
+    // 관리하는 로컬 프로세스를 역순으로 내린다. 어느 것도 고아 process로 남기지 않는다.
     await this.supervisor.dispose().catch((err: unknown) => logError('sidecar:stop', err));
+    await this.doc2md.dispose().catch((err: unknown) => logError('doc2md:stop', err));
+    await this.localModel.dispose().catch((err: unknown) => logError('ollama:stop', err));
     this.store.close();
   }
 
@@ -712,15 +762,35 @@ export class AppServices {
       // 변환·엔진 준비를 기다리지 않고 파일 트리를 먼저 보여준다.
       this.store.replaceRootFiles(refreshedRoot, rows);
       this.emitTree();
-      const runtime = sidecarRuntimePaths(this.options, root.path);
-      await validateSidecarRuntimePaths(runtime);
+      await this.doc2md.start();
+      const modelReady = this.localModel.ensureReady((message) =>
+        this.emitKnowledgeBuildState({
+          status: 'scanning',
+          progress: 4,
+          message,
+        }),
+      );
+      const conversionRuntime = sidecarRuntimePaths(
+        this.options,
+        root.path,
+        this.doc2md.baseUrl ?? undefined,
+      );
+      await validateSidecarRuntimePaths(conversionRuntime);
       await this.supervisor.stop();
-      await syncNormalizedInputs({
-        files: rows,
-        inputRoot: runtime.llmwikiInputRoot,
-        doc2mdUrl: runtime.doc2mdUrl,
-        onProgress: (progress) => this.emitInputSyncProgress(progress),
-      });
+      await Promise.all([
+        syncNormalizedInputs({
+          files: rows,
+          inputRoot: conversionRuntime.llmwikiInputRoot,
+          doc2mdUrl: conversionRuntime.doc2mdUrl,
+          onProgress: (progress) => this.emitInputSyncProgress(progress),
+        }),
+        modelReady,
+      ]);
+      const runtime = sidecarRuntimePaths(
+        this.options,
+        root.path,
+        this.doc2md.baseUrl ?? undefined,
+      );
       if (!this.isCurrentRootGeneration(root, generation)) return;
       this.emitKnowledgeBuildState({
         status: 'assembling',
@@ -956,30 +1026,83 @@ export function watchChangeNeedsKnowledgeSync(
   return !(previous && !previous.dirty && previous.sha256 === next.sha256);
 }
 
-function sidecarRuntimePaths(options: ServicesOptions, sourceRoot: string): SidecarRuntimePaths {
+function sidecarRuntimePaths(
+  options: ServicesOptions,
+  sourceRoot: string,
+  doc2mdUrl?: string,
+): SidecarRuntimePaths {
   const runtimeRoot = path.join(options.userDataDir, 'sidecar');
-  const projectDir = options.projectDir ?? process.cwd();
-  const resourcesPath = options.resourcesPath ?? process.resourcesPath;
-  const developmentBundle = path.resolve(projectDir, '..', 'LLMWIKI');
-  const packagedBundle = path.join(resourcesPath, 'LLMWIKI');
   return {
     sourceRoot,
     llmwikiProjectRoot:
       process.env.CODEGATE_LLMWIKI_PROJECT_ROOT ??
-      (options.isPackaged ? packagedBundle : developmentBundle),
+      path.join(runtimeRoot, 'llmwiki-bundle'),
     llmwikiInputRoot:
       process.env.CODEGATE_LLMWIKI_INPUT_ROOT ?? path.join(runtimeRoot, 'source-md'),
     llmwikiStorageRoot:
       process.env.CODEGATE_LLMWIKI_STORAGE_ROOT ?? path.join(runtimeRoot, 'llmwiki-storage'),
     dataRoot: process.env.CODEGATE_SIDECAR_DATA_ROOT ?? path.join(runtimeRoot, 'app-data'),
-    doc2mdUrl: process.env.CODEGATE_DOC2MD_URL,
+    doc2mdUrl: process.env.CODEGATE_DOC2MD_URL ?? doc2mdUrl,
     deterministicAgent:
       process.env.CODEGATE_AGENT_MODE === 'deterministic' || process.env.CODEGATE_MOCK === '1',
+    claudeAgent: process.env.CODEGATE_AGENT_MODE === 'claude',
+    localLlmBackend: process.env.CODEGATE_LOCAL_LLM_BACKEND ?? 'auto',
+    localLlmBaseUrl: process.env.CODEGATE_LOCAL_LLM_BASE_URL,
+    localLlmModel: process.env.CODEGATE_LOCAL_LLM_MODEL ?? 'gemma4:e2b',
+    localLlmApiToken: process.env.CODEGATE_LOCAL_LLM_API_TOKEN,
+    localLlmTimeoutSeconds: Number(process.env.CODEGATE_LOCAL_LLM_TIMEOUT_SECONDS ?? 120),
+    localLlmContextTokens: Number(process.env.CODEGATE_LOCAL_LLM_CONTEXT_TOKENS ?? 8192),
+    localLlmMaxOutputTokens: Number(
+      process.env.CODEGATE_LOCAL_LLM_MAX_OUTPUT_TOKENS ?? 2048,
+    ),
     claudeModel: process.env.CODEGATE_CLAUDE_MODEL ?? 'sonnet',
     claudeTimeoutSeconds: localClaudeTimeoutSeconds(),
     tenantId: process.env.CODEGATE_LLMWIKI_TENANT_ID ?? 'local',
     wikiId: process.env.CODEGATE_LLMWIKI_WIKI_ID ?? 'workspace',
   };
+}
+
+export async function prepareLlmwikiRuntimeBundle(options: ServicesOptions): Promise<string> {
+  const override = process.env.CODEGATE_LLMWIKI_PROJECT_ROOT?.trim();
+  if (override) return override;
+
+  const source = options.isPackaged
+    ? path.join(options.resourcesPath ?? process.resourcesPath, 'LLMWIKI')
+    : path.resolve(
+        options.projectDir ?? process.cwd(),
+        '..',
+        '..',
+        'packages',
+        'llmwiki',
+      );
+  const runtimeRoot = path.join(options.userDataDir, 'sidecar');
+  const destination = path.join(runtimeRoot, 'llmwiki-bundle');
+  const staging = path.join(runtimeRoot, `llmwiki-bundle.next-${process.pid}`);
+  const sourceStat = await fs.stat(source).catch(() => null);
+  if (!sourceStat?.isDirectory()) {
+    throw new Error(`LLMWIKI bundle을 찾을 수 없습니다: ${source}`);
+  }
+
+  await ensureDir(runtimeRoot);
+  await fs.rm(staging, { recursive: true, force: true });
+  await fs.mkdir(staging, { recursive: true });
+  try {
+    for (const entry of LLMWIKI_BUNDLE_ENTRIES) {
+      const sourceEntry = path.join(source, entry);
+      const stat = await fs.stat(sourceEntry).catch(() => null);
+      if (!stat) continue;
+      await fs.cp(sourceEntry, path.join(staging, entry), {
+        recursive: stat.isDirectory(),
+        force: true,
+      });
+    }
+    await fs.rm(destination, { recursive: true, force: true });
+    await fs.rename(staging, destination);
+  } catch (error) {
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+  return destination;
 }
 
 /**
@@ -1002,11 +1125,66 @@ function sidecarBinary(options: ServicesOptions): string {
   return path.resolve(
     options.projectDir ?? process.cwd(),
     '..',
-    'Backend',
+    '..',
+    'services',
+    'agent',
     '.venv',
     process.platform === 'win32' ? 'Scripts' : 'bin',
     executable,
   );
+}
+
+function doc2mdProcessConfig(options: ServicesOptions): Doc2MdProcessConfig {
+  if (process.env.CODEGATE_DOC2MD_URL) {
+    return { externalUrl: process.env.CODEGATE_DOC2MD_URL };
+  }
+  if (options.isPackaged) {
+    const executable = process.platform === 'win32' ? 'doc2md-local.exe' : 'doc2md-local';
+    return {
+      command: path.join(options.resourcesPath ?? process.resourcesPath, 'doc2md', executable),
+    };
+  }
+  const root =
+    process.env.CODEGATE_DOC2MD_PROJECT_ROOT ??
+    path.resolve(
+      options.projectDir ?? process.cwd(),
+      '..',
+      '..',
+      'services',
+      'convert',
+      'services',
+      'doc2md',
+    );
+  const python =
+    process.env.CODEGATE_DOC2MD_PYTHON ??
+    path.join(
+      root,
+      '.venv',
+      process.platform === 'win32' ? 'Scripts' : 'bin',
+      process.platform === 'win32' ? 'python.exe' : 'python',
+    );
+  return { command: python, commandArgs: ['-m', 'app.cli'], cwd: root };
+}
+
+function ollamaBinary(options: ServicesOptions): string | undefined {
+  if (process.env.CODEGATE_OLLAMA_BIN) return process.env.CODEGATE_OLLAMA_BIN;
+  const executable =
+    process.platform === 'win32'
+      ? 'ollama.exe'
+      : process.platform === 'linux'
+        ? path.join('bin', 'ollama')
+        : 'ollama';
+  const candidate = options.isPackaged
+    ? path.join(options.resourcesPath ?? process.resourcesPath, 'local-llm', executable)
+    : path.join(
+        options.projectDir ?? process.cwd(),
+        'build',
+        'runtime',
+        'current',
+        'local-llm',
+        executable,
+      );
+  return existsSync(candidate) ? candidate : undefined;
 }
 
 function completedFileRows(rows: FileRow[]): FileRow[] {

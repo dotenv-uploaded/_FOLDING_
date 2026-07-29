@@ -20,9 +20,9 @@ from wiki_builder.config import (
 from wiki_builder.corpus import verify_expected_corpus
 from wiki_builder.enrichment import enrich_documents
 from wiki_builder.errors import WikiBuilderError
-from wiki_builder.gemini import doctor
 from wiki_builder.io_utils import CURRENT_NOT_CHECKED
 from wiki_builder.markdown import load_documents
+from wiki_builder.provider import doctor
 from wiki_builder.service import WikiBuildRequest, WikiBuildService
 from wiki_builder.validation import validate_wiki
 
@@ -30,7 +30,7 @@ from wiki_builder.validation import validate_wiki
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="wiki-builder",
-        description="서버 연동형 Markdown Gemini LLM 위키 빌더",
+        description="로컬 우선 Markdown LLM 위키 빌더",
     )
     parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument("--tenant-id", help="테넌트 식별자")
@@ -44,7 +44,7 @@ def _parser() -> argparse.ArgumentParser:
         help="실제 문서로 처리하여 외부 LLM 데이터 정책을 강제",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("doctor", help="Gemini API 키, 모델 접근 및 데이터 정책 점검")
+    subparsers.add_parser("doctor", help="로컬 LLM 서버, 모델 접근 및 데이터 정책 점검")
     subparsers.add_parser("normalize", help="입력 계약과 본문 보존 조건 점검")
     build = subparsers.add_parser("build", help="새 불변 위키 빌드 생성")
     build.add_argument(

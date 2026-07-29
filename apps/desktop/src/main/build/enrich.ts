@@ -14,6 +14,7 @@
  * 자격증명 ②(enrichment LLM 키)만 쓴다. ①백엔드 토큰·③Anthropic SDK 자격증명과 섞지 않는다.
  */
 import { LLM_PROVIDER_LABEL, type LlmProvider } from '@contracts';
+import { LocalOpenAiClient } from '@main/llm/local-openai';
 import { UserFacingError } from '@main/util/errors';
 import type { PreviousBuild } from './cache';
 import {
@@ -152,7 +153,8 @@ export class LlmEnricher implements Enricher {
       // 상위(BuildService)가 빌드 시작 전에 이미 막지만, 방어적으로 한 번 더.
       throw new UserFacingError('enrichment LLM 키가 설정되지 않았습니다.');
     }
-    const model = this.options.model ?? DEFAULT_MODEL[key.provider];
+    const model =
+      key.provider === 'local' ? key.model : this.options.model ?? DEFAULT_MODEL[key.provider];
     const text = await this.callWithRetry(key, model, buildUserPrompt(doc), signal);
     return { ...parseEnrichment(text), model: `${key.provider}:${model}` };
   }
@@ -186,6 +188,20 @@ export class LlmEnricher implements Enricher {
     prompt: string,
     signal?: AbortSignal,
   ): Promise<string> {
+    if (key.provider === 'local') {
+      const result = await new LocalOpenAiClient(key, this.fetchImpl).chatJson({
+        system: SYSTEM_PROMPT,
+        user: prompt,
+        schema: enrichmentSchema(),
+        signal,
+      });
+      this.options.onUsage?.({
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        model: `local:${result.model}`,
+      });
+      return result.content;
+    }
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -205,7 +221,7 @@ export class LlmEnricher implements Enricher {
         if (signal?.aborted) throw new BuildCancelledError();
         // 네트워크 오류·타임아웃은 재시도 대상이다
         throw new RetryableLlmError(
-          `${LLM_PROVIDER_LABEL[key.provider]} 에 연결하지 못했습니다.`,
+          `${providerLabel(key.provider)} 에 연결하지 못했습니다.`,
           undefined,
         );
       }
@@ -214,17 +230,17 @@ export class LlmEnricher implements Enricher {
         const detail = (await response.text().catch(() => '')).slice(0, 300);
         if (response.status === 429 || response.status >= 500) {
           throw new RetryableLlmError(
-            `${LLM_PROVIDER_LABEL[key.provider]} 응답 ${response.status}`,
+            `${providerLabel(key.provider)} 응답 ${response.status}`,
             response.status,
           );
         }
         if (response.status === 401 || response.status === 403) {
           throw new UserFacingError(
-            `${LLM_PROVIDER_LABEL[key.provider]} API 키가 거부되었습니다. 설정에서 키를 다시 확인해 주세요.`,
+            `${providerLabel(key.provider)} API 키가 거부되었습니다. 설정에서 키를 다시 확인해 주세요.`,
           );
         }
         throw new UserFacingError(
-          `${LLM_PROVIDER_LABEL[key.provider]} 문서 분석 실패 (응답 ${response.status}) ${detail}`,
+          `${providerLabel(key.provider)} 문서 분석 실패 (응답 ${response.status}) ${detail}`,
         );
       }
 
@@ -255,6 +271,9 @@ interface ProviderRequest {
  * 에이전트 추론용 자격증명 ③(환경변수)과는 완전히 별개의 경로다 (스펙 v1.4 §5).
  */
 function buildRequest(key: ResolvedLlmKey, model: string, prompt: string): ProviderRequest {
+  if (key.provider === 'local') {
+    throw new Error('local requests are handled by LocalOpenAiClient');
+  }
   switch (key.provider) {
     case 'gemini':
       return {
@@ -318,6 +337,24 @@ function buildRequest(key: ResolvedLlmKey, model: string, prompt: string): Provi
         }),
       };
   }
+}
+
+function enrichmentSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary', 'keywords', 'sections', 'aliases'],
+    properties: {
+      summary: { type: 'string' },
+      keywords: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+      sections: { type: 'array', items: { type: 'string' } },
+      aliases: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+    },
+  };
+}
+
+function providerLabel(provider: ResolvedLlmKey['provider']): string {
+  return provider === 'local' ? '로컬 Gemma4' : LLM_PROVIDER_LABEL[provider];
 }
 
 /** 응답에서 숫자 하나를 꺼낸다. 없거나 숫자가 아니면 `null` — **0 으로 치지 않는다.** */

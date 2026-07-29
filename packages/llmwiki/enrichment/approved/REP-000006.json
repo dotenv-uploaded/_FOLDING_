@@ -1,18 +1,18 @@
 {
   "schema_version": "1.0.0",
   "doc_id": "REP-000006",
-  "source_sha256": "882f39c8d9409bd1535c0900a7207088811413210877f7c7dd610ada8873d39f",
+  "source_sha256": "b0d577941543bcd2aa90ca0dafacaf7e8bc8f0715c826821724926ede0e86d55",
   "model_fingerprint": "f1c34c90254d02b7eb93f443ca61de11c97ebb3a238ed9ce16748295d007713c",
   "prompt_version": "enrichment-v1",
   "summary": {
     "text": "본 문서는 2026년 3월 31일 기준 고객지원 데이터베이스와 문서 저장소에 대한 백업 복구시험 결과를 담고 있다. 시험 결과 고객지원 DB는 성공했으나 문서 저장소는 목표 시간을 초과하여 부분 성공으로 판정되었다.",
     "evidence": [
       {
-        "section_id": "sec-122b8c8fbd",
+        "section_id": "sec-5e89e28abb",
         "quote": "고객지원 데이터베이스와 문서 저장소의 2026년 3월 31일 백업본을 격리 환경에서 복구했다."
       },
       {
-        "section_id": "sec-cdac890800",
+        "section_id": "sec-b28cd69ec5",
         "quote": "문서 저장소는 대용량 파일 검증 과정에서 목표시간을 34분 초과했다."
       }
     ]
@@ -22,7 +22,7 @@
       "text": "고객지원 DB는 96분 만에 복구되어 목표시간인 120분 이내에 성공적으로 완료되었다.",
       "evidence": [
         {
-          "section_id": "sec-cdac890800",
+          "section_id": "sec-b28cd69ec5",
           "quote": "고객지원 DB | 120분 | 96분 | 성공"
         }
       ]
@@ -31,7 +31,7 @@
       "text": "문서 저장소는 대용량 파일 검증 지연으로 인해 목표시간 180분을 34분 초과한 214분이 소요되어 부분 성공으로 판정되었다.",
       "evidence": [
         {
-          "section_id": "sec-cdac890800",
+          "section_id": "sec-b28cd69ec5",
           "quote": "문서 저장소는 대용량 파일 검증 과정에서 목표시간을 34분 초과했다."
         }
       ]
@@ -40,7 +40,7 @@
       "text": "문서 저장소의 복구 성능 개선을 위해 파일 목록 검증 병렬화 작업을 수행하고 2026년 6월에 재시험을 실시할 예정이다.",
       "evidence": [
         {
-          "section_id": "sec-4642036908",
+          "section_id": "sec-ab3da4587f",
           "quote": "파일 목록 검증을 병렬화하고 2026년 6월에 재시험한다."
         }
       ]
@@ -61,7 +61,7 @@
       "type": "system",
       "evidence": [
         {
-          "section_id": "sec-cdac890800",
+          "section_id": "sec-b28cd69ec5",
           "quote": "고객지원 DB | 120분 | 96분 | 성공"
         }
       ]
@@ -71,7 +71,7 @@
       "type": "system",
       "evidence": [
         {
-          "section_id": "sec-cdac890800",
+          "section_id": "sec-b28cd69ec5",
           "quote": "문서 저장소 | 180분 | 214분 | 부분 성공"
         }
       ]
@@ -81,8 +81,8 @@
       "type": "document",
       "evidence": [
         {
-          "section_id": "sec-4642036908",
-          "quote": "시험은 [데이터 백업 복구 시험 매뉴얼](MAN-000010.md)에 따라 수행했다."
+          "section_id": "sec-ab3da4587f",
+          "quote": "시험은 데이터 백업 복구 시험 매뉴얼에 따라 수행했다."
         }
       ]
     }
@@ -93,7 +93,7 @@
       "answer": "목표시간 180분을 34분 초과한 214분이 소요되어 부분 성공으로 판정되었다.",
       "evidence": [
         {
-          "section_id": "sec-cdac890800",
+          "section_id": "sec-b28cd69ec5",
           "quote": "문서 저장소는 대용량 파일 검증 과정에서 목표시간을 34분 초과했다."
         }
       ]
@@ -103,7 +103,7 @@
       "answer": "파일 목록 검증을 병렬화하고 2026년 6월에 재시험을 진행할 예정이다.",
       "evidence": [
         {
-          "section_id": "sec-4642036908",
+          "section_id": "sec-ab3da4587f",
           "quote": "파일 목록 검증을 병렬화하고 2026년 6월에 재시험한다."
         }
       ]
@@ -115,7 +115,7 @@
       "relation_type": "based_on",
       "evidence": [
         {
-          "section_id": "sec-4642036908",
+          "section_id": "sec-ab3da4587f",
           "quote": "시험은 [데이터 백업 복구 시험 매뉴얼](MAN-000010.md)에 따라 수행했다."
         }
       ]

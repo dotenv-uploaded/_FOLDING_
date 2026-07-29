@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-wiki-builder"
 version = "0.1.0"
-description = "Deterministic Gemini-assisted wiki builder for Markdown documents"
+description = "Deterministic provider-assisted wiki builder for Markdown documents"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

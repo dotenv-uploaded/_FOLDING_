@@ -7,24 +7,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const workspaceDir = path.resolve(projectDir, '..');
+const repoDir = path.resolve(projectDir, '..', '..');
 const isWindows = process.platform === 'win32';
 const executable = isWindows ? 'codegate-local.exe' : 'codegate-local';
 const python = isWindows ? 'python.exe' : 'python';
 
 const backendBin =
   process.env.CODEGATE_SIDECAR_BIN ??
-  path.join(workspaceDir, 'Backend', '.venv', isWindows ? 'Scripts' : 'bin', executable);
+  path.join(repoDir, 'services', 'agent', '.venv', isWindows ? 'Scripts' : 'bin', executable);
 const llmwikiRoot =
-  process.env.CODEGATE_LLMWIKI_PROJECT_ROOT ?? path.join(workspaceDir, 'LLMWIKI');
+  process.env.CODEGATE_LLMWIKI_PROJECT_ROOT ?? path.join(repoDir, 'packages', 'llmwiki');
 const doc2mdRoot =
   process.env.CODEGATE_DOC2MD_PROJECT_ROOT ??
-  path.join(workspaceDir, 'codegate-2026-api', 'services', 'doc2md');
-const configuredDoc2mdPython = process.env.CODEGATE_DOC2MD_PYTHON;
-const doc2mdCommand = configuredDoc2mdPython ?? 'uv';
-const doc2mdCommandPrefix = configuredDoc2mdPython
-  ? []
-  : ['run', '--isolated', '--python', '3.12', '--project', doc2mdRoot, python];
+  path.join(repoDir, 'services', 'convert', 'services', 'doc2md');
+const packagedDoc2md = process.env.CODEGATE_DOC2MD_BIN;
+const doc2mdCommand =
+  packagedDoc2md ??
+  process.env.CODEGATE_DOC2MD_PYTHON ??
+  path.join(doc2mdRoot, '.venv', isWindows ? 'Scripts' : 'bin', python);
 
 const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), 'codegate-integration-smoke-'));
 const sourceRoot = path.join(runtimeRoot, 'source');
@@ -51,16 +51,17 @@ try {
   const doc2mdPort = await allocatePort();
   const doc2md = start(
     doc2mdCommand,
-    [
-      ...doc2mdCommandPrefix,
-      '-m',
-      'uvicorn',
-      'app.main:app',
-      '--host',
-      '127.0.0.1',
-      '--port',
-      String(doc2mdPort),
-    ],
+    packagedDoc2md
+      ? ['--host', '127.0.0.1', '--port', String(doc2mdPort)]
+      : [
+          '-m',
+          'uvicorn',
+          'app.main:app',
+          '--host',
+          '127.0.0.1',
+          '--port',
+          String(doc2mdPort),
+        ],
     { cwd: doc2mdRoot, name: 'doc2md' },
   );
   children.push(doc2md);
@@ -257,9 +258,11 @@ function allocatePort() {
 }
 
 function start(command, args, { cwd, name, env = {} }) {
+  const needsWindowsShell = isWindows && /\.(?:cmd|bat)$/i.test(command);
   const child = spawn(command, args, {
     cwd,
     detached: !isWindows,
+    shell: needsWindowsShell,
     env: {
       ...safeProcessEnvironment(process.env),
       CODEGATE_ENVIRONMENT: 'local',

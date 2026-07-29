@@ -69,6 +69,14 @@ export interface SidecarRuntimePaths {
   dataRoot: string;
   doc2mdUrl?: string;
   deterministicAgent?: boolean;
+  claudeAgent?: boolean;
+  localLlmBackend?: string;
+  localLlmBaseUrl?: string;
+  localLlmModel?: string;
+  localLlmApiToken?: string;
+  localLlmTimeoutSeconds?: number;
+  localLlmContextTokens?: number;
+  localLlmMaxOutputTokens?: number;
   claudeModel?: string;
   claudeTimeoutSeconds?: number;
   tenantId?: string;
@@ -110,6 +118,7 @@ export function buildSidecarArgs(
   if (runtime.wikiId) args.push('--wiki-id', runtime.wikiId);
   if (runtime.doc2mdUrl) args.push('--doc2md-url', runtime.doc2mdUrl);
   if (runtime.deterministicAgent) args.push('--deterministic-agent');
+  if (runtime.claudeAgent) args.push('--claude-agent');
   return args;
 }
 
@@ -138,7 +147,22 @@ export function buildSidecarEnvironment(
     CODEGATE_LLMWIKI_TENANT_ID: runtime.tenantId ?? 'local',
     CODEGATE_LLMWIKI_WIKI_ID: runtime.wikiId ?? 'workspace',
     CODEGATE_CORS_ORIGINS: JSON.stringify([corsOrigin]),
-    CODEGATE_AGENT_MODE: runtime.deterministicAgent ? 'deterministic' : 'claude',
+    CODEGATE_AGENT_MODE: runtime.deterministicAgent
+      ? 'deterministic'
+      : runtime.claudeAgent
+        ? 'claude'
+        : 'local',
+    CODEGATE_LOCAL_LLM_BACKEND: runtime.localLlmBackend ?? 'auto',
+    CODEGATE_LOCAL_LLM_MODEL: runtime.localLlmModel ?? 'gemma4:e2b',
+    CODEGATE_LOCAL_LLM_TIMEOUT_SECONDS: String(runtime.localLlmTimeoutSeconds ?? 120),
+    CODEGATE_LOCAL_LLM_CONTEXT_TOKENS: String(runtime.localLlmContextTokens ?? 8192),
+    CODEGATE_LOCAL_LLM_MAX_OUTPUT_TOKENS: String(runtime.localLlmMaxOutputTokens ?? 2048),
+    ...(runtime.localLlmBaseUrl
+      ? { CODEGATE_LOCAL_LLM_BASE_URL: runtime.localLlmBaseUrl }
+      : {}),
+    ...(runtime.localLlmApiToken
+      ? { CODEGATE_LOCAL_LLM_API_TOKEN: runtime.localLlmApiToken }
+      : {}),
     ...(runtime.claudeModel ? { CODEGATE_CLAUDE_MODEL: runtime.claudeModel } : {}),
     CODEGATE_CLAUDE_TIMEOUT_SECONDS: String(runtime.claudeTimeoutSeconds ?? 180),
     ...(runtime.doc2mdUrl ? { CODEGATE_DOC2MD_BASE_URL: runtime.doc2mdUrl } : {}),
@@ -148,7 +172,7 @@ export function buildSidecarEnvironment(
     PYTHONUNBUFFERED: '1',
     NO_PROXY: '127.0.0.1,localhost,::1',
     // Supabase token은 넘기지 않는다. Anthropic 키만 sidecar process에 한정한다.
-    ANTHROPIC_API_KEY: anthropicApiKey,
+    ...(anthropicApiKey ? { ANTHROPIC_API_KEY: anthropicApiKey } : {}),
     // 위키 enrichment(간선)는 Gemini 를 쓴다. 없으면 관계가 만들어지지 않아 그래프가
     // 점만 남는다 — 실제로 links.jsonl 이 0바이트로 나왔던 원인이다.
     ...(geminiApiKey ? { GEMINI_API_KEY: geminiApiKey, GOOGLE_API_KEY: geminiApiKey } : {}),
@@ -161,6 +185,34 @@ export function buildSidecarEnvironment(
     ...(baseEnv.CODEGATE_RHWP_ROOT ? { CODEGATE_RHWP_ROOT: baseEnv.CODEGATE_RHWP_ROOT } : {}),
     // rhwp 워커를 돌릴 Node 실행 파일. 없으면 sidecar 가 PATH 에서 `node` 를 찾는다.
     ...(baseEnv.CODEGATE_NODE_BIN ? { CODEGATE_NODE_BIN: baseEnv.CODEGATE_NODE_BIN } : {}),
+    ...(baseEnv.CODEGATE_NODE_BIN ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+    ...(baseEnv.CODEGATE_DISCORD_ENABLED
+      ? { CODEGATE_DISCORD_ENABLED: baseEnv.CODEGATE_DISCORD_ENABLED }
+      : {}),
+    ...(baseEnv.CODEGATE_DISCORD_BOT_TOKEN
+      ? { CODEGATE_DISCORD_BOT_TOKEN: baseEnv.CODEGATE_DISCORD_BOT_TOKEN }
+      : {}),
+    ...(baseEnv.CODEGATE_DISCORD_GUILD_ID
+      ? { CODEGATE_DISCORD_GUILD_ID: baseEnv.CODEGATE_DISCORD_GUILD_ID }
+      : {}),
+    ...(baseEnv.CODEGATE_DISCORD_CHANNEL_ALLOWLIST
+      ? {
+          CODEGATE_DISCORD_CHANNEL_ALLOWLIST:
+            baseEnv.CODEGATE_DISCORD_CHANNEL_ALLOWLIST,
+        }
+      : {}),
+    ...(baseEnv.CODEGATE_DISCORD_GATEWAY_ENABLED
+      ? {
+          CODEGATE_DISCORD_GATEWAY_ENABLED:
+            baseEnv.CODEGATE_DISCORD_GATEWAY_ENABLED,
+        }
+      : {}),
+    ...(baseEnv.CODEGATE_DISCORD_REBUILD_DEBOUNCE_SECONDS
+      ? {
+          CODEGATE_DISCORD_REBUILD_DEBOUNCE_SECONDS:
+            baseEnv.CODEGATE_DISCORD_REBUILD_DEBOUNCE_SECONDS,
+        }
+      : {}),
     // 이 코퍼스가 시연·개발용 가상 문서인가.
     //
     // 위키 빌더는 **비공개 문서를 무료(학습 가능) 등급 LLM 으로 보내는 것을 거부한다.**
@@ -400,6 +452,7 @@ export class SidecarSupervisor {
     const child = this.spawnImpl(bin, buildSidecarArgs(this.baseUrl!, this.options.corsOrigin, runtime), {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
+      windowsHide: true,
       env: buildSidecarEnvironment(
         process.env,
         this.options.corsOrigin,

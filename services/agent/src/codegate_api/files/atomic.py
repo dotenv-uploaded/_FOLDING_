@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import os
 import re
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from codegate_api.files.locking import lock_descriptor, unlock_descriptor
 from codegate_api.files.resolver import SourceUriResolver
 
 
@@ -39,7 +39,7 @@ FaultHook = Callable[[str], None]
 
 
 class DocumentLockManager:
-    """Combine an in-process lock with POSIX flock for same-host workers."""
+    """Combine an in-process lock with an OS file lock for same-host workers."""
 
     def __init__(self, lock_root: Path) -> None:
         self._lock_root = lock_root.resolve()
@@ -52,7 +52,7 @@ class DocumentLockManager:
         """Exclude all source writes while publishing one validated wiki build."""
         async with (
             self._publish_barrier.write(),
-            self._file_lock(".wiki-publish.lock", fcntl.LOCK_EX),
+            self._file_lock(".wiki-publish.lock"),
         ):
             yield
 
@@ -66,21 +66,21 @@ class DocumentLockManager:
             local_lock = self._locks.setdefault(document_id, asyncio.Lock())
         async with (
             self._publish_barrier.read(),
-            self._file_lock(".wiki-publish.lock", fcntl.LOCK_SH),
+            self._file_lock(".wiki-publish.lock", shared=True),
             local_lock,
-            self._file_lock(f"{document_id}.lock", fcntl.LOCK_EX),
+            self._file_lock(f"{document_id}.lock"),
         ):
             yield
 
     @asynccontextmanager
-    async def _file_lock(self, filename: str, operation: int) -> AsyncIterator[None]:
+    async def _file_lock(self, filename: str, *, shared: bool = False) -> AsyncIterator[None]:
         self._lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(self._lock_root / filename, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            await asyncio.to_thread(fcntl.flock, descriptor, operation)
+            await asyncio.to_thread(lock_descriptor, descriptor, shared=shared)
             yield
         finally:
-            await asyncio.to_thread(fcntl.flock, descriptor, fcntl.LOCK_UN)
+            await asyncio.to_thread(unlock_descriptor, descriptor)
             os.close(descriptor)
 
 
@@ -140,6 +140,8 @@ class SafeSourceFileStore:
 
     def snapshot(self, source_uri: str) -> FileSnapshot:
         relative = self._resolver.relative_path(source_uri)
+        if os.name == "nt":
+            return self._snapshot_windows(source_uri, relative)
         with self._open_parent(relative) as parent_fd:
             descriptor = self._open_regular_file(parent_fd, relative.name)
             try:
@@ -168,7 +170,7 @@ class SafeSourceFileStore:
         backup_path = backup_directory / filename
         descriptor = os.open(
             backup_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _o_nofollow(),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _o_nofollow() | _o_binary(),
             0o600,
         )
         try:
@@ -196,15 +198,33 @@ class SafeSourceFileStore:
             or relative.parts[1] in {"", ".", ".."}
         ):
             raise SafeFileError("BACKUP_NOT_FOUND", "검증된 백업 파일을 찾을 수 없습니다.")
+        if os.name == "nt":
+            try:
+                safe_path = self._safe_windows_child(
+                    self._backup_root,
+                    PurePosixPath(*relative.parts),
+                )
+                descriptor = self._open_regular_path(safe_path)
+                try:
+                    file_stat = os.fstat(descriptor)
+                    return self._read_descriptor(descriptor, file_stat.st_size)
+                finally:
+                    os.close(descriptor)
+            except SafeFileError:
+                raise
+            except OSError as error:
+                raise SafeFileError(
+                    "BACKUP_UNSAFE", "백업 파일을 안전하게 열 수 없습니다."
+                ) from error
         try:
             root_fd = os.open(
                 self._backup_root,
-                os.O_RDONLY | os.O_DIRECTORY | _o_nofollow(),
+                os.O_RDONLY | _o_directory() | _o_nofollow(),
             )
             try:
                 directory_fd = os.open(
                     relative.parts[0],
-                    os.O_RDONLY | os.O_DIRECTORY | _o_nofollow(),
+                    os.O_RDONLY | _o_directory() | _o_nofollow(),
                     dir_fd=root_fd,
                 )
                 try:
@@ -233,6 +253,13 @@ class SafeSourceFileStore:
         if len(new_content) > self._max_bytes:
             raise SafeFileError("FILE_TOO_LARGE", "수정 결과가 허용된 파일 크기를 초과합니다.")
         relative = self._resolver.relative_path(source_uri)
+        if os.name == "nt":
+            return self._atomic_replace_windows(
+                source_uri=source_uri,
+                relative=relative,
+                expected_sha256=expected_sha256,
+                new_content=new_content,
+            )
         with self._open_parent(relative) as parent_fd:
             current_fd = self._open_regular_file(parent_fd, relative.name)
             try:
@@ -246,13 +273,13 @@ class SafeSourceFileStore:
             temp_name = f".codegate-{uuid4().hex}.tmp"
             temp_fd = os.open(
                 temp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _o_nofollow(),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _o_nofollow() | _o_binary(),
                 0o600,
                 dir_fd=parent_fd,
             )
             try:
                 _write_all(temp_fd, new_content)
-                os.fchmod(temp_fd, stat.S_IMODE(current_stat.st_mode))
+                _fchmod(temp_fd, stat.S_IMODE(current_stat.st_mode))
                 os.fsync(temp_fd)
                 self._fault_hook("temp_fsynced")
             finally:
@@ -297,10 +324,134 @@ class SafeSourceFileStore:
             mode=stat.S_IMODE(final_stat.st_mode),
         )
 
+    def _snapshot_windows(
+        self,
+        source_uri: str,
+        relative: PurePosixPath,
+    ) -> FileSnapshot:
+        source_path = self._safe_windows_child(self._root, relative)
+        descriptor = self._open_regular_path(source_path)
+        try:
+            file_stat = os.fstat(descriptor)
+            content = self._read_descriptor(descriptor, file_stat.st_size)
+        finally:
+            os.close(descriptor)
+        return FileSnapshot(
+            source_uri=source_uri,
+            relative_path=relative,
+            content=content,
+            sha256=_sha256(content),
+            mode=stat.S_IMODE(file_stat.st_mode),
+        )
+
+    def _atomic_replace_windows(
+        self,
+        *,
+        source_uri: str,
+        relative: PurePosixPath,
+        expected_sha256: str,
+        new_content: bytes,
+    ) -> FileSnapshot:
+        source_path = self._safe_windows_child(self._root, relative)
+        current_fd = self._open_regular_path(source_path)
+        try:
+            current_stat = os.fstat(current_fd)
+            current = self._read_descriptor(current_fd, current_stat.st_size)
+        finally:
+            os.close(current_fd)
+        if not _constant_hash_equal(_sha256(current), expected_sha256):
+            raise FileHashConflict()
+
+        temporary = source_path.parent / f".codegate-{uuid4().hex}.tmp"
+        temp_fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _o_nofollow() | _o_binary(),
+            0o600,
+        )
+        try:
+            _write_all(temp_fd, new_content)
+            os.fsync(temp_fd)
+            self._fault_hook("temp_fsynced")
+        finally:
+            os.close(temp_fd)
+        os.chmod(temporary, stat.S_IMODE(current_stat.st_mode))
+
+        try:
+            recheck_path = self._safe_windows_child(self._root, relative)
+            recheck_fd = self._open_regular_path(recheck_path)
+            try:
+                recheck_stat = os.fstat(recheck_fd)
+                recheck_content = self._read_descriptor(recheck_fd, recheck_stat.st_size)
+            finally:
+                os.close(recheck_fd)
+            if not _constant_hash_equal(_sha256(recheck_content), expected_sha256):
+                raise FileHashConflict()
+            os.replace(temporary, source_path)
+            self._fault_hook("replaced")
+            _fsync_directory(source_path.parent)
+            self._fault_hook("directory_fsynced")
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
+        final_path = self._safe_windows_child(self._root, relative)
+        final_fd = self._open_regular_path(final_path)
+        try:
+            final_stat = os.fstat(final_fd)
+            final_content = self._read_descriptor(final_fd, final_stat.st_size)
+        finally:
+            os.close(final_fd)
+        if final_content != new_content:
+            raise SafeFileError("ATOMIC_WRITE_VERIFY_FAILED", "원자 쓰기 검증에 실패했습니다.")
+        return FileSnapshot(
+            source_uri=source_uri,
+            relative_path=relative,
+            content=final_content,
+            sha256=_sha256(final_content),
+            mode=stat.S_IMODE(final_stat.st_mode),
+        )
+
+    def _safe_windows_child(self, root: Path, relative: PurePosixPath) -> Path:
+        resolved_root = root.resolve(strict=True)
+        if _is_reparse_point(root):
+            raise SafeFileError("UNSAFE_SOURCE_PATH", "원본 경로를 안전하게 열 수 없습니다.")
+        candidate = root.joinpath(*relative.parts)
+        current = root
+        for component in relative.parts:
+            current = current / component
+            if _is_reparse_point(current):
+                raise SafeFileError(
+                    "UNSAFE_SOURCE_PATH", "원본 경로를 안전하게 열 수 없습니다."
+                )
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as error:
+            raise SafeFileError(
+                "UNSAFE_SOURCE_PATH", "원본 경로를 안전하게 열 수 없습니다."
+            ) from error
+        if not resolved.is_relative_to(resolved_root):
+            raise SafeFileError("UNSAFE_SOURCE_PATH", "원본 경로를 안전하게 열 수 없습니다.")
+        return candidate
+
+    def _open_regular_path(self, path: Path) -> int:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | _o_nofollow() | _o_binary())
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode):
+                os.close(descriptor)
+                raise SafeFileError("UNSUPPORTED_FILE_TYPE", "일반 파일만 수정할 수 있습니다.")
+            return descriptor
+        except SafeFileError:
+            raise
+        except OSError as error:
+            raise SafeFileError(
+                "UNSAFE_SOURCE_PATH", "원본 파일을 안전하게 열 수 없습니다."
+            ) from error
+
     @contextmanager
     def _open_parent(self, relative: PurePosixPath) -> Iterator[int]:
         descriptors: list[int] = []
-        root_fd = os.open(self._root, os.O_RDONLY | os.O_DIRECTORY | _o_nofollow())
+        root_fd = os.open(self._root, os.O_RDONLY | _o_directory() | _o_nofollow())
         descriptors.append(root_fd)
         current_fd = root_fd
         try:
@@ -308,7 +459,7 @@ class SafeSourceFileStore:
                 for component in relative.parts[:-1]:
                     next_fd = os.open(
                         component,
-                        os.O_RDONLY | os.O_DIRECTORY | _o_nofollow(),
+                        os.O_RDONLY | _o_directory() | _o_nofollow(),
                         dir_fd=current_fd,
                     )
                     descriptors.append(next_fd)
@@ -359,6 +510,24 @@ def _o_nofollow() -> int:
     return getattr(os, "O_NOFOLLOW", 0)
 
 
+def _o_binary() -> int:
+    return getattr(os, "O_BINARY", 0)
+
+
+def _o_directory() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def _fchmod(descriptor: int, mode: int) -> None:
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is None:
+        raise SafeFileError(
+            "UNSUPPORTED_OPERATION",
+            "이 운영체제에서는 파일 권한을 변경할 수 없습니다.",
+        )
+    fchmod(descriptor, mode)
+
+
 def _write_all(descriptor: int, content: bytes) -> None:
     view = memoryview(content)
     written = 0
@@ -367,11 +536,18 @@ def _write_all(descriptor: int, content: bytes) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | _o_nofollow())
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | _o_directory() | _o_nofollow())
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(is_junction and is_junction())
 
 
 def _sha256(content: bytes) -> str:

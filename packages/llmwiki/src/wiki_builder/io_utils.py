@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import shutil
@@ -13,6 +12,11 @@ from typing import Any
 from uuid import uuid4
 
 from wiki_builder.errors import UnsafeOutputError
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 GENERATOR_MARKER = ".generated-by-wiki-builder"
 CURRENT_NOT_CHECKED = object()
@@ -99,11 +103,12 @@ def atomic_write_json(path: Path, value: Any) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        if os.name != "nt":
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -113,11 +118,23 @@ def atomic_write_json(path: Path, value: Any) -> None:
 def _file_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if os.name == "nt":
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write("\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def activate_build(

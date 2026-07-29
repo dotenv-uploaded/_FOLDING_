@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 import shutil
@@ -9,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from codegate_api.files.locking import lock_descriptor, unlock_descriptor
 from codegate_api.files.resolver import SourceUriResolver
 from codegate_api.knowledge.repository import KnowledgeRepository
 
@@ -211,10 +211,10 @@ class KnowledgeCatalog:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            lock_descriptor(descriptor)
             yield
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            unlock_descriptor(descriptor)
             os.close(descriptor)
 
 
@@ -226,7 +226,9 @@ def _release_name(version: str) -> str:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
     finally:
@@ -243,10 +245,11 @@ def _fsync_tree(root: Path) -> None:
             continue
         if not path.is_file():
             raise KnowledgeCatalogError("knowledge candidate contains a non-regular file")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        if os.name != "nt":
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
         _fsync_directory(directory)

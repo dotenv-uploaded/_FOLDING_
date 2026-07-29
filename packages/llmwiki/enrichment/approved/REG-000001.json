@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "doc_id": "REG-000001",
-  "source_sha256": "8d2a8ec08c00a21dce9cf7755c6191014afd16d344d6e5b4e2574ed61331f429",
+  "source_sha256": "b0bc07ea06da8fda612ce28fdd68ce7e154bad92d56dd6774947d4bb8a820991",
   "model_fingerprint": "f1c34c90254d02b7eb93f443ca61de11c97ebb3a238ed9ce16748295d007713c",
   "prompt_version": "enrichment-v1",
   "summary": {
@@ -80,7 +80,7 @@
       "evidence": [
         {
           "section_id": "sec-4add72bd56",
-          "quote": "세부적인 계정 관리 기준은 [계정 및 접근권한 관리 규정](REG-000002.md)을 따른다."
+          "quote": "세부적인 계정 관리 기준은 계정 및 접근권한 관리 규정을 따른다."
         }
       ]
     }

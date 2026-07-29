@@ -141,7 +141,17 @@ class ChangePlanService:
             snapshot = self._files.snapshot(manifest.source.uri)
         except SafeFileError as error:
             raise ChangeServiceError(error.code, str(error)) from error
-        if snapshot.sha256 != manifest.source.sha256:
+        source_matches_manifest = snapshot.sha256 == manifest.source.sha256
+        if (
+            not source_matches_manifest
+            and manifest.source.media_type in {"text/markdown", "text/plain"}
+        ):
+            normalized = snapshot.content.replace(b"\r\n", b"\n")
+            source_matches_manifest = (
+                normalized != snapshot.content
+                and hashlib.sha256(normalized).hexdigest() == manifest.source.sha256
+            )
+        if not source_matches_manifest:
             raise ChangeServiceError(
                 "SOURCE_OUT_OF_SYNC",
                 "원본 hash와 활성 지식 버전이 다릅니다. 먼저 동기화해야 합니다.",
@@ -471,7 +481,12 @@ class ChangeExecutionService:
                 document_id=plan.view.document_id,
                 source_uri=plan.view.source_uri,
                 before_sha256=snapshot.sha256,
+                knowledge_before_sha256=manifest.source.sha256,
                 after_sha256=plan.view.proposed_sha256,
+                knowledge_after_sha256=_knowledge_source_hash(
+                    new_content,
+                    manifest.source.media_type,
+                ),
                 file_version_id=file_version_id,
                 operation=plan.view.operation,
             )
@@ -754,7 +769,12 @@ class ChangeExecutionService:
                 document_id=original.view.document_id,
                 source_uri=original.source_uri,
                 before_sha256=current.sha256,
+                knowledge_before_sha256=manifest.source.sha256,
                 after_sha256=original.view.before_sha256,
+                knowledge_after_sha256=_knowledge_source_hash(
+                    backup_content,
+                    manifest.source.media_type,
+                ),
                 file_version_id=file_version_id,
                 operation=inverse,
             )
@@ -1069,7 +1089,9 @@ def _event_payload(
     document_id: str,
     source_uri: str,
     before_sha256: str,
+    knowledge_before_sha256: str,
     after_sha256: str,
+    knowledge_after_sha256: str,
     file_version_id: str,
     operation: ReplaceExactOperation,
 ) -> dict[str, object]:
@@ -1080,7 +1102,9 @@ def _event_payload(
         "document_id": document_id,
         "source_uri": source_uri,
         "before_sha256": before_sha256,
+        "knowledge_before_sha256": knowledge_before_sha256,
         "after_sha256": after_sha256,
+        "knowledge_after_sha256": knowledge_after_sha256,
         "file_version_id": file_version_id,
         "operation": operation.model_dump(mode="json"),
     }
@@ -1100,3 +1124,9 @@ def _state_error(error: StateConflict) -> ChangeServiceError:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _knowledge_source_hash(content: bytes, media_type: str) -> str:
+    if media_type in {"text/markdown", "text/plain"}:
+        content = content.replace(b"\r\n", b"\n")
+    return _sha256(content)

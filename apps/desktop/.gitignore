@@ -2,6 +2,13 @@ node_modules/
 out/
 dist/
 release/
+build/runtime/
+build/pyinstaller/
+build/cache/
+build/ollama-extract/
+build/electron-profile-smoke-*/
+build/install-smoke-*/
+build/*.png
 .DS_Store
 *.log
 

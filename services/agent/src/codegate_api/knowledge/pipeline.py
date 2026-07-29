@@ -37,7 +37,15 @@ class ContentChangedPayload(BaseModel):
     document_id: str
     source_uri: str
     before_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    knowledge_before_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     after_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    knowledge_after_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     file_version_id: str
     operation: ReplaceExactOperation
 
@@ -260,9 +268,17 @@ class LocalKnowledgePipeline:
                 raise ValueError(f"event references unknown document: {payload.document_id}")
             if manifest["source"]["uri"] != payload.source_uri:
                 raise ValueError(f"event source URI mismatch: {payload.document_id}")
-            if manifest["source"]["sha256"] == payload.after_sha256:
+            valid_after_hashes = {
+                payload.after_sha256,
+                payload.knowledge_after_sha256,
+            }
+            if manifest["source"]["sha256"] in valid_after_hashes:
                 continue
-            if manifest["source"]["sha256"] != payload.before_sha256:
+            valid_base_hashes = {
+                payload.before_sha256,
+                payload.knowledge_before_sha256,
+            }
+            if manifest["source"]["sha256"] not in valid_base_hashes:
                 raise ValueError(f"event base hash mismatch: {payload.document_id}")
 
             canonical_path = candidate / manifest["canonical_path"]

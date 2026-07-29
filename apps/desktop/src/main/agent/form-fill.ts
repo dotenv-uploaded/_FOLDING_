@@ -19,6 +19,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Agent, AgentDeps, AgentEvent } from '@contracts';
 import { readInternalApiKey, readInternalKeyFor } from '@main/auth/internal-key';
+import { LocalOpenAiClient, resolveLocalLlm } from '@main/llm/local-openai';
 import { fillDocxTemplate, isDocxTemplate, readPlaceholders } from '@main/kordoc/docx-template';
 import { logError, UserFacingError } from '@main/util/errors';
 
@@ -162,6 +163,25 @@ async function extractWithGemini(
   return parseFilled(text, names);
 }
 
+async function extractWithLocal(
+  message: string,
+  names: string[],
+  sources: string,
+): Promise<Record<string, string>> {
+  const properties = Object.fromEntries(names.map((name) => [name, { type: 'string' }]));
+  const result = await new LocalOpenAiClient(resolveLocalLlm(process.env)).chatJson({
+    system: FILL_SYSTEM_PROMPT,
+    user: fillUserPrompt(message, names, sources),
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: names,
+      properties,
+    },
+  });
+  return parseFilled(result.content, names);
+}
+
 export interface FillKeys {
   anthropic: string | null;
   gemini: string | null;
@@ -193,9 +213,16 @@ export async function extractValues(
   names: string[],
   keys: FillKeys,
   sources: string = '',
-  provider: string = process.env.CODEGATE_FILL_PROVIDER ?? 'anthropic',
+  provider: string = process.env.CODEGATE_FILL_PROVIDER ?? 'local',
 ): Promise<Record<string, string>> {
-  const runners: Record<string, { key: string | null; run: (key: string) => Promise<Record<string, string>> }> = {
+  const runners: Record<
+    string,
+    { key: string | null; run: (key: string) => Promise<Record<string, string>> }
+  > = {
+    local: {
+      key: 'local',
+      run: () => extractWithLocal(message, names, sources),
+    },
     anthropic: {
       key: keys.anthropic,
       run: (k) => extractWithAnthropic(message, names, k, sources),
@@ -206,7 +233,7 @@ export async function extractValues(
   const selected = runners[provider];
   if (!selected) {
     throw new UserFacingError(
-      `알 수 없는 LLM 제공자입니다: ${provider} (anthropic 또는 gemini)`,
+      `알 수 없는 LLM 제공자입니다: ${provider} (local, anthropic 또는 gemini)`,
     );
   }
   if (!selected.key) {
@@ -345,7 +372,8 @@ async function* run(
     anthropic: readInternalApiKey(process.env),
     gemini: readInternalKeyFor(process.env, 'gemini'),
   };
-  if (!keys.anthropic && !keys.gemini) {
+  const provider = process.env.CODEGATE_FILL_PROVIDER ?? 'local';
+  if (provider !== 'local' && !keys.anthropic && !keys.gemini) {
     yield { type: 'text_delta', text: '문서 분석 서비스에 연결하지 못했습니다.' };
     yield { type: 'done', citations: [] };
     return;

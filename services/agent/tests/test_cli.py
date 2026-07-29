@@ -34,7 +34,7 @@ def test_local_cli_builds_fail_closed_product_settings(tmp_path: Path) -> None:
 
     assert settings.environment == "local"
     assert settings.auth_mode == "local"
-    assert settings.agent_mode == "claude"
+    assert settings.agent_mode == "local"
     assert settings.knowledge_mode == "llmwiki"
     assert settings.bootstrap_demo is False
     assert settings.cors_origins == ["http://127.0.0.1:4173"]

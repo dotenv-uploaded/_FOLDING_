@@ -7,18 +7,23 @@ import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const workspaceDir = path.resolve(projectDir, '..');
+const repoDir = path.resolve(projectDir, '..', '..');
 // 설정 파일은 `.env` 하나뿐이다 — Electron 메인도 같은 파일을 읽는다(src/main/env.ts).
 const envFile = path.join(projectDir, '.env');
 if (existsSync(envFile)) loadEnvFile(envFile);
 const doc2mdRoot =
   process.env.CODEGATE_DOC2MD_PROJECT_ROOT ??
-  path.join(workspaceDir, 'codegate-2026-api', 'services', 'doc2md');
+  path.join(repoDir, 'services', 'convert', 'services', 'doc2md');
 const configuredPython = process.env.CODEGATE_DOC2MD_PYTHON;
-const command = configuredPython ?? 'uv';
-const prefix = configuredPython
-  ? []
-  : ['run', '--isolated', '--python', '3.12', '--project', doc2mdRoot, 'python'];
+const command =
+  configuredPython ??
+  path.join(
+    doc2mdRoot,
+    '.venv',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    process.platform === 'win32' ? 'python.exe' : 'python',
+  );
+const prefix = [];
 const children = [];
 let cleanupPromise = null;
 const cleanup = () => (cleanupPromise ??= Promise.all([...children].reverse().map(stop)));
@@ -27,7 +32,7 @@ const removeSignalHandlers = installSignalCleanup(cleanup);
 try {
   const port = await allocatePort();
   const doc2mdUrl = `http://127.0.0.1:${port}`;
-  const doc2md = start(command, [...prefix, '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(port)], {
+  const doc2md = start(command, [...prefix, '-m', 'app.cli', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: doc2mdRoot,
     env: safeProcessEnvironment(process.env),
     name: 'doc2md',

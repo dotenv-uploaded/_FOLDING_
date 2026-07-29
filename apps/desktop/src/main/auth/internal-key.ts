@@ -19,6 +19,7 @@
 import type { LlmKeyInput, LlmKeyStatus, LlmProvider } from '@contracts';
 import { UserFacingError } from '@main/util/errors';
 import type { ResolvedLlmKey } from '@main/build/types';
+import { resolveLocalLlm } from '@main/llm/local-openai';
 import { hintOf, type LlmKeyStore } from './llm-key';
 
 /** 내부 키를 찾는 환경변수 — 앞에 있는 것이 이긴다. */
@@ -109,7 +110,17 @@ export class ManagedLlmKeyStore implements LlmKeyStore {
   }
 
   async resolve(): Promise<ResolvedLlmKey | null> {
+    const mode = process.env.CODEGATE_LLM_PROVIDER?.trim().toLowerCase() || 'local';
+    if (mode === 'local' || mode === 'auto') return resolveLocalLlm(process.env);
     if (this.internalKey) return { provider: INTERNAL_PROVIDER, apiKey: this.internalKey };
-    return this.inner.resolve();
+    if (mode === 'cloud') return this.inner.resolve();
+    if (mode === 'anthropic' || mode === 'gemini' || mode === 'openai') {
+      const provider = mode as LlmProvider;
+      const apiKey = await this.get(provider);
+      return apiKey ? { provider, apiKey } : null;
+    }
+    throw new UserFacingError(
+      'CODEGATE_LLM_PROVIDER는 local, cloud, anthropic, gemini, openai 중 하나여야 합니다.',
+    );
   }
 }

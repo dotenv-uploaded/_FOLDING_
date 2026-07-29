@@ -1,6 +1,8 @@
+import ipaddress
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -60,8 +62,21 @@ class Settings(BaseSettings):
         default="codegate-local",
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
     )
+    discord_enabled: bool = False
+    discord_bot_token: SecretStr | None = None
+    discord_guild_id: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    discord_channel_allowlist: str | None = None
+    discord_gateway_enabled: bool = True
+    discord_rebuild_debounce_seconds: float = Field(default=5.0, ge=0.1, le=300.0)
 
-    agent_mode: Literal["deterministic", "claude"] = "deterministic"
+    agent_mode: Literal["deterministic", "local", "claude"] = "deterministic"
+    local_llm_backend: Literal["auto", "ollama", "lmstudio"] = "auto"
+    local_llm_base_url: str | None = None
+    local_llm_model: str = Field(default="gemma4:e2b", min_length=1, pattern=r"^\S+$")
+    local_llm_api_token: SecretStr | None = None
+    local_llm_timeout_seconds: float = Field(default=120.0, ge=5.0, le=600.0)
+    local_llm_context_tokens: int = Field(default=8_192, ge=2_048, le=32_768)
+    local_llm_max_output_tokens: int = Field(default=2_048, ge=256, le=8_192)
     claude_model: str | None = Field(default=None, min_length=1, pattern=r"^\S+$")
     claude_timeout_seconds: float = Field(default=45.0, ge=1.0, le=300.0)
     claude_session_ttl_seconds: int = Field(default=3_600, ge=60, le=86_400)
@@ -111,6 +126,31 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError("llmwiki knowledge mode requires " + ", ".join(missing))
+        if self.discord_enabled:
+            if self.environment == "production":
+                raise ValueError(
+                    "Discord source is local-only until cloud tenant isolation is defined"
+                )
+            if self.knowledge_mode != "llmwiki":
+                raise ValueError("Discord source requires CODEGATE_KNOWLEDGE_MODE=llmwiki")
+            missing_discord = [
+                name
+                for name, value in (
+                    ("CODEGATE_DISCORD_BOT_TOKEN", self.discord_bot_token),
+                    ("CODEGATE_DISCORD_GUILD_ID", self.discord_guild_id),
+                    (
+                        "CODEGATE_DISCORD_CHANNEL_ALLOWLIST",
+                        self.discord_channel_allowlist,
+                    ),
+                )
+                if value is None or value == ""
+            ]
+            if missing_discord:
+                raise ValueError("Discord source requires " + ", ".join(missing_discord))
+            assert self.discord_channel_allowlist is not None
+            from codegate_api.integrations.discord_source import ChannelPolicy
+
+            ChannelPolicy.parse(self.discord_channel_allowlist)
         if self.environment == "local":
             if self.auth_mode != "local":
                 raise ValueError("local environment requires CODEGATE_AUTH_MODE=local")
@@ -137,6 +177,19 @@ class Settings(BaseSettings):
                             "local source, LLMWIKI project, input, and storage roots "
                             f"must not overlap: {left_name}, {right_name}"
                         )
+            if self.agent_mode == "local" and self.local_llm_base_url:
+                parsed = urlsplit(self.local_llm_base_url)
+                hostname = parsed.hostname
+                if parsed.scheme not in {"http", "https"} or not hostname:
+                    raise ValueError("CODEGATE_LOCAL_LLM_BASE_URL must be an HTTP URL")
+                try:
+                    loopback = ipaddress.ip_address(hostname).is_loopback
+                except ValueError:
+                    loopback = hostname.lower() == "localhost"
+                if not loopback:
+                    raise ValueError(
+                        "CODEGATE_LOCAL_LLM_BASE_URL must use a loopback host"
+                    )
         if self.environment == "production":
             if self.auth_mode != "supabase":
                 raise ValueError("production requires CODEGATE_AUTH_MODE=supabase")
@@ -217,6 +270,9 @@ class Settings(BaseSettings):
             if self.llmwiki_storage_root is not None
             else None
         )
+
+    def resolved_discord_store_path(self) -> Path:
+        return self.resolved_runtime_root() / "discord/events.sqlite3"
 
     def effective_supabase_issuer(self) -> str | None:
         if self.supabase_jwt_issuer:

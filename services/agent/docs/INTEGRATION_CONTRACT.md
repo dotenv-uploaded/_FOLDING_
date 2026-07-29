@@ -7,7 +7,7 @@
 | 담당 | 소유 | Backend 경계 |
 | --- | --- | --- |
 | 우창 | Next.js UI | chat, 근거, diff, approve/reject, execution polling, retry, Undo |
-| 성주 | FastAPI·Claude Agent SDK·side effect | 인증·ACL, agent, 승인, 실제 file write, 상태·outbox·version publish |
+| 성주 | FastAPI·local Gemma 4/Claude provider·side effect | 인증·ACL, agent, 승인, 실제 file write, 상태·outbox·version publish |
 | 용휘 | `llm-wiki`·검색·지식 그래프 | immutable manifest/chunks/links/enrichment와 index build 결과 |
 | 민규 | 문서 변환 | source→canonical Markdown/assets/section mapping과 구조화 오류 |
 
@@ -86,7 +86,7 @@ Backend가 build ID에 결박해 생성하는 compatibility read cache에는 `VE
 required_citations = ["document_id", "revision", "graph_version", "chunk_id", "section_id"]
 ```
 
-Backend는 허용된 TOML frontmatter만 schema로 검증해 모든 Claude session의 고정 지침으로 바꾼다. 자유 형식 body는 model prompt에 넣지 않는다.
+Backend는 허용된 TOML frontmatter만 schema로 검증해 모든 model session의 고정 지침으로 바꾼다. 자유 형식 body는 model prompt에 넣지 않는다.
 
 Manifest 최소 필드:
 
@@ -327,6 +327,31 @@ Consumer 규칙:
 5. expected parent가 현재 active일 때만 publish한다.
 6. CAS loser는 최신 active 위로 미반영 event를 rebase/coalesce한다.
 7. 일부 stage 실패 시 active pointer를 바꾸지 않는다.
+
+## Discord external source contract
+
+Discord integration은 `CODEGATE_KNOWLEDGE_MODE=llmwiki`인 local runtime에서만 활성화한다.
+입력 authority는 Discord API이고 Folding source tree에는
+`.folding/discord/<guild>/<channel>.jsonl` raw event journal projection을 둔다.
+
+LLMWiki input은 다음 계약을 따른다.
+
+- document ID: `DISCORD-<guild-snowflake>-<channel-snowflake>`
+- input file: `<document-id>__<ordinal>.md`
+- chunking: 동일 metadata와 서로 다른 `chunk_no`를 사용하는 `source-fragments`
+- source URI: `source://.folding/discord/<guild>/<channel>.jsonl`
+- access: `internal`
+- write access: `none`
+- source SHA: raw JSONL byte content의 SHA-256
+
+Adapter는 이 문서를 read-only로 노출해야 한다. Discord event는
+`MESSAGE_CREATE|MESSAGE_UPDATE|MESSAGE_DELETE|THREAD_CREATE|THREAD_UPDATE`만 허용하며,
+guild와 channel allowlist를 journal append 전에 검사한다. REST backfill과 Gateway는
+동일한 event-key 규칙을 사용해 중복 전달을 무해하게 만든다.
+
+Desktop은 `CODEGATE_DISCORD_*` 환경변수만 sidecar에 명시적으로 전달한다. token은
+응답·로그·projection에 기록하지 않는다. production tenant/guild 매핑이 정의되기 전에는
+설정 검증에서 Discord source를 거부한다.
 
 ## 팀이 제공할 최소 fixture
 

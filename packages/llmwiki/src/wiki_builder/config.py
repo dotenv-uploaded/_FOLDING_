@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import ipaddress
+import os
 import re
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
+from dotenv import load_dotenv
 
 from wiki_builder.errors import ValidationError
 
@@ -189,6 +193,7 @@ def _validate_config(data: dict[str, Any]) -> None:
         provider,
         {
             "name",
+            "backend",
             "api",
             "api_version",
             "base_url",
@@ -266,8 +271,22 @@ def _validate_config(data: dict[str, Any]) -> None:
         raise ValidationError(
             "wiki.yaml input_limits.max_total_markdown_bytes는 파일당 한도 이상이어야 합니다"
         )
-    if not str(provider["base_url"]).startswith("https://"):
-        raise ValidationError("wiki.yaml provider.base_url은 HTTPS여야 합니다")
+    base_url = str(provider["base_url"])
+    if provider["name"] == "local-openai":
+        parsed = urlsplit(base_url)
+        hostname = parsed.hostname
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            raise ValidationError("wiki.yaml local provider.base_url은 HTTP URL이어야 합니다")
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = hostname.lower() == "localhost"
+        if not loopback:
+            raise ValidationError("wiki.yaml local provider.base_url은 loopback이어야 합니다")
+        if provider["backend"] not in {"auto", "ollama", "lmstudio"}:
+            raise ValidationError("wiki.yaml provider.backend가 잘못되었습니다")
+    elif not base_url.startswith("https://"):
+        raise ValidationError("wiki.yaml 외부 provider.base_url은 HTTPS여야 합니다")
     pricing = provider["pricing"]
     if not isinstance(pricing, dict):
         raise ValidationError("wiki.yaml provider.pricing은 객체여야 합니다")
@@ -300,6 +319,23 @@ def load_config(path: Path | None = None) -> WikiConfig:
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValidationError("wiki.yaml의 최상위 값은 객체여야 합니다.")
+    project_dir = config_path.parent.parent
+    env_file = Path(str(data.get("paths", {}).get("env_file", ".env")))
+    if not env_file.is_absolute():
+        env_file = project_dir / env_file
+    load_dotenv(dotenv_path=env_file, override=False)
+    provider = data.get("provider")
+    if isinstance(provider, dict) and provider.get("name") == "local-openai":
+        provider["backend"] = os.environ.get(
+            "CODEGATE_LOCAL_LLM_BACKEND", str(provider.get("backend", "auto"))
+        )
+        provider["base_url"] = os.environ.get(
+            "CODEGATE_LOCAL_LLM_BASE_URL", str(provider["base_url"])
+        )
+        provider["model"] = os.environ.get(
+            "CODEGATE_LOCAL_LLM_MODEL", str(provider["model"])
+        )
+        provider["api_token"] = os.environ.get("CODEGATE_LOCAL_LLM_API_TOKEN", "")
     required = {
         "schema_version",
         "wiki_version",

@@ -14,6 +14,7 @@ def model_fingerprint(config: WikiConfig) -> str:
     """Stable provider fingerprint used to invalidate cached enrichments."""
     provider_keys = (
         "name",
+        "backend",
         "api",
         "api_version",
         "base_url",
@@ -39,7 +40,8 @@ def model_fingerprint(config: WikiConfig) -> str:
 
 
 def model_display_name(config: WikiConfig) -> str:
-    return f"google/{config.provider['model']}"
+    family = "local" if config.provider["name"] == "local-openai" else "google"
+    return f"{family}/{config.provider['model']}"
 
 
 def compatible_model_fingerprint(config: WikiConfig, value: str) -> bool:

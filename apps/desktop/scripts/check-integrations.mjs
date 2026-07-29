@@ -4,20 +4,21 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const projectDir = process.cwd();
+const repoDir = path.resolve(projectDir, '..', '..');
 const strict = process.argv.includes('--strict');
 const executable = process.platform === 'win32' ? 'codegate-local.exe' : 'codegate-local';
 const sidecarBin =
   process.env.CODEGATE_SIDECAR_BIN ??
   path.resolve(
-    projectDir,
-    '..',
-    'Backend',
+    repoDir,
+    'services',
+    'agent',
     '.venv',
     process.platform === 'win32' ? 'Scripts' : 'bin',
     executable,
   );
 const llmwikiRoot =
-  process.env.CODEGATE_LLMWIKI_PROJECT_ROOT ?? path.resolve(projectDir, '..', 'LLMWIKI');
+  process.env.CODEGATE_LLMWIKI_PROJECT_ROOT ?? path.join(repoDir, 'packages', 'llmwiki');
 
 const results = [];
 
@@ -41,8 +42,8 @@ if (await exists(sidecarBin)) {
 }
 
 const llmwikiFiles = [
-  path.join(llmwikiRoot, 'wiki-builder', 'config', 'wiki.yaml'),
-  path.join(llmwikiRoot, 'wiki-builder', 'src', 'wiki_builder'),
+  path.join(llmwikiRoot, 'config', 'wiki.yaml'),
+  path.join(llmwikiRoot, 'src', 'wiki_builder'),
 ];
 if ((await Promise.all(llmwikiFiles.map(exists))).every(Boolean)) {
   record('용휘 LLMWIKI bundle', 'ready', llmwikiRoot);

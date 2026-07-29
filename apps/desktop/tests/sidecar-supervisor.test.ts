@@ -119,6 +119,35 @@ describe('SidecarSupervisor contract', () => {
     expect(withoutRhwp.CODEGATE_NODE_BIN).toBeUndefined();
   });
 
+  it('Discord source settings cross only through the explicit sidecar allowlist', () => {
+    const environment = buildSidecarEnvironment(
+      {
+        PATH: '/usr/bin',
+        CODEGATE_DISCORD_ENABLED: 'true',
+        CODEGATE_DISCORD_BOT_TOKEN: 'discord-token-for-test',
+        CODEGATE_DISCORD_GUILD_ID: '123456789',
+        CODEGATE_DISCORD_CHANNEL_ALLOWLIST: '987654321',
+        CODEGATE_DISCORD_GATEWAY_ENABLED: 'false',
+        CODEGATE_DISCORD_REBUILD_DEBOUNCE_SECONDS: '2',
+        DISCORD_BOT_TOKEN: 'must-not-cross-under-an-unscoped-name',
+      },
+      'app://codegate',
+      runtime,
+      'k',
+      'g',
+    );
+
+    expect(environment).toMatchObject({
+      CODEGATE_DISCORD_ENABLED: 'true',
+      CODEGATE_DISCORD_BOT_TOKEN: 'discord-token-for-test',
+      CODEGATE_DISCORD_GUILD_ID: '123456789',
+      CODEGATE_DISCORD_CHANNEL_ALLOWLIST: '987654321',
+      CODEGATE_DISCORD_GATEWAY_ENABLED: 'false',
+      CODEGATE_DISCORD_REBUILD_DEBOUNCE_SECONDS: '2',
+    });
+    expect(environment.DISCORD_BOT_TOKEN).toBeUndefined();
+  });
+
   it('외부 API base를 origin으로 정규화하고 health URL을 한 번만 붙인다', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'ok', agent_available: true }), { status: 200 }),

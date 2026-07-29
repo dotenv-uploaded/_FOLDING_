@@ -18,6 +18,7 @@ from codegate_api.api import (
     change_plans,
     chat,
     demo,
+    discord_source,
     documents,
     executions,
     health,
@@ -200,6 +201,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(change_plans.router, prefix="/api/v1")
     application.include_router(executions.router, prefix="/api/v1")
     application.include_router(knowledge.router, prefix="/api/v1")
+    application.include_router(discord_source.router, prefix="/api/v1")
     application.include_router(agent_stream.router, prefix="/api/v1")
     application.include_router(demo.router, prefix="/api/v1")
     return application

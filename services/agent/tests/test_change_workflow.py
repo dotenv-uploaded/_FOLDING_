@@ -345,10 +345,11 @@ def test_authenticated_source_sync_uses_the_same_publish_pipeline(
     app_settings: Settings,
 ) -> None:
     source = app_settings.resolved_source_root() / "regulations/REG-000001.md"
-    original = source.read_text(encoding="utf-8")
+    original_bytes = source.read_bytes()
+    original = original_bytes.decode("utf-8")
     updated = original.replace("1년", "3년")
     body = {
-        "base_sha256": hashlib.sha256(original.encode()).hexdigest(),
+        "base_sha256": hashlib.sha256(original_bytes).hexdigest(),
         "content": updated,
         "operation": {
             "type": "replace_exact",
@@ -366,7 +367,7 @@ def test_authenticated_source_sync_uses_the_same_publish_pipeline(
     )
 
     assert first.status_code == 201
-    assert source.read_text(encoding="utf-8") == original
+    assert source.read_bytes().decode("utf-8") == original
     plan = first.json()
     approved = client.post(
         f"/api/v1/change-plans/{plan['change_plan_id']}/approve",
@@ -380,7 +381,7 @@ def test_authenticated_source_sync_uses_the_same_publish_pipeline(
         str(approved.json()["execution_id"]),
     )
     assert execution["status"] == "completed"
-    assert source.read_text(encoding="utf-8") == updated
+    assert source.read_bytes().decode("utf-8") == updated
 
     replay = client.post(
         "/api/v1/documents/REG-000001/source-sync-plans",

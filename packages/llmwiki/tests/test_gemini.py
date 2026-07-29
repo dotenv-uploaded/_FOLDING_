@@ -31,6 +31,31 @@ class FakeHttpClient:
         self.closed = True
 
 
+def _gemini_config(config: WikiConfig) -> WikiConfig:
+    raw = deepcopy(config.raw)
+    raw["provider"].update(
+        {
+            "name": "google-gemini",
+            "backend": "auto",
+            "api": "generateContent",
+            "api_version": "v1beta",
+            "base_url": "https://generativelanguage.googleapis.com",
+            "requested_model": "gemini-2.5-flash-lite",
+            "model": "gemini-3.1-flash-lite",
+            "migration_reason": "test",
+            "api_key_env": "GEMINI_API_KEY",
+            "data_policy": "development-free",
+            "pricing": {
+                "currency": "USD",
+                "effective_on": "2026-07-09",
+                "input_per_million_tokens": 0.25,
+                "output_per_million_tokens": 1.5,
+            },
+        }
+    )
+    return WikiConfig(path=config.path, raw=raw)
+
+
 def _install_fake_client(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[httpx.Response],
@@ -78,6 +103,7 @@ def test_schema_is_reduced_to_gemini_supported_subset() -> None:
 def test_complete_sends_gemini_structured_output_request(
     config: WikiConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    config = _gemini_config(config)
     response = httpx.Response(
         200,
         json={
@@ -121,6 +147,7 @@ def test_complete_sends_gemini_structured_output_request(
 def test_retryable_api_error_is_retried(
     config: WikiConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    config = _gemini_config(config)
     responses = [
         httpx.Response(429, json={"error": {"message": "quota"}}),
         httpx.Response(
@@ -145,6 +172,7 @@ def test_retryable_api_error_is_retried(
 def test_auth_error_does_not_expose_key(
     config: WikiConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    config = _gemini_config(config)
     fake = _install_fake_client(
         monkeypatch,
         [httpx.Response(401, json={"error": {"message": "invalid credential"}})],
@@ -166,7 +194,10 @@ def test_env_example_exists_and_secrets_are_ignored(config: WikiConfig) -> None:
     env_file = config.resolve_path("env_file")
     env_example = env_file.with_name(".env.example")
     assert env_example.is_file()
-    assert env_example.read_text(encoding="utf-8").splitlines() == ["GEMINI_API_KEY="]
+    lines = env_example.read_text(encoding="utf-8").splitlines()
+    assert "CODEGATE_LOCAL_LLM_BACKEND=auto" in lines
+    assert "CODEGATE_LOCAL_LLM_MODEL=gemma4:e2b" in lines
+    assert not any(line.startswith("GEMINI_API_KEY=") for line in lines)
     ignore_rules = (config.project_dir / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert ".env" in ignore_rules
     assert "!.env.example" in ignore_rules

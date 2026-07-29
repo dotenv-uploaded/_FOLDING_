@@ -9,12 +9,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from codegate_api.changes.kordoc import KordocBridge, KordocError, is_hwp
 from codegate_api.files.resolver import SourceResolutionError, SourceUriResolver
 from codegate_api.knowledge.access import AccessContext
 from codegate_api.knowledge.evidence import CanonicalEvidenceError, build_section_index
 from codegate_api.knowledge.schemas import AgentGuide, Chunk, Link, ManifestEntry, SourceReference
 from codegate_api.models import DocumentResult, Evidence, Relation
-from codegate_api.changes.kordoc import KordocBridge, KordocError, is_hwp
 
 
 class KnowledgePackageError(RuntimeError):
@@ -37,6 +37,13 @@ REQUIRED_CHECKSUM_PATHS = frozenset(
         "schemas/source-reference.schema.json",
     }
 )
+
+
+def _matches_checksum(content: bytes, expected: str) -> bool:
+    if hashlib.sha256(content).hexdigest() == expected:
+        return True
+    normalized = content.replace(b"\r\n", b"\n")
+    return normalized != content and hashlib.sha256(normalized).hexdigest() == expected
 
 
 class KnowledgeRepository:
@@ -367,8 +374,7 @@ class KnowledgeRepository:
             path = self._safe_package_path(relative_name)
             if not path.is_file():
                 raise KnowledgePackageError(f"checksum target is missing: {relative_name}")
-            actual = hashlib.sha256(path.read_bytes()).hexdigest()
-            if actual != expected:
+            if not _matches_checksum(path.read_bytes(), expected):
                 raise KnowledgePackageError(f"checksum mismatch: {relative_name}")
             checksummed_paths.add(relative_name)
         return checksummed_paths
@@ -404,10 +410,10 @@ class KnowledgeRepository:
             source = self._source_resolver.resolve(document.source.uri)
             if not source.is_file():
                 raise KnowledgePackageError(f"source document is missing: {document.source.uri}")
-            if validate_sources:
-                source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
-                if source_sha256 != document.source.sha256:
-                    raise KnowledgePackageError(f"source checksum mismatch: {document.source.uri}")
+            if validate_sources and not _matches_checksum(
+                source.read_bytes(), document.source.sha256
+            ):
+                raise KnowledgePackageError(f"source checksum mismatch: {document.source.uri}")
             reference_name = f"references/{document.id}.source.json"
             if reference_name not in checksummed_paths:
                 raise KnowledgePackageError(
@@ -565,7 +571,7 @@ class KnowledgeRepository:
                     return False
             if not candidate.is_file():
                 return False
-            return hashlib.sha256(candidate.read_bytes()).hexdigest() == document.source.sha256
+            return _matches_checksum(candidate.read_bytes(), document.source.sha256)
         except (OSError, SourceResolutionError):
             return False
 

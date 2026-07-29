@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedLlmKeyStore, readInternalApiKey } from '@main/auth/internal-key';
 import { MemoryLlmKeyStore } from '@main/auth/llm-key';
 
@@ -25,6 +25,21 @@ describe('readInternalApiKey', () => {
 });
 
 describe('ManagedLlmKeyStore', () => {
+  beforeEach(() => vi.stubEnv('CODEGATE_LLM_PROVIDER', 'cloud'));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('기본 로컬 모드는 API 키 없이 Gemma4 연결 정보를 돌려준다', async () => {
+    vi.stubEnv('CODEGATE_LLM_PROVIDER', 'local');
+    const store = new ManagedLlmKeyStore(new MemoryLlmKeyStore(), null);
+
+    expect(await store.resolve()).toMatchObject({
+      provider: 'local',
+      backend: 'auto',
+      model: 'gemma4:e2b',
+      contextTokens: 8192,
+    });
+  });
+
   it('내부 키가 있으면 사용자 키보다 우선한다', async () => {
     const inner = new MemoryLlmKeyStore();
     await inner.set({ provider: 'anthropic', apiKey: 'sk-user' });

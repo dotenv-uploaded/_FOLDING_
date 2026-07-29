@@ -74,15 +74,29 @@ export interface PhaseProgress {
 export type PhaseReporter = (progress: PhaseProgress) => void;
 
 /** enrichment 에 쓸 LLM 자격증명 (자격증명 ② — 스펙 v1.4 §5). */
-export interface ResolvedLlmKey {
-  provider: LlmProvider;
-  /** 원문 키. **메인 프로세스 밖으로 절대 나가지 않는다.** */
-  apiKey: string;
-}
+export type LocalLlmBackend = 'auto' | 'ollama' | 'lmstudio';
+
+export type ResolvedLlmKey =
+  | {
+      provider: 'local';
+      backend: LocalLlmBackend;
+      baseUrl?: string;
+      model: string;
+      apiKey?: string;
+      timeoutMs: number;
+      maxOutputTokens: number;
+      contextTokens: number;
+    }
+  | {
+      provider: LlmProvider;
+      /** 원문 키. **메인 프로세스 밖으로 절대 나가지 않는다.** */
+      apiKey: string;
+    };
 
 /**
  * 키 해석기 — 빌드 파이프라인은 저장 방식(safeStorage)을 알 필요가 없다.
- * 설정된 키가 하나도 없으면 null 을 돌려주고, 상위가 `LLM_KEY_MISSING_MESSAGE` 로 거절한다.
+ * 기본 로컬 모드는 API 키 없이 Gemma4 연결 정보를 돌려준다.
+ * 클라우드 모드를 명시했는데 키가 하나도 없을 때만 null 이다.
  */
 export interface LlmKeyResolver {
   resolve(): Promise<ResolvedLlmKey | null>;

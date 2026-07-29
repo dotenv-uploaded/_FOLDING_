@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "claude-agent-sdk>=0.2.124,<0.3",
+  "discord.py>=2.5,<3",
   "fastapi>=0.116.0,<1",
   "httpx>=0.28.0,<0.29",
   "jsonschema>=4.23.0,<5",
@@ -30,6 +31,7 @@ codegate-local = "codegate_api.cli:main"
 dev = [
   "httpx2>=2.7.0,<3",
   "mypy>=1.17.0,<2",
+  "pyinstaller>=6.14,<7",
   "pytest>=8.4.0,<10",
   "pytest-cov>=6.2.0,<8",
   "ruff>=0.12.0,<1",

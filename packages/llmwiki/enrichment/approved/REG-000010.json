@@ -1,14 +1,14 @@
 {
   "schema_version": "1.0.0",
   "doc_id": "REG-000010",
-  "source_sha256": "7fba733c9725b9cea6b55a66073dfc567421cafb478fb112b6f8354813e44066",
+  "source_sha256": "7f560e86e6469e7f182a03867be01ad3ef10ab6f752a51a4b05ba30152342d67",
   "model_fingerprint": "f1c34c90254d02b7eb93f443ca61de11c97ebb3a238ed9ce16748295d007713c",
   "prompt_version": "enrichment-v1",
   "summary": {
     "text": "본 규정은 데이터 백업 및 복구에 관한 계획 수립과 기본 기준을 정의한다. 시스템 책임자는 중요도에 따라 백업 주기와 복구 시험을 수행해야 하며, 정기적인 복구 검증을 통해 데이터의 가용성을 보장해야 한다.",
     "evidence": [
       {
-        "section_id": "sec-7973cedee1",
+        "section_id": "sec-179b857994",
         "quote": "시스템 책임자는 업무 영향도와 복구 목표를 고려하여 백업 대상, 주기, 보관기간 및 보관 위치를 정한다."
       }
     ]
@@ -18,7 +18,7 @@
       "text": "시스템 책임자는 업무 영향도와 복구 목표를 기반으로 백업 계획을 수립해야 한다.",
       "evidence": [
         {
-          "section_id": "sec-7973cedee1",
+          "section_id": "sec-179b857994",
           "quote": "시스템 책임자는 업무 영향도와 복구 목표를 고려하여 백업 대상, 주기, 보관기간 및 보관 위치를 정한다."
         }
       ]
@@ -27,7 +27,7 @@
       "text": "데이터 중요도에 따라 백업 주기와 복구 시험 빈도를 차등 적용한다.",
       "evidence": [
         {
-          "section_id": "sec-d0c40baff2",
+          "section_id": "sec-f096e51e59",
           "quote": "상 | 매일 | 분기 1회 이상"
         }
       ]
@@ -36,7 +36,7 @@
       "text": "백업 성공 여부는 실제 복구 시험을 통해 검증해야 하며, 시험 데이터에 개인정보를 포함해서는 안 된다.",
       "evidence": [
         {
-          "section_id": "sec-95ddedbdd9",
+          "section_id": "sec-4659ad7eab",
           "quote": "정기적으로 실제 복구 시험을 수행하고 결과와 개선사항을 기록한다."
         }
       ]
@@ -56,7 +56,7 @@
       "type": "role",
       "evidence": [
         {
-          "section_id": "sec-7973cedee1",
+          "section_id": "sec-179b857994",
           "quote": "시스템 책임자는 업무 영향도와 복구 목표를 고려하여 백업 대상, 주기, 보관기간 및 보관 위치를 정한다."
         }
       ]
@@ -68,7 +68,7 @@
       "answer": "중요도가 '상'인 데이터는 분기 1회 이상 복구 시험을 수행해야 합니다.",
       "evidence": [
         {
-          "section_id": "sec-d0c40baff2",
+          "section_id": "sec-f096e51e59",
           "quote": "상 | 매일 | 분기 1회 이상"
         }
       ]
@@ -78,7 +78,7 @@
       "answer": "아니요, 백업 성공 메시지만으로 판단하지 않으며 정기적으로 실제 복구 시험을 수행해야 합니다.",
       "evidence": [
         {
-          "section_id": "sec-95ddedbdd9",
+          "section_id": "sec-4659ad7eab",
           "quote": "백업 성공 메시지만으로 정상 복구를 판단하지 않는다."
         }
       ]

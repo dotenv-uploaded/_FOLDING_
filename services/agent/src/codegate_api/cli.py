@@ -46,7 +46,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deterministic-agent",
         action="store_true",
-        help="Offline development fallback; the product default uses Claude Agent SDK.",
+        help="Offline test fallback that does not call a language model.",
+    )
+    parser.add_argument(
+        "--claude-agent",
+        action="store_true",
+        help="Use Claude Agent SDK instead of the default local Gemma 4 runtime.",
     )
     return parser
 
@@ -71,7 +76,13 @@ def _settings(args: argparse.Namespace) -> Settings:
     settings = Settings(
         environment="local",
         auth_mode="local",
-        agent_mode="deterministic" if args.deterministic_agent else "claude",
+        agent_mode=(
+            "deterministic"
+            if args.deterministic_agent
+            else "claude"
+            if args.claude_agent
+            else "local"
+        ),
         bootstrap_demo=False,
         cors_origins=cors_origins,
         knowledge_mode="llmwiki",

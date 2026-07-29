@@ -3,12 +3,17 @@
  * 창을 띄우고, 서비스 컨테이너를 조립하고, IPC 핸들러를 등록한다.
  */
 import path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { loadDotEnv } from '@main/env';
 import { AppServices } from '@main/services';
 import { registerIpcHandlers, unregisterIpcHandlers } from '@main/ipc';
 import { logError } from '@main/util/errors';
+import {
+  blockingPreflightMessage,
+  runPlatformPreflight,
+} from '@main/system/preflight';
 
 /** ESM/CJS 어느 형식으로 번들되든 현재 디렉터리를 얻는다. */
 const currentDir =
@@ -25,12 +30,25 @@ console.info(
     ? `[codegate:env] ${dotenv.file} 적용 — ${dotenv.applied.length}개 (${dotenv.applied.join(', ')})`
     : '[codegate:env] .env 없음 — 셸 환경변수만 사용합니다.',
 );
+const userDataOverride = process.env.CODEGATE_USER_DATA_DIR?.trim();
+if (userDataOverride) {
+  const userDataDir = path.resolve(userDataOverride);
+  mkdirSync(userDataDir, { recursive: true });
+  app.setPath('userData', userDataDir);
+}
 
 // 열린 에이전트의 한글 양식 편집 도구(edit_hwp_form)가 쓰는 rhwp(@rhwp/core)는 이 앱의
 // node_modules 에 있다. sidecar 에 그 위치를 알려 주지 않으면 HWP 편집 도구가 빠진다. .env 로
 // 덮어쓸 수 있게 두되, 없으면 앱 루트(설치본은 리소스 경로)로 자동 설정한다.
+const packagedNodeRoot = path.join(process.resourcesPath, 'app.asar.unpacked');
 if (!process.env.CODEGATE_RHWP_ROOT) {
-  process.env.CODEGATE_RHWP_ROOT = app.isPackaged ? process.resourcesPath : process.cwd();
+  process.env.CODEGATE_RHWP_ROOT = app.isPackaged ? packagedNodeRoot : process.cwd();
+}
+if (!process.env.CODEGATE_KORDOC_DIR) {
+  process.env.CODEGATE_KORDOC_DIR = app.isPackaged ? packagedNodeRoot : process.cwd();
+}
+if (app.isPackaged && !process.env.CODEGATE_NODE_BIN) {
+  process.env.CODEGATE_NODE_BIN = process.execPath;
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -86,6 +104,23 @@ function createWindow(): BrowserWindow {
 }
 
 async function bootstrap(): Promise<void> {
+  const preflight = await runPlatformPreflight({
+    userDataDir: app.getPath('userData'),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    systemVersion: process.getSystemVersion(),
+  });
+  for (const finding of preflight.findings) {
+    const detail = finding.remediation ? ` ${finding.remediation}` : '';
+    if (finding.severity === 'warning') {
+      console.warn(`[codegate:preflight] ${finding.code}: ${finding.message}${detail}`);
+    } else {
+      console.info(`[codegate:preflight] ${finding.code}: ${finding.message}${detail}`);
+    }
+  }
+  const blockingMessage = blockingPreflightMessage(preflight);
+  if (blockingMessage) throw new Error(blockingMessage);
+
   mainWindow = createWindow();
 
   services = await AppServices.create({
@@ -119,7 +154,14 @@ if (!gotLock) {
 
   app.whenReady().then(
     () => {
-      void bootstrap().catch((err: unknown) => logError('bootstrap', err));
+      void bootstrap().catch((err: unknown) => {
+        logError('bootstrap', err);
+        dialog.showErrorBox(
+          'Folding을 시작할 수 없습니다',
+          err instanceof Error ? err.message : String(err),
+        );
+        app.quit();
+      });
 
       app.on('activate', () => {
         // macOS — 독 아이콘 클릭 시 창이 없으면 다시 만든다

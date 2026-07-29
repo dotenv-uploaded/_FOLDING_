@@ -14,7 +14,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   AuthError,
-  LLM_KEY_MISSING_MESSAGE,
   creditsForDocuments,
   type BuildEstimate,
   type BuildPhase,
@@ -196,9 +195,11 @@ export class BuildService {
     // 401/402 는 AuthError 로 올라와 한국어 문장으로 표시된다 (silent fail 금지).
     await this.options.ensureSubscription?.();
 
-    // 자격증명 ② 가 없으면 시작조차 하지 않는다 (스펙 v1.4 §5).
+    // 기본값은 API 키 없는 로컬 Gemma4다. 클라우드 모드를 명시했는데 키가 없을 때만 막는다.
     if (!(await this.options.llmKeys.resolve())) {
-      throw new UserFacingError(LLM_KEY_MISSING_MESSAGE);
+      throw new UserFacingError(
+        '선택한 클라우드 LLM의 API 키가 없습니다. 로컬 모드를 쓰거나 키를 설정해 주세요.',
+      );
     }
 
     const files = store.listFiles();
