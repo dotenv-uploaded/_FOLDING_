@@ -111,6 +111,8 @@ CODEGATE_LLMWIKI_PROJECT_ROOT=…/LLMWIKI
 | `feat/doc2md-v2-integration` | `6397147feb999ab492cf087cdfb5961d935fa59c` |
 | `fix/llmwiki-server-v2-compat` | `76f5d8f88c615dadd1706d6c2e2648264a34f95b` |
 
-공식 저장소의 현재 트리를 유지하는 `ours` 병합을 사용했다. PR 병합 후 위 커밋들과 원본 저장소의
-모든 원격 브랜치 끝점이 공식 `main`의 조상인지 확인한 뒤 원본 저장소를 삭제한다. 로컬 `Backend`
-작업 트리의 미커밋 변경은 이 이전에 포함하지 않고 그대로 보존한다.
+공식 저장소의 현재 트리를 유지하는 `ours` 병합을 사용했다. PR
+[#6](https://github.com/dotenv-uploaded/_FOLDING_/pull/6)을 merge commit
+`b0dc714c0d5a769eec1e72477dd945733f9a1a43`로 병합하고, 원본의 10개 원격 브랜치 끝점이 모두
+공식 `main`의 조상이며 공식 원격 API에서 조회되는 것을 확인한 뒤 원본 저장소를 삭제했다. 로컬
+`Backend` 작업 트리의 미커밋 변경은 이 이전에 포함하지 않고 그대로 보존했다.
