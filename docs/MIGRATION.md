@@ -93,3 +93,24 @@ CODEGATE_LLMWIKI_PROJECT_ROOT=…/LLMWIKI
 - 전달 결과: PR [#3](https://github.com/dotenv-uploaded/_FOLDING_/pull/3)을 merge commit
   `65d5c44bd4125193d4bc03b972fde6c742b37a42`로 병합했다. 공식 원격에서 위 최종 커밋이
   계속 조회되고 `main`의 조상임을 확인한 뒤 개인 저장소를 삭제했다.
+
+## 8. Agent 분리 저장소 이력 보존
+
+2026-08-02에 이슈 [#5](https://github.com/dotenv-uploaded/_FOLDING_/issues/5)에 따라
+`dotenv-uploaded/codegate-2026-agent`의 원격 브랜치 이력을 공식 저장소로 이전했다. 기존 subtree
+통합으로 `main`과 `feat/hwp-write`는 이미 보존돼 있었고, 아래 8개 브랜치 끝점을 추가로 연결했다.
+
+| 브랜치 | 최종 커밋 |
+|---|---|
+| `agent/backend-foundation` | `19905e1ab7c698b3dbd0c1e52c2d04a6f881da46` |
+| `agent/claude-answer-stability` | `aeb86c7bb810144a6b0857dc7d3643f5580171a0` |
+| `docs/claude-prompt-merge-record` | `68083a3be0121945b566dfbd8e70e0c0168193cc` |
+| `docs/doc2md-v0.2-contract` | `d835fbf219d69058a382c27b1d2afbda0d912610` |
+| `docs/role-contract-audit` | `aedf70145c2ce9516b09251cd647ce9cbef531e1` |
+| `feat/claude-prompt-hardening` | `70b5d717ea9e52f9ba5d5561e4215ad571c22ba2` |
+| `feat/doc2md-v2-integration` | `6397147feb999ab492cf087cdfb5961d935fa59c` |
+| `fix/llmwiki-server-v2-compat` | `76f5d8f88c615dadd1706d6c2e2648264a34f95b` |
+
+공식 저장소의 현재 트리를 유지하는 `ours` 병합을 사용했다. PR 병합 후 위 커밋들과 원본 저장소의
+모든 원격 브랜치 끝점이 공식 `main`의 조상인지 확인한 뒤 원본 저장소를 삭제한다. 로컬 `Backend`
+작업 트리의 미커밋 변경은 이 이전에 포함하지 않고 그대로 보존한다.
