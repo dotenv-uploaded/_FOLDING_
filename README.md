@@ -33,10 +33,6 @@ The agent is not restricted to a small tool list. Instead, **every tool invocati
 gate**. The interface shows what the agent intends to do, the associated risk, and the user's original request so
 the user remains in control.
 
-## Demo
-
-`<TBD>`
-
 ## Knowledge Graph
 
 ![Folding knowledge graph](docs/assets/knowledge-graph.png)
@@ -159,7 +155,7 @@ The modules were imported with their original commit history using `git subtree`
 available through `git log`, and the original repositories have not been removed.
 
 OAuth, session, and subscription services live in
-[`folding-cloud-api`](https://github.com/dotenv-uploaded/folding-cloud-api). This component is deployed to a server
+`folding-cloud-api`, a separate private repository. This component is deployed to a server
 rather than a user device because it holds secrets that must never be distributed locally and forms the network
 trust boundary.
 
